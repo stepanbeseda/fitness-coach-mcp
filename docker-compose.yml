@@ -1,0 +1,179 @@
+# fitness-coach-mcp: Hevy + Garmin MCP servers behind an OAuth 2.1 gateway,
+# reachable only through a dedicated Tailscale node (Funnel on :443 for claude.ai,
+# plain tailnet for Claude Code / Claude Desktop).
+#
+# - No service publishes a host port. The gateway shares the network namespace of
+#   the Tailscale sidecar and listens on 127.0.0.1 only, so tailscaled is the only
+#   way in. The MCP backends are reachable only from the private "mcp" network.
+# - Secrets are Docker secrets read from ./secrets (scripts/setup-secrets.sh).
+# - Every container runs as an unprivileged UID, read-only, without capabilities.
+#
+# Day-to-day commands are wrapped in scripts/ (see README.md).
+
+name: fitness-coach-mcp
+
+x-hardening: &hardening
+  user: "${APP_UID:-10001}:${APP_GID:-10001}"
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-build-args: &build_args
+  APP_UID: "${APP_UID:-10001}"
+  APP_GID: "${APP_GID:-10001}"
+
+services:
+  ts:
+    <<: *hardening
+    build:
+      context: ./tailscale
+      args: *build_args
+    image: fitness-coach-mcp/tailscale:1.102.5
+    hostname: ${TS_HOSTNAME:-fitness-mcp}
+    environment:
+      TS_HOSTNAME: ${TS_HOSTNAME:-fitness-mcp}
+      # Read by `tailscale up --auth-key=file:...`; only needed for the first login.
+      TS_AUTHKEY: file:/run/secrets/ts_authkey
+      TS_EXTRA_ARGS: --advertise-tags=${TS_TAG:-tag:fitness-mcp}
+      TS_AUTH_ONCE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_ACCEPT_DNS: "false"
+      TS_SOCKET: /tmp/tailscaled.sock
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_ENABLE_HEALTH_CHECK: "true"
+      TS_LOCAL_ADDR_PORT: 127.0.0.1:9002
+      HOME: /tmp
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - ./tailscale/serve.json:/config/serve.json:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    secrets:
+      - ts_authkey
+    networks:
+      - mcp
+    mem_limit: 256m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9002/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  gateway:
+    <<: *hardening
+    build:
+      context: ./gateway
+      args: *build_args
+    image: fitness-coach-mcp/gateway:0.1.0
+    # Share the sidecar's network namespace: tailscale serve proxies to 127.0.0.1:8080.
+    network_mode: service:ts
+    depends_on:
+      - ts
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
+      OWNER_TAILSCALE_LOGIN: ${OWNER_TAILSCALE_LOGIN:?set OWNER_TAILSCALE_LOGIN in .env}
+      FUNNEL_TOKEN_CIDRS: ${FUNNEL_TOKEN_CIDRS:-}
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-}
+      REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-}
+    volumes:
+      - gateway-data:/data
+      - ./gateway/config.toml:/app/config.toml:ro
+    tmpfs:
+      - /tmp:size=16m
+    secrets:
+      - gateway_password_hash
+      - gateway_totp_secret
+      - hevy_backend_token
+      - garmin_backend_token
+    mem_limit: 256m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  hevy-mcp:
+    <<: *hardening
+    build:
+      context: ./hevy-mcp
+    image: fitness-coach-mcp/hevy-mcp:6.1.16
+    environment:
+      HOME: /tmp
+      HEVY_MCP_HTTP_MAX_SESSIONS: "20"
+    tmpfs:
+      - /tmp:size=16m
+    secrets:
+      - hevy_api_key
+      - hevy_backend_token
+    networks:
+      - mcp
+    mem_limit: 384m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  garmin-mcp:
+    <<: *hardening
+    build:
+      context: ./garmin-mcp
+      args: *build_args
+    image: fitness-coach-mcp/garmin-mcp:0.1.0
+    environment:
+      HOME: /tmp
+      GARMINTOKENS: /data/garmin
+    volumes:
+      - garmin-tokens:/data/garmin
+    tmpfs:
+      - /tmp:size=32m
+    secrets:
+      - garmin_backend_token
+    networks:
+      - mcp
+    mem_limit: 384m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  mcp:
+    driver: bridge
+
+volumes:
+  ts-state:
+  gateway-data:
+  garmin-tokens:
+
+secrets:
+  ts_authkey:
+    file: ./secrets/ts_authkey
+  gateway_password_hash:
+    file: ./secrets/gateway_password_hash
+  gateway_totp_secret:
+    file: ./secrets/gateway_totp_secret
+  hevy_api_key:
+    file: ./secrets/hevy_api_key
+  hevy_backend_token:
+    file: ./secrets/hevy_backend_token
+  garmin_backend_token:
+    file: ./secrets/garmin_backend_token

@@ -1,0 +1,17 @@
+# Secrets and local state: never commit
+/secrets/
+.env
+*.env
+!.env.example
+/data/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Editors / OS
+.DS_Store
+*.swp
