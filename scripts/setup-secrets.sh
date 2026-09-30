@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# Create or rotate secrets in ./secrets (Docker secrets for the compose stack).
+#
+#   scripts/setup-secrets.sh                 create everything that is missing
+#   scripts/setup-secrets.sh hevy-key        rotate the Hevy API key
+#   scripts/setup-secrets.sh ts-authkey      set the Tailscale auth key (first start only)
+#   scripts/setup-secrets.sh password        change the gateway login password
+#   scripts/setup-secrets.sh totp            enrol a new TOTP authenticator
+#   scripts/setup-secrets.sh backend-tokens  rotate the gateway <-> backend secrets
+#   scripts/setup-secrets.sh fix-perms       re-apply ownership/permissions
+#
+# Secrets are typed with hidden input and written directly to files (mode 0640,
+# group APP_GID so the unprivileged containers can read them). Nothing is echoed,
+# logged or passed on a command line.
+source "$(dirname "$0")/lib.sh"
+
+GATEWAY_IMAGE="fitness-coach-mcp/gateway:0.1.0"
+
+ensure_dir() {
+  if [[ ! -d "$SECRETS_DIR" ]]; then
+    (umask 077 && mkdir -p "$SECRETS_DIR")
+  fi
+  chmod 0700 "$SECRETS_DIR"
+}
+
+set_perms() {
+  local file="$1"
+  chmod 0640 "$file"
+  if [[ "$(stat -c %g "$file")" != "$APP_GID" ]]; then
+    sudo chgrp "$APP_GID" "$file" || die "Nepodařilo se nastavit skupinu $APP_GID na $file (potřebuje sudo)."
+  fi
+}
+
+write_secret() {
+  local name="$1" value="$2" file="$SECRETS_DIR/$1"
+  ensure_dir
+  # Write in place (same inode) so running containers never see a half-written file.
+  (umask 077 && printf '%s\n' "$value" > "$file")
+  set_perms "$file"
+  ok "Uloženo: secrets/$name"
+}
+
+has_secret() { [[ -s "$SECRETS_DIR/$1" ]]; }
+
+read_hidden() {
+  local prompt="$1" value
+  IFS= read -rsp "$prompt" value </dev/tty
+  printf '\n' >&2
+  printf '%s' "$value"
+}
+
+ensure_gateway_image() {
+  if ! docker image inspect "$GATEWAY_IMAGE" >/dev/null 2>&1; then
+    info "Builduju image gateway (poprvé to chvíli trvá)..."
+    dc build gateway >&2
+  fi
+}
+
+recreate() {
+  # Secret files are bind-mounted; recreate running services so they pick up new values.
+  local running
+  running="$(dc ps --services --status running 2>/dev/null || true)"
+  local svc
+  for svc in "$@"; do
+    if grep -qx "$svc" <<<"$running"; then
+      dc up -d --force-recreate --no-deps "$svc" >&2
+      ok "Restartováno: $svc"
+    fi
+  done
+}
+
+cmd_hevy_key() {
+  local key code
+  info "Hevy API key najdeš v aplikaci Hevy → Settings → Developer (vyžaduje Hevy PRO)."
+  key="$(read_hidden 'Hevy API key: ')"
+  [[ -n "$key" ]] || die "Prázdný klíč."
+  code="$(printf 'api-key: %s\n' "$key" | curl -sS -o /dev/null -w '%{http_code}' -H @- \
+          https://api.hevyapp.com/v1/user/info || true)"
+  case "$code" in
+    200) ok "Hevy API klíč ověřen." ;;
+    401|403) die "Hevy klíč odmítnut (HTTP $code). Nic jsem neuložil." ;;
+    *) warn "Klíč se nepodařilo ověřit (HTTP ${code:-?}); ukládám i tak." ;;
+  esac
+  write_secret hevy_api_key "$key"
+  recreate hevy-mcp
+}
+
+cmd_ts_authkey() {
+  local key
+  info "Auth key: Tailscale admin → Settings → Keys → Generate auth key"
+  info "  (Reusable: ne, Ephemeral: ne, Pre-approved: ano, Tags: ${TS_TAG:-tag:fitness-mcp})."
+  key="$(read_hidden 'Tailscale auth key (tskey-auth-...): ')"
+  [[ "$key" == tskey-* ]] || die "Tohle nevypadá jako Tailscale auth key."
+  write_secret ts_authkey "$key"
+  info "Klíč je potřeba jen pro první přihlášení uzlu; stav se pak drží ve volume ts-state."
+}
+
+cmd_password() {
+  local pw pw2 hash
+  ensure_gateway_image
+  info "Heslo pro přihlášení do gateway (aspoň 12 znaků, ideálně passphrase ze 4+ slov)."
+  pw="$(read_hidden 'Nové heslo: ')"
+  pw2="$(read_hidden 'Heslo znovu: ')"
+  [[ "$pw" == "$pw2" ]] || die "Hesla se neshodují."
+  hash="$(printf '%s\n' "$pw" | docker run --rm -i --network none --entrypoint python "$GATEWAY_IMAGE" \
+          -m gateway.cli hash-password --stdin)" || die "Hash hesla se nepodařil."
+  unset pw pw2
+  write_secret gateway_password_hash "$hash"
+  recreate gateway
+}
+
+cmd_totp() {
+  local secret code attempt
+  ensure_gateway_image
+  secret="$(docker run --rm -i --network none --entrypoint python "$GATEWAY_IMAGE" \
+            -m gateway.cli new-totp --account "${OWNER_TAILSCALE_LOGIN:-owner}")" || die "Generování TOTP selhalo."
+  for attempt in 1 2 3; do
+    IFS= read -rp "Opiš aktuální 6místný kód z autentizátoru: " code </dev/tty
+    if printf '%s\n%s\n' "$secret" "$code" | docker run --rm -i --network none --entrypoint python \
+         "$GATEWAY_IMAGE" -m gateway.cli verify-totp; then
+      write_secret gateway_totp_secret "$secret"
+      recreate gateway
+      return 0
+    fi
+    warn "Kód nesedí (pokus $attempt/3). Zkontroluj čas v telefonu."
+  done
+  die "TOTP neověřeno, nic jsem neuložil."
+}
+
+cmd_backend_tokens() {
+  write_secret hevy_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  write_secret garmin_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  recreate hevy-mcp garmin-mcp gateway
+}
+
+cmd_fix_perms() {
+  ensure_dir
+  local f
+  for f in "$SECRETS_DIR"/*; do
+    [[ -f "$f" ]] && set_perms "$f"
+  done
+  ok "Oprávnění nastavena (adresář 0700, soubory 0640, skupina $APP_GID)."
+}
+
+cmd_all() {
+  require_env
+  ensure_dir
+  has_secret hevy_backend_token && has_secret garmin_backend_token || cmd_backend_tokens
+  has_secret ts_authkey || cmd_ts_authkey
+  has_secret hevy_api_key || cmd_hevy_key
+  has_secret gateway_password_hash || cmd_password
+  has_secret gateway_totp_secret || cmd_totp
+  cmd_fix_perms
+  ok "Všechny secrets jsou připravené. Rotace: scripts/setup-secrets.sh <hevy-key|password|totp|backend-tokens>"
+}
+
+require_docker
+case "${1:-all}" in
+  all) cmd_all ;;
+  hevy-key) cmd_hevy_key ;;
+  ts-authkey) cmd_ts_authkey ;;
+  password) cmd_password ;;
+  totp) cmd_totp ;;
+  backend-tokens) cmd_backend_tokens ;;
+  fix-perms) cmd_fix_perms ;;
+  *) sed -n '2,13p' "$0"; exit 2 ;;
+esac

@@ -1,0 +1,12 @@
+# Overlay used by scripts/e2e-test.sh: the real images and wiring, but the
+# Tailscale sidecar only holds the network namespace (no login), the private
+# network has no internet access and all secrets are throwaway test values.
+services:
+  ts:
+    entrypoint: ["sleep", "infinity"]
+    healthcheck:
+      disable: true
+
+networks:
+  mcp:
+    internal: true

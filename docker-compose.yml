@@ -5,7 +5,8 @@
 # - No service publishes a host port. The gateway shares the network namespace of
 #   the Tailscale sidecar and listens on 127.0.0.1 only, so tailscaled is the only
 #   way in. The MCP backends are reachable only from the private "mcp" network.
-# - Secrets are Docker secrets read from ./secrets (scripts/setup-secrets.sh).
+# - Secrets are Docker secrets read from ./secrets (scripts/setup-secrets.sh);
+#   SECRETS_DIR overrides the directory (used by scripts/e2e-test.sh).
 # - Every container runs as an unprivileged UID, read-only, without capabilities.
 #
 # Day-to-day commands are wrapped in scripts/ (see README.md).
@@ -166,14 +167,14 @@ volumes:
 
 secrets:
   ts_authkey:
-    file: ./secrets/ts_authkey
+    file: ${SECRETS_DIR:-./secrets}/ts_authkey
   gateway_password_hash:
-    file: ./secrets/gateway_password_hash
+    file: ${SECRETS_DIR:-./secrets}/gateway_password_hash
   gateway_totp_secret:
-    file: ./secrets/gateway_totp_secret
+    file: ${SECRETS_DIR:-./secrets}/gateway_totp_secret
   hevy_api_key:
-    file: ./secrets/hevy_api_key
+    file: ${SECRETS_DIR:-./secrets}/hevy_api_key
   hevy_backend_token:
-    file: ./secrets/hevy_backend_token
+    file: ${SECRETS_DIR:-./secrets}/hevy_backend_token
   garmin_backend_token:
-    file: ./secrets/garmin_backend_token
+    file: ${SECRETS_DIR:-./secrets}/garmin_backend_token
