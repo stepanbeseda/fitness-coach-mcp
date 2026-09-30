@@ -93,10 +93,11 @@ def main() -> int:
         print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
         assert "feedback" not in tools, "denylisted tool leaked"
         section("Hevy: poslední 3 workouty")
-        text = hevy.call("get-workouts", {"page": 1, "pageSize": 3})
+        text = hevy.call("get-workouts", {"page": 1, "page_size": 3})
         try:
             data = json.loads(text)
             workouts = data if isinstance(data, list) else data.get("workouts", data)
+            workouts = sorted(workouts, key=lambda w: w.get("start_time") or w.get("startTime") or "", reverse=True)
             for w in workouts[:3]:
                 print(f"- {w.get('start_time') or w.get('startTime')} | {w.get('title')} | "
                       f"{len(w.get('exercises', []))} cviků")

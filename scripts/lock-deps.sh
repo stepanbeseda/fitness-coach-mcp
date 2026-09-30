@@ -22,7 +22,9 @@ lock() {
 for dir in gateway garmin-mcp; do
   [[ -f "$dir/pyproject.toml" ]] || continue
   lock "$dir" requirements.lock
-  if grep -q '^dev = \[' "$dir/pyproject.toml"; then
-    lock "$dir" requirements-dev.lock --extra dev
-  fi
+  for extra in dev test; do
+    if grep -q "^${extra} = \\[" "$dir/pyproject.toml"; then
+      lock "$dir" requirements-dev.lock --extra "$extra"
+    fi
+  done
 done

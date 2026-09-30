@@ -32,6 +32,7 @@ from .store import AuthCode, AuthRequest, Grant, Store, Token
 
 MAX_FORM_BYTES = 16 * 1024
 MAX_ATTEMPTS_PER_REQUEST = 5
+MAX_STATE_LENGTH = 1024
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
@@ -265,6 +266,8 @@ class OAuthServer:
             query_single(params, "scope")
         except DuplicateParameter:
             return self._redirect_error(redirect_uri, None, "invalid_request", "duplicate parameter")
+        if state is not None and len(state) > MAX_STATE_LENGTH:
+            return self._redirect_error(redirect_uri, None, "invalid_request", "state is too long")
         if response_type != "code":
             return self._redirect_error(redirect_uri, state, "unsupported_response_type")
         if method != "S256" or not is_valid_code_challenge(challenge):

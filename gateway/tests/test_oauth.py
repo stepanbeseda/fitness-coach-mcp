@@ -93,6 +93,12 @@ def test_pkce_and_resource_are_mandatory(h):
         assert query(response)["iss"] == [BASE]
 
 
+def test_oversized_state_is_rejected(h):
+    r = h.start(state="x" * 2000)
+    assert r.status_code == 302 and query(r)["error"] == ["invalid_request"]
+    assert "state" not in query(r)
+
+
 def test_resource_is_normalized(h):
     page = h.start(resource="HTTPS://GW.TEST:443/hevy/mcp/")
     assert page.status_code == 200

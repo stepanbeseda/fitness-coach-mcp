@@ -53,7 +53,11 @@ def oauth(client: httpx.Client, resource: str) -> dict:
         "code_challenge": challenge, "code_challenge_method": "S256", "resource": resource, "scope": "mcp"})
     check(page.status_code == 200, f"authorize page for {resource}")
     txn = re.search(r'name="txn" value="([^"]+)"', page.text).group(1)
-    done = client.post(f"{GW}/authorize", headers=TAILNET, data={
+    # The CSRF cookie is Secure (browsers reach the gateway over https via tailscale
+    # serve); this client speaks plain http to 127.0.0.1, so send it like a browser would.
+    cookie = page.headers["set-cookie"].split(";", 1)[0]
+    client.cookies.clear()
+    done = client.post(f"{GW}/authorize", headers={**TAILNET, "cookie": cookie}, data={
         "txn": txn, "password": PASSWORD, "totp": next_code(), "decision": "approve"})
     check(done.status_code == 303, "login + consent redirects back to Claude")
     query = parse_qs(urlsplit(done.headers["location"]).query)
@@ -126,7 +130,7 @@ def main() -> int:
     with httpx.Client(timeout=60, follow_redirects=False) as client:
         public = client.get(f"{GW}/authorize", headers=FUNNEL)
         check(public.status_code == 403, "login page refused through Funnel")
-        hevy = exercise_backend(client, "hevy", "get-workouts", {"page": 1, "pageSize": 3})
+        hevy = exercise_backend(client, "hevy", "get-workouts", {"page": 1, "page_size": 3})
         exercise_backend(client, "garmin", "get_recovery_snapshot", {})
         cross = client.post(f"{GW}/garmin/mcp", headers={**FUNNEL, "authorization": f"Bearer {hevy}"},
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})

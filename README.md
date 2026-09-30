@@ -215,12 +215,16 @@ přihlašování na straně Garminu). Poznáš to z `healthcheck.sh`, nebo nást
 scripts/garmin-login.sh            # nové přihlášení s MFA
 ```
 
-Když Garmin/Cloudflare blokuje přihlášení z IP Oracle Cloudu, přihlas se na Macu a tokeny přenes (postup v
-[`garmin-mcp/README.md`](garmin-mcp/README.md)):
+Když Garmin/Cloudflare blokuje přihlášení z IP Oracle Cloudu, přihlas se na Macu a přenes jen soubor
+s tokeny (podrobně v [`garmin-mcp/README.md`](garmin-mcp/README.md)):
 
 ```bash
-scp -r ~/.garminconnect dovolena:/tmp/garmin-tokens
-ssh dovolena 'cd ~/dev/fitness-coach-mcp && scripts/garmin-login.sh --import /tmp/garmin-tokens && rm -rf /tmp/garmin-tokens'
+# Mac (z klonu repa nebo se zkopírovaným garmin-mcp/src/garmin_coach_mcp/login.py)
+python3 -m venv /tmp/garmin-login && . /tmp/garmin-login/bin/activate && pip install garminconnect==0.3.17
+python garmin-mcp/src/garmin_coach_mcp/login.py --tokens-dir /tmp/garmin-tokens
+scp /tmp/garmin-tokens/garmin_tokens.json dovolena:/tmp/garmin_tokens.json && rm -rf /tmp/garmin-tokens
+# VPS
+scripts/garmin-login.sh --import /tmp/garmin_tokens.json && shred -u /tmp/garmin_tokens.json
 ```
 
 Když se Garmin login rozbije pro všechny (změna na straně Garminu), sleduj
