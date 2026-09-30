@@ -1,0 +1,29 @@
+[project]
+name = "fitness-coach-gateway"
+version = "0.1.0"
+description = "Single-user OAuth 2.1 authorization server + reverse proxy for remote MCP servers"
+requires-python = ">=3.13"
+dependencies = [
+    "starlette",
+    "uvicorn",
+    "httpx",
+    "argon2-cffi",
+    "pyotp",
+    "segno",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

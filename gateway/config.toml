@@ -1,0 +1,89 @@
+# Gateway configuration (non-secret). Mounted read-only into the container at
+# /app/config.toml. Environment variables override the marked keys.
+# Secrets (password hash, TOTP secret, backend tokens) are Docker secret files.
+
+[server]
+# Overridden by PUBLIC_BASE_URL. OAuth issuer and prefix of every resource URL.
+public_base_url = "https://fitness-mcp.tail6fe028.ts.net"
+listen_host = "127.0.0.1"
+listen_port = 8080
+db_path = "/data/gateway.sqlite3"
+audit_log_path = "/data/audit.jsonl"
+
+[auth]
+# Overridden by OWNER_TAILSCALE_LOGIN. The only login allowed to authorize clients.
+owner_tailscale_login = "stepanbeseda@github"
+# The login/consent page is served only to the owner's devices over the tailnet
+# (never through Funnel).
+login_tailnet_only = true
+password_hash_file = "/run/secrets/gateway_password_hash"
+totp_secret_file = "/run/secrets/gateway_totp_secret"
+# Token lifetimes in seconds (ACCESS_TOKEN_TTL / REFRESH_TOKEN_TTL override).
+access_token_ttl = 3600
+refresh_token_ttl = 7776000          # 90 days, renewed on every refresh
+auth_code_ttl = 120
+auth_request_ttl = 600
+# A rotated refresh token presented again within this window is treated as a
+# client retry (lost response) instead of token theft.
+refresh_reuse_grace = 120
+# Login brute-force protection: after N consecutive failures the login locks for
+# base * 2^(failures - N) seconds, capped at max.
+login_max_failures = 5
+login_failure_window = 900
+login_lockout_base = 60
+login_lockout_max = 3600
+# Requests that arrive through Funnel may carry tokens or hit /token only from
+# these networks (FUNNEL_TOKEN_CIDRS overrides, comma separated). 160.79.104.0/21
+# is Anthropic's published outbound range for MCP connector traffic.
+funnel_token_cidrs = ["160.79.104.0/21"]
+
+[rate_limits]
+# requests per minute / burst
+public_per_ip = [120, 60]
+token_endpoint = [30, 15]
+authorize = [30, 15]
+mcp_per_grant = [300, 100]
+
+# Pre-registered clients. Client ID Metadata Document (CIMD) clients are pinned
+# here instead of fetched at runtime; scripts/healthcheck.sh compares the pinned
+# redirect URIs with the live documents. Loopback redirect URIs match any port.
+[[clients]]
+client_id = "https://claude.ai/oauth/mcp-oauth-client-metadata"
+name = "Claude (claude.ai, Desktop, mobil)"
+redirect_uris = [
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+]
+
+[[clients]]
+client_id = "https://claude.ai/oauth/claude-code-client-metadata"
+name = "Claude Code"
+redirect_uris = [
+    "http://localhost/callback",
+    "http://127.0.0.1/callback",
+]
+
+[[clients]]
+client_id = "mcp-remote"
+name = "mcp-remote (Claude Desktop přes tailnet)"
+redirect_uris = [
+    "http://localhost/oauth/callback",
+    "http://127.0.0.1/oauth/callback",
+]
+
+[[backends]]
+name = "hevy"
+title = "Hevy"
+path = "/hevy/mcp"
+upstream = "http://hevy-mcp:3000/mcp"
+token_file = "/run/secrets/hevy_backend_token"
+# "feedback" sends a report to the upstream maintainer's telemetry.
+tool_denylist = ["feedback"]
+
+[[backends]]
+name = "garmin"
+title = "Garmin Connect"
+path = "/garmin/mcp"
+upstream = "http://garmin-mcp:8000/mcp"
+token_file = "/run/secrets/garmin_backend_token"
+tool_denylist = []
