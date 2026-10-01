@@ -40,20 +40,20 @@ volání; `error` = Garmin poslední session odmítl → znovu login).
 
 ### Záložní login (když Garmin/Cloudflare blokuje IP serveru)
 
-Na Macu (domácí síť):
+Na Macu (domácí síť). Knihovna potřebuje Python ≥ 3.12, proto přes `uv`; příkazy vkládej po jednom:
 
 ```bash
-python3 -m venv /tmp/garmin-login && . /tmp/garmin-login/bin/activate
-pip install garminconnect==0.3.17
-python garmin-mcp/src/garmin_coach_mcp/login.py --tokens-dir /tmp/garmin-tokens
-scp /tmp/garmin-tokens/garmin_tokens.json <vps>:/tmp/garmin_tokens.json && rm -rf /tmp/garmin-tokens
+curl -LsSf https://astral.sh/uv/install.sh | sh
+scp <vps>:dev/fitness-coach-mcp/garmin-mcp/src/garmin_coach_mcp/login.py /tmp/garmin_login.py
+uv run --python 3.13 --with garminconnect==0.3.17 python /tmp/garmin_login.py --tokens-dir ~/garmin-tokens
+scp ~/garmin-tokens/garmin_tokens.json <vps>:/tmp/garmin_tokens.json
+rm -rf ~/garmin-tokens /tmp/garmin_login.py
 ```
 
 Na VPS (import se zapíše s právy 0600 a ověří):
 
 ```bash
-docker compose run --rm -T --no-deps --entrypoint python garmin-mcp \
-  -m garmin_coach_mcp.login --import-file - < /tmp/garmin_tokens.json && shred -u /tmp/garmin_tokens.json
+scripts/garmin-login.sh --import /tmp/garmin_tokens.json && shred -u /tmp/garmin_tokens.json
 ```
 
 ## Konfigurace (env)

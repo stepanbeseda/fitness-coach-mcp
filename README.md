@@ -215,17 +215,28 @@ přihlašování na straně Garminu). Poznáš to z `healthcheck.sh`, nebo nást
 scripts/garmin-login.sh            # nové přihlášení s MFA
 ```
 
-Když Garmin/Cloudflare blokuje přihlášení z IP Oracle Cloudu, přihlas se na Macu a přenes jen soubor
-s tokeny (podrobně v [`garmin-mcp/README.md`](garmin-mcp/README.md)):
+Když Garmin blokuje přihlášení ze serveru (HTTP 429), přihlas se na Macu a přenes jen soubor s tokeny.
+Knihovna potřebuje Python ≥ 3.12 (systémový macOS má 3.9), proto přes [uv](https://docs.astral.sh/uv/),
+který si Python stáhne sám. Na Macu, po jednom řádku (zsh bere `#` jako komentář až po
+`setopt interactivecomments`):
 
 ```bash
-# Mac (z klonu repa nebo se zkopírovaným garmin-mcp/src/garmin_coach_mcp/login.py)
-python3 -m venv /tmp/garmin-login && . /tmp/garmin-login/bin/activate && pip install garminconnect==0.3.17
-python garmin-mcp/src/garmin_coach_mcp/login.py --tokens-dir /tmp/garmin-tokens
-scp /tmp/garmin-tokens/garmin_tokens.json dovolena:/tmp/garmin_tokens.json && rm -rf /tmp/garmin-tokens
-# VPS
+curl -LsSf https://astral.sh/uv/install.sh | sh
+scp ubuntu@dovolena:dev/fitness-coach-mcp/garmin-mcp/src/garmin_coach_mcp/login.py /tmp/garmin_login.py
+uv run --python 3.13 --with garminconnect==0.3.17 python /tmp/garmin_login.py --tokens-dir ~/garmin-tokens
+scp ~/garmin-tokens/garmin_tokens.json ubuntu@dovolena:/tmp/garmin_tokens.json
+rm -rf ~/garmin-tokens /tmp/garmin_login.py
+```
+
+Na VPS:
+
+```bash
 scripts/garmin-login.sh --import /tmp/garmin_tokens.json && shred -u /tmp/garmin_tokens.json
 ```
+
+Mobilní varianty loginu Garmin často odmítá s 429; knihovna pak sama zkusí webový widget, který obvykle
+projde. Když 429 vrátí všechny varianty, počkej aspoň hodinu (další pokusy blokaci prodlužují) a zkus to
+jednou, ideálně přes mobilní hotspot.
 
 Když se Garmin login rozbije pro všechny (změna na straně Garminu), sleduj
 [python-garminconnect](https://github.com/cyberjunky/python-garminconnect/issues). Oprava obvykle znamená
