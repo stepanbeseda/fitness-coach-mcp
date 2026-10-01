@@ -71,7 +71,7 @@ recreate() {
 
 cmd_hevy_key() {
   local key code
-  info "Hevy API key najdeš v aplikaci Hevy → Settings → Developer (vyžaduje Hevy PRO)."
+  info "Hevy API key: https://hevy.com/settings?developer (web Hevy, vyžaduje PRO)."
   key="$(read_hidden 'Hevy API key: ')"
   [[ -n "$key" ]] || die "Prázdný klíč."
   code="$(printf 'api-key: %s\n' "$key" | curl -sS -o /dev/null -w '%{http_code}' -H @- \
