@@ -96,9 +96,32 @@ def _prompt(label: str, *, secret: bool) -> str:
     raise ValueError(f"{label}: neplatný vstup")
 
 
+def _normalize_tokens_dir(raw: str) -> Path:
+    """Resolve symlinked parents (macOS: /tmp -> /private/tmp). garminconnect refuses
+    any symlink in the token path; a symlinked token directory itself is still
+    rejected by the library, as intended."""
+    path = Path(raw).expanduser()
+    return path.parent.resolve() / path.name
+
+
 def _prepare_dir(tokens_dir: Path) -> None:
     tokens_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(tokens_dir, 0o700)
+
+
+def _ensure_writable(tokens_dir: Path) -> str | None:
+    """Create the token directory and prove it is writable before contacting Garmin,
+    so a successful login is never lost on a bad path."""
+    if tokens_dir.is_symlink():
+        return f"{tokens_dir} je symlink, zvol jiný adresář"
+    try:
+        _prepare_dir(tokens_dir)
+        probe = tokens_dir / ".write-test"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return f"do {tokens_dir} nejde zapisovat ({exc.strerror or exc})"
+    return None
 
 
 def _describe_tokens(tokens_dir: Path) -> str:
@@ -129,6 +152,9 @@ def _verify(tokens_dir: Path) -> str:
 def interactive_login(tokens_dir: Path, email: str | None) -> int:
     print("Garmin Connect login pro fitness-coach-mcp.")
     print(f"Heslo se nikam neukládá; uloží se jen tokeny do {tokens_dir / TOKEN_FILE_NAME} (0600).")
+    if problem := _ensure_writable(tokens_dir):
+        print(f"Tokeny nepůjde uložit: {problem}. Použij např. --tokens-dir ~/garmin-tokens.", file=sys.stderr)
+        return EXIT_FAIL
     try:
         email = email or _prompt("Garmin e-mail", secret=False)
         password = _prompt("Garmin heslo", secret=True)
@@ -234,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-verify", action="store_true", help="with --import-file: skip the online check")
     args = parser.parse_args(argv)
 
-    tokens_dir = Path(args.tokens_dir).expanduser()
+    tokens_dir = _normalize_tokens_dir(args.tokens_dir)
     try:
         if args.check:
             return check(tokens_dir)

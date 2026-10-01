@@ -52,6 +52,26 @@ def test_login_sends_nothing_after_repeated_corrupted_password(monkeypatch, tmp_
     assert "nic neposlal" in capsys.readouterr().err
 
 
+def test_symlinked_parent_is_resolved_like_macos_tmp(tmp_path):
+    real = tmp_path / "private-tmp"
+    real.mkdir()
+    (tmp_path / "tmp").symlink_to(real)
+    normalized = login._normalize_tokens_dir(str(tmp_path / "tmp" / "garmin-tokens"))
+    assert normalized == real.resolve() / "garmin-tokens"
+    assert not any(p.is_symlink() for p in (normalized, *normalized.parents))
+    assert login._ensure_writable(normalized) is None
+
+
+def test_bad_token_dir_fails_before_asking_for_credentials(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    monkeypatch.setattr(login.getpass, "getpass", lambda prompt: (_ for _ in ()).throw(AssertionError("asked")))
+    assert login.interactive_login(link, "user@example.com") == login.EXIT_FAIL
+    assert "symlink" in capsys.readouterr().err
+
+
 def test_jwt_exp_parsing():
     import base64
 
