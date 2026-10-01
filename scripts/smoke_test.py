@@ -92,15 +92,16 @@ def main() -> int:
         tools = [t["name"] for t in hevy.request("tools/list")["tools"]]
         print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
         assert "feedback" not in tools, "denylisted tool leaked"
-        section("Hevy: poslední 3 workouty")
-        text = hevy.call("get-workouts", {"page": 1, "page_size": 3})
+        section("Hevy: poslední 3 workouty (z první stránky, seřazeno podle data)")
+        text = hevy.call("get-workouts", {"page": 1, "page_size": 10})
         try:
             data = json.loads(text)
             workouts = data if isinstance(data, list) else data.get("workouts", data)
             workouts = sorted(workouts, key=lambda w: w.get("start_time") or w.get("startTime") or "", reverse=True)
             for w in workouts[:3]:
+                count = w.get("exercise_count", len(w.get("exercises", [])))
                 print(f"- {w.get('start_time') or w.get('startTime')} | {w.get('title')} | "
-                      f"{len(w.get('exercises', []))} cviků")
+                      f"{count} cviků, {w.get('set_count', '?')} sérií, {w.get('duration', '?')}")
         except (ValueError, AttributeError, TypeError):
             print(text[:1500])
     except Exception as exc:  # noqa: BLE001 - report and continue with Garmin
