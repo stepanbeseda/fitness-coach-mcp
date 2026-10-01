@@ -11,7 +11,7 @@ require_docker
 PROJECT="fcm-e2e"
 TMP_SECRETS="$(mktemp -d)"
 export SECRETS_DIR="$TMP_SECRETS"
-export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://fitness-mcp.tail6fe028.ts.net}"
+export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://fitness-mcp.example.ts.net}"
 export OWNER_TAILSCALE_LOGIN="e2e-owner@test"
 E2E_PASSWORD="e2e-$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
 compose=(docker compose -p "$PROJECT" -f docker-compose.yml -f compose.test.yml)

@@ -3,16 +3,18 @@
 # Secrets (password hash, TOTP secret, backend tokens) are Docker secret files.
 
 [server]
-# Overridden by PUBLIC_BASE_URL. OAuth issuer and prefix of every resource URL.
-public_base_url = "https://fitness-mcp.tail6fe028.ts.net"
+# OAuth issuer and prefix of every resource URL. docker-compose always sets
+# PUBLIC_BASE_URL (from .env), which overrides this placeholder.
+public_base_url = "https://fitness-mcp.example.ts.net"
 listen_host = "127.0.0.1"
 listen_port = 8080
 db_path = "/data/gateway.sqlite3"
 audit_log_path = "/data/audit.jsonl"
 
 [auth]
-# Overridden by OWNER_TAILSCALE_LOGIN. The only login allowed to authorize clients.
-owner_tailscale_login = "stepanbeseda@github"
+# The only Tailscale login allowed to authorize clients. Overridden by
+# OWNER_TAILSCALE_LOGIN (from .env).
+owner_tailscale_login = "you@github"
 # The login/consent page is served only to the owner's devices over the tailnet
 # (never through Funnel).
 login_tailnet_only = true

@@ -26,21 +26,23 @@ Claude Code / mcp-remote (Mac, tailnet) ──WireGuard────────�
  └─ garmin-mcp ─── vlastní server, tokeny ve volume garmin-tokens, privátní síť "mcp"
 ```
 
-URL konektorů (stejné z claude.ai i z tailnetu, MagicDNS v tailnetu vrací 100.x adresu):
+URL konektorů (stejné z claude.ai i z tailnetu, MagicDNS v tailnetu vrací 100.x adresu). `<tailnet>` je
+DNS přípona tvého tailnetu: `tailscale status --json | jq -r .MagicDNSSuffix`, např. `tail1234ab.ts.net`.
 
-- `https://fitness-mcp.tail6fe028.ts.net/hevy/mcp`
-- `https://fitness-mcp.tail6fe028.ts.net/garmin/mcp`
+- `https://fitness-mcp.<tailnet>/hevy/mcp`
+- `https://fitness-mcp.<tailnet>/garmin/mcp`
 
-Proč vlastní uzel a ne Funnel na `dovolena`: claude.ai volá konektory jen na port 443 a Funnel se zapíná
-pro celý port. Na `dovolena:443` už běží (jen v tailnetu) Sure, které by se tím zveřejnilo.
+Proč vlastní uzel a ne Funnel na hostu: claude.ai volá konektory jen na port 443 a Funnel se zapíná pro
+celý port. Vlastní uzel nechá cokoli, co host na :443 už servíruje (třeba jen do tailnetu), netknuté, a
+gateway nemusí publikovat žádný port na hostu.
 
 ## Bezpečnostní model
 
 | Vrstva | Co dělá |
 |---|---|
-| Síť | Žádný publikovaný port na hostu. Gateway poslouchá jen na 127.0.0.1 v namespace sidecaru, takže jediná cesta dovnitř je `tailscale serve`. Backendy jsou jen v privátní Docker síti. Sure a host `tailscale serve` zůstávají netknuté. |
+| Síť | Žádný publikovaný port na hostu. Gateway poslouchá jen na 127.0.0.1 v namespace sidecaru, takže jediná cesta dovnitř je `tailscale serve`. Backendy jsou jen v privátní Docker síti. Ostatní služby hostu ani jeho vlastní `tailscale serve` se nemění. |
 | Funnel | Veřejně jde jen discovery (`/.well-known/*`), odpověď 401 a `/token`. Cokoli s tokenem a `/token` přes Funnel projde jen z `160.79.104.0/21` (publikovaný odchozí rozsah Anthropicu pro MCP konektory). |
-| Přihlášení | `/authorize` (heslo argon2id + TOTP) jen z tvých zařízení v tailnetu (`Tailscale-User-Login = stepanbeseda@github`, ne přes Funnel). Lockout s exponenciálním backoffem, ochrana proti znovupoužití TOTP kódu, CSRF cookie. |
+| Přihlášení | `/authorize` (heslo argon2id + TOTP) jen z tvých zařízení v tailnetu (`Tailscale-User-Login` = `OWNER_TAILSCALE_LOGIN`, ne přes Funnel). Lockout s exponenciálním backoffem, ochrana proti znovupoužití TOTP kódu, CSRF cookie. |
 | OAuth | MCP auth spec 2025-11-25: PKCE S256 povinně, `resource` (RFC 8707), takže každý token platí jen pro jeden endpoint (Hevy token na Garminu nefunguje). `iss` (RFC 9207). Access token 1 h, refresh 90 dní, rotace s detekcí znovupoužití (s oknem 120 s na retry). Revokace (RFC 7009). |
 | Klienti | Žádná otevřená registrace (DCR). Povolení klienti jsou v `gateway/config.toml`: Claude (claude.ai, CIMD), Claude Code (CIMD) a `mcp-remote`. CIMD dokumenty jsou připnuté (žádný runtime fetch, žádné SSRF), `healthcheck.sh` hlídá změny. |
 | Backendy | Klientský token se nikdy nepřeposílá. Gateway posílá vlastní interní token pro každý backend (`secrets/*_backend_token`). Hevy nástroj `feedback` (posílá report autorovi) je zablokovaný. |
@@ -51,8 +53,21 @@ pro celý port. Na `dovolena:443` už běží (jen v tailnetu) Sure, které by s
 
 ## Instalace
 
-Předpoklady: Docker + Compose v2 na hostu, host je v tailnetu, v tailnetu jsou zapnuté MagicDNS a HTTPS
-certifikáty. Vše se spouští z `~/dev/fitness-coach-mcp`.
+Předpoklady:
+
+- Linux server s Dockerem a Compose v2 (testováno na Ubuntu 24.04, linux/arm64 – Oracle Cloud Ampere;
+  všechny base image jsou multi-arch), připojený do tailnetu.
+- Tailscale účet se zapnutým MagicDNS a HTTPS certifikáty (admin konzole → DNS).
+- Claude plán s custom konektory, Hevy PRO (kvůli API klíči), Garmin Connect účet.
+- Na Macu/PC, ze kterého konektory připojuješ, zapnutý Tailscale.
+
+### 0. Klon
+
+```bash
+git clone <url-tohoto-repa> fitness-coach-mcp && cd fitness-coach-mcp
+```
+
+Všechny další příkazy se spouští z adresáře repa.
 
 ### 1. Tailscale policy (admin konzole → Access controls)
 
@@ -81,8 +96,11 @@ uzlů je expirace klíče vypnutá, stav drží volume `ts-state`).
 ### 3. Konfigurace
 
 ```bash
-cp .env.example .env && chmod 600 .env     # zkontroluj PUBLIC_BASE_URL a OWNER_TAILSCALE_LOGIN
+cp .env.example .env && chmod 600 .env
 ```
+
+V `.env` vyplň `PUBLIC_BASE_URL` (`https://fitness-mcp.<tailnet>`) a `OWNER_TAILSCALE_LOGIN` (tvůj
+Tailscale login, např. `jane@github`). Příkazy, které ti obě hodnoty vypíšou, jsou přímo v `.env.example`.
 
 ### 4. Secrets
 
@@ -121,7 +139,7 @@ scripts/smoke-test.sh              # tools/list na obou endpointech, 3 poslední
 ## Funnel
 
 - Zapnutý je deklarativně v `tailscale/serve.json` (`"AllowFunnel": {"${TS_CERT_DOMAIN}:443": true}`)
-  a jen na uzlu `fitness-mcp`. Na hostu `dovolena` se nic nemění.
+  a jen na uzlu `fitness-mcp`. Na hostu se nic nemění.
 - Stav: `docker compose exec ts tailscale --socket /tmp/tailscaled.sock funnel status`
 - Vypnutí (jen tailnet, claude.ai pak konektory neuvidí): smaž blok `AllowFunnel` ze `serve.json`
   (sidecar soubor sleduje, změna se projeví sama).
@@ -134,10 +152,10 @@ scripts/smoke-test.sh              # tools/list na obou endpointech, 3 poslední
 
 1. Na Macu (nebo telefonu) **se zapnutým Tailscale** otevři claude.ai → Settings → Connectors →
    **Add custom connector**.
-2. Název `Hevy`, URL `https://fitness-mcp.tail6fe028.ts.net/hevy/mcp`, OAuth Client ID/Secret nech
+2. Název `Hevy`, URL `https://fitness-mcp.<tailnet>/hevy/mcp`, OAuth Client ID/Secret nech
    prázdné (claude.ai se identifikuje přes CIMD) → **Add** → **Connect**.
 3. Otevře se přihlašovací stránka gateway: zadej heslo + TOTP kód → **Povolit**.
-4. Totéž pro `Garmin`, URL `https://fitness-mcp.tail6fe028.ts.net/garmin/mcp`.
+4. Totéž pro `Garmin`, URL `https://fitness-mcp.<tailnet>/garmin/mcp`.
 5. V projektu „Fitness kouč“ oba konektory zapni. Custom Instructions jsou v
    [`docs/coach-instructions.md`](docs/coach-instructions.md).
 
@@ -148,8 +166,8 @@ token (90 dní bez použití) nebo když grant zrušíš.
 ### Claude Code (přes tailnet)
 
 ```bash
-claude mcp add --transport http hevy   https://fitness-mcp.tail6fe028.ts.net/hevy/mcp
-claude mcp add --transport http garmin https://fitness-mcp.tail6fe028.ts.net/garmin/mcp
+claude mcp add --transport http hevy   https://fitness-mcp.<tailnet>/hevy/mcp
+claude mcp add --transport http garmin https://fitness-mcp.<tailnet>/garmin/mcp
 # v Claude Code: /mcp → vyber server → Authenticate (otevře prohlížeč s loginem gateway)
 ```
 
@@ -167,15 +185,15 @@ Konektory z claude.ai fungují v Desktopu samy. Pokud chceš spojení čistě p�
   "mcpServers": {
     "hevy-tailnet": {
       "command": "npx",
-      "args": ["-y", "mcp-remote@0.14.3", "https://fitness-mcp.tail6fe028.ts.net/hevy/mcp",
+      "args": ["-y", "mcp-remote@0.14.3", "https://fitness-mcp.<tailnet>/hevy/mcp",
                "--static-oauth-client-info", "{\"client_id\":\"mcp-remote\"}",
-               "--resource", "https://fitness-mcp.tail6fe028.ts.net/hevy/mcp"]
+               "--resource", "https://fitness-mcp.<tailnet>/hevy/mcp"]
     },
     "garmin-tailnet": {
       "command": "npx",
-      "args": ["-y", "mcp-remote@0.14.3", "https://fitness-mcp.tail6fe028.ts.net/garmin/mcp",
+      "args": ["-y", "mcp-remote@0.14.3", "https://fitness-mcp.<tailnet>/garmin/mcp",
                "--static-oauth-client-info", "{\"client_id\":\"mcp-remote\"}",
-               "--resource", "https://fitness-mcp.tail6fe028.ts.net/garmin/mcp"]
+               "--resource", "https://fitness-mcp.<tailnet>/garmin/mcp"]
     }
   }
 }
@@ -201,7 +219,7 @@ Konektory z claude.ai fungují v Desktopu samy. Pokud chceš spojení čistě p�
 Doporučený cron (hlášení jen při problému):
 
 ```cron
-17 7 * * * cd ~/dev/fitness-coach-mcp && scripts/healthcheck.sh --quiet
+17 7 * * * cd /cesta/k/fitness-coach-mcp && scripts/healthcheck.sh --quiet
 ```
 
 ### Obnova Garmin tokenů
@@ -222,9 +240,9 @@ který si Python stáhne sám. Na Macu, po jednom řádku (zsh bere `#` jako kom
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-scp ubuntu@dovolena:dev/fitness-coach-mcp/garmin-mcp/src/garmin_coach_mcp/login.py /tmp/garmin_login.py
+scp <vps>:fitness-coach-mcp/garmin-mcp/src/garmin_coach_mcp/login.py /tmp/garmin_login.py
 uv run --python 3.13 --with garminconnect==0.3.17 python /tmp/garmin_login.py --tokens-dir ~/garmin-tokens
-scp ~/garmin-tokens/garmin_tokens.json ubuntu@dovolena:/tmp/garmin_tokens.json
+scp ~/garmin-tokens/garmin_tokens.json <vps>:/tmp/garmin_tokens.json
 rm -rf ~/garmin-tokens /tmp/garmin_login.py
 ```
 
@@ -265,7 +283,7 @@ key.
 
 | Příznak | Příčina / řešení |
 |---|---|
-| claude.ai: „Couldn't connect“ hned po přidání | Funnel neběží nebo chybí `nodeAttrs` funnel pro tag → `healthcheck.sh`. Veřejné DNS: `curl -s -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=fitness-mcp.tail6fe028.ts.net&type=A'`. |
+| claude.ai: „Couldn't connect“ hned po přidání | Funnel neběží nebo chybí `nodeAttrs` funnel pro tag → `healthcheck.sh`. Veřejné DNS: `curl -s -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=fitness-mcp.<tailnet>&type=A'`. |
 | Přihlašovací stránka hlásí „Přístup odepřen“ | Otevřel ses přes internet, ne přes tailnet. Zapni Tailscale, vypni iCloud Private Relay / vlastní DNS-over-HTTPS v prohlížeči (musí fungovat MagicDNS) a zkus znovu. |
 | „Neplatné heslo nebo kód“ | Zkontroluj čas v telefonu. Každý TOTP kód jde použít jen jednou. Po 5 chybách se login zamkne (1 min, pak exponenciálně až 1 h). |
 | „Žádost vypršela“ | Login stránka platí 10 min. Spusť připojení znovu z Claude. |
