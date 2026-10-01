@@ -27,6 +27,31 @@ def test_import_rejects_garbage(tmp_path, capsys):
     assert not (tmp_path / "store" / "garmin_tokens.json").exists()
 
 
+def test_input_problem_detection():
+    assert login._input_problem("Žluťoučký kůň 123!") is None
+    assert "rozbitý znak" in login._input_problem("heslo\udcc3x")
+    assert "řídicí znak" in login._input_problem("heslo\x7fx")
+    assert "řídicí znak" in login._input_problem("heslo\x08x")
+
+
+def test_prompt_rejects_corrupted_input_and_asks_again(monkeypatch, capsys):
+    answers = iter(["abc\udcc3def", "správné heslo"])
+    monkeypatch.setattr(login.getpass, "getpass", lambda prompt: next(answers))
+    assert login._prompt("Garmin heslo", secret=True) == "správné heslo"
+    assert "rozbitý znak" in capsys.readouterr().err
+
+
+def test_login_sends_nothing_after_repeated_corrupted_password(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(login.getpass, "getpass", lambda prompt: "x\udcc3y")
+
+    def must_not_be_called(*args, **kwargs):
+        raise AssertionError("Garmin must not be contacted with a corrupted password")
+
+    monkeypatch.setattr(login, "Garmin", must_not_be_called)
+    assert login.interactive_login(tmp_path, "user@example.com") == login.EXIT_FAIL
+    assert "nic neposlal" in capsys.readouterr().err
+
+
 def test_jwt_exp_parsing():
     import base64
 

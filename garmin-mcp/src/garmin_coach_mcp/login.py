@@ -31,6 +31,7 @@ from garminconnect import (
 
 TOKEN_FILE_NAME = "garmin_tokens.json"
 MAX_MFA_ATTEMPTS = 3
+MAX_INPUT_ATTEMPTS = 3
 
 EXIT_OK, EXIT_FAIL, EXIT_BAD_CREDENTIALS, EXIT_RATE_LIMITED = 0, 1, 2, 3
 
@@ -45,6 +46,54 @@ def _jwt_exp(token: str | None) -> datetime | None:
         return datetime.fromtimestamp(float(data["exp"])).astimezone()
     except (ValueError, KeyError, TypeError):
         return None
+
+
+def _enable_utf8_erase() -> None:
+    """Make Backspace erase whole UTF-8 characters on this terminal (tty flag IUTF8).
+
+    Without it the kernel erases a single byte, so fixing a typo right after a
+    character like "á" leaves half of it in the (hidden) password."""
+    try:
+        import termios
+    except ImportError:
+        return
+    flag = getattr(termios, "IUTF8", 0)
+    if not flag:
+        return
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        return
+    try:
+        attrs = termios.tcgetattr(fd)
+        if not attrs[0] & flag:
+            attrs[0] |= flag
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except termios.error:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _input_problem(value: str) -> str | None:
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in value):
+        return "obsahuje rozbitý znak (diakritika nedorazila jako UTF-8, typicky po opravě Backspacem)"
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return "obsahuje řídicí znak (terminál neprovedl Backspace nebo šipku)"
+    return None
+
+
+def _prompt(label: str, *, secret: bool) -> str:
+    """Read one value; reject corrupted input instead of sending it to Garmin."""
+    _enable_utf8_erase()
+    for _ in range(MAX_INPUT_ATTEMPTS):
+        value = getpass.getpass(f"{label}: ") if secret else input(f"{label}: ").strip()
+        problem = _input_problem(value)
+        if problem is None:
+            return value
+        print(f"{label} {problem}. Zadej ho znovu bez oprav, případně zkontroluj rozložení klávesnice.",
+              file=sys.stderr)
+    raise ValueError(f"{label}: neplatný vstup")
 
 
 def _prepare_dir(tokens_dir: Path) -> None:
@@ -80,8 +129,12 @@ def _verify(tokens_dir: Path) -> str:
 def interactive_login(tokens_dir: Path, email: str | None) -> int:
     print("Garmin Connect login pro fitness-coach-mcp.")
     print(f"Heslo se nikam neukládá; uloží se jen tokeny do {tokens_dir / TOKEN_FILE_NAME} (0600).")
-    email = email or input("Garmin e-mail: ").strip()
-    password = getpass.getpass("Garmin heslo: ")
+    try:
+        email = email or _prompt("Garmin e-mail", secret=False)
+        password = _prompt("Garmin heslo", secret=True)
+    except ValueError as exc:
+        print(f"{exc}. Do Garminu jsem nic neposlal.", file=sys.stderr)
+        return EXIT_FAIL
     if not email or not password:
         print("E-mail i heslo jsou povinné.", file=sys.stderr)
         return EXIT_FAIL
@@ -92,7 +145,7 @@ def interactive_login(tokens_dir: Path, email: str | None) -> int:
         status, state = client.login()
         if status == "needs_mfa":
             for attempt in range(1, MAX_MFA_ATTEMPTS + 1):
-                code = input("MFA kód (z e-mailu / SMS / aplikace): ").strip()
+                code = _prompt("MFA kód (z e-mailu / SMS / aplikace)", secret=False)
                 try:
                     client.resume_login(state, code)
                     break
@@ -121,6 +174,9 @@ def interactive_login(tokens_dir: Path, email: str | None) -> int:
         return EXIT_RATE_LIMITED
     except GarminConnectConnectionError as exc:
         print(f"Chyba spojení s Garminem: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    except ValueError as exc:
+        print(f"{exc}. Přihlášení zrušeno.", file=sys.stderr)
         return EXIT_FAIL
 
 
