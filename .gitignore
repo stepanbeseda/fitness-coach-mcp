@@ -15,3 +15,7 @@ __pycache__/
 # Editors / OS
 .DS_Store
 *.swp
+
+# MAO local state
+.claude/mao-log/
+.claude/agent-memory/
