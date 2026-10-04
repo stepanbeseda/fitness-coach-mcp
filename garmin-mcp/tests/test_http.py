@@ -23,8 +23,11 @@ EXPECTED_TOOLS = {
     "get_performance_metrics",
     "get_personal_records",
     "get_gear",
+    "get_body_composition",
+    "get_nutrition",
+    "log_weight",
 }
-WRITE_TOOLS = {"create_workout", "schedule_workout", "unschedule_workout"}
+WRITE_TOOLS = {"create_workout", "schedule_workout", "unschedule_workout", "log_weight"}
 
 INIT = {
     "jsonrpc": "2.0",
@@ -95,6 +98,8 @@ async def test_initialize_list_and_call(app, fake):
             assert ann["readOnlyHint"] is (name not in WRITE_TOOLS)
         assert by_name["unschedule_workout"]["annotations"]["destructiveHint"] is True
         assert by_name["create_workout"]["annotations"]["destructiveHint"] is False
+        assert by_name["log_weight"]["annotations"]["destructiveHint"] is False
+        assert "only after the athlete confirmed" in by_name["log_weight"]["description"]
         schema = json.dumps(by_name["create_workout"]["inputSchema"])
         assert "heart_rate_zone" in schema and "lap_button" in schema and "repeat" in schema
         assert len(json.dumps(tools)) < 40_000
@@ -123,6 +128,32 @@ async def test_performance_tools_over_http(app, fake):
         result = r.json()["result"]
         assert result["isError"] is False, result
         assert json.loads(result["content"][0]["text"])["count"] == 3
+
+
+@pytest.mark.anyio
+async def test_body_tools_over_http(app, fake):
+    async with running_client(app) as client:
+        args = {"start_date": "2026-09-01", "end_date": "2026-09-30"}
+        r = await rpc(client, "tools/call", {"name": "get_body_composition", "arguments": args}, id_=20)
+        result = r.json()["result"]
+        assert result["isError"] is False, result
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["count"] == 5 and payload["summary"]["change_kg"] == -1.3
+
+        r = await rpc(client, "tools/call", {"name": "get_nutrition", "arguments": {"date": "2026-09-30"}}, id_=21)
+        result = r.json()["result"]
+        assert result["isError"] is False, result
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["calories"]["consumed"] == 2150 and payload["hydration"]["intake_ml"] == 1750
+
+        r = await rpc(client, "tools/call", {"name": "log_weight", "arguments": {"weight_kg": 19.5}}, id_=22)
+        assert r.json()["result"]["isError"] is True
+        assert fake.weigh_ins == []
+        r = await rpc(client, "tools/call", {"name": "log_weight", "arguments": {"weight_kg": 77.8, "date": "2026-09-30"}}, id_=23)
+        result = r.json()["result"]
+        assert result["isError"] is False, result
+        assert json.loads(result["content"][0]["text"])["entry"]["weight_kg"] == 77.8
+        assert fake.weigh_ins[0][:2] == (77.8, "kg")
 
 
 @pytest.mark.anyio

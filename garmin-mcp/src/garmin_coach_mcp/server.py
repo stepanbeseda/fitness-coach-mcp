@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from . import __version__, activities, health, performance, workouts
+from . import __version__, activities, body, health, performance, workouts
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
 from .formatting import to_json
@@ -32,9 +32,11 @@ INSTRUCTIONS = (
     "(today's training readiness, HRV, sleep, Body Battery, resting HR, stress, training status), "
     "then list_activities for recent load. "
     "Before prescribing paces, heart-rate or power targets call get_performance_metrics (race predictions, lactate threshold, zones, VO2max trend). "
+    "For weight, body-fat or nutrition goals call get_body_composition (weigh-in trend) and get_nutrition "
+    "(calories, macros, meals, hydration); Garmin is the primary source for weight. "
     "Dates are YYYY-MM-DD in the athlete's local time zone; "
-    "omit them for today. create_workout, schedule_workout and unschedule_workout change the "
-    "athlete's Garmin library/calendar: show the plan and get explicit confirmation first."
+    "omit them for today. create_workout, schedule_workout, unschedule_workout and log_weight change the "
+    "athlete's Garmin data: show the plan or value and get explicit confirmation first."
 )
 
 DateArg = Annotated[str | None, Field(description="YYYY-MM-DD in local time; omit for today.")]
@@ -192,6 +194,39 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         total distance, activity count, Garmin's distance limit when set and a retired flag.
         Use it to flag worn-out shoes."""
         return await performance.gear(service)
+
+    # ------------------------------------------------- body and nutrition
+
+    @tool("get_body_composition", _read("Body composition"))
+    async def get_body_composition(
+        start_date: Annotated[str | None, Field(description="YYYY-MM-DD; default end_date - 29 days.")] = None,
+        end_date: DateArg = None,
+    ) -> Any:
+        """Weigh-ins in a date range (max 366 days, default the last 30): one entry per day with
+        weight (kg), BMI, body fat %, muscle mass (kg), body water % and bone mass (kg) where the
+        scale provides them, plus a summary (first and last value, change, 7-day average weight,
+        body-fat change). An empty range returns "available": false with an empty list."""
+        return await body.body_composition(service, start_date, end_date)
+
+    @tool("get_nutrition", _read("Nutrition and hydration"))
+    async def get_nutrition(date: DateArg = None) -> Any:
+        """One day of intake: calories consumed vs. goal, protein / carbs / fat (g) vs. goals,
+        meals (name, calories, macros, number of items) and hydration (intake vs. goal in ml,
+        sweat loss). Each part that Garmin does not provide answers "available": false or
+        "error" while the others still arrive."""
+        return await body.nutrition(service, date)
+
+    @tool("log_weight", _write("Log weight", destructive=False))
+    async def log_weight(
+        weight_kg: Annotated[float, Field(ge=20, le=300, description="Body weight in kg (20-300).")],
+        date: Annotated[str | None, Field(description="YYYY-MM-DD, today or earlier; omit for today.")] = None,
+    ) -> Any:
+        """Store a manual weigh-in in Garmin Connect for an athlete without a Garmin scale, and
+        report the stored entry. Call it only after the athlete confirmed the value. Non-destructive
+        but not idempotent: logging twice stores two weigh-ins, so check get_body_composition
+        before retrying after an error. Garmin is the place of record for weight: do not write the
+        same measurement to Hevy as well."""
+        return await body.log_weight(service, weight_kg, date)
 
     # ---------------------------------------------------------- activities
 

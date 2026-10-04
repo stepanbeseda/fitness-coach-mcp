@@ -6,8 +6,8 @@ Self-hosted MCP servery pro osobního fitness kouče v Claude:
   (upstream [`chrisdoc/hevy-mcp`](https://github.com/chrisdoc/hevy-mcp) 6.1.16).
 - **Garmin Connect**: HRV, spánek, Body Battery, training readiness, aktivity,
   výkonnostní metriky (předpovědi závodů, laktátový práh, tepové a výkonové zóny, VO2max), osobní
-  rekordy, vybavení a tvorba strukturovaných
-  workoutů naplánovaných do hodinek (vlastní server `garmin-mcp/` nad
+  rekordy, vybavení, tělesné složení (vážení, % tuku), výživa a hydratace, ruční zápis váhy a tvorba
+  strukturovaných workoutů naplánovaných do hodinek (vlastní server `garmin-mcp/` nad
   [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect) 0.3.17).
 
 Oba běží za jednou OAuth 2.1 gateway a ven jsou vystavené jen přes **vlastní Tailscale uzel**:
