@@ -10,6 +10,9 @@ repeated findings.
 - [ ] Every acceptance criterion verifiable offline has a test that
   **fails** when the feature is disabled (mutation: comment out a line, the
   test must go red).
+- [ ] Every conditional branch in a shaper (`if`, `in (…)`, type guard) has a
+  canned payload that takes it and an assertion that fails when the branch is
+  forced or removed.
 - [ ] The test measures behaviour or parsed structure, not file text —
   `"x" in source` is satisfied by a comment too.
 - [ ] Tests use only the fake Garmin client and canned payloads; they do not
@@ -44,7 +47,9 @@ repeated findings.
 - [ ] No secrets, personal paths, hostnames, account ids or deployment
   identity in versioned code or in any commit (`git log -p`); `.env`,
   `secrets/` and `data/` are not in the diff.
-- [ ] Logs and audit never contain tool arguments, results or health values.
+- [ ] Logs and audit never contain tool arguments, results or health values,
+  including what `garminconnect` itself logs for the new calls (check its
+  source; its logger runs at WARNING).
 - [ ] A new dependency has a reason in the spec and is hash-locked through
   `scripts/lock-deps.sh` (no hand-edited `requirements*.lock`).
 
