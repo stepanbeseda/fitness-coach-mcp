@@ -36,6 +36,7 @@ class FakeGarmin:
         self.uploaded: list[dict[str, Any]] = []
         self.scheduled: list[tuple[int, str]] = []
         self.unscheduled: list[int] = []
+        self.weigh_ins: list[tuple[float, str, str]] = []
         self.fail: dict[str, Exception] = {}
         self.responses: dict[str, Any] = {
             "get_training_readiness": copy.deepcopy(fx.TRAINING_READINESS),
@@ -63,6 +64,12 @@ class FakeGarmin:
             "get_personal_record": copy.deepcopy(fx.PERSONAL_RECORDS),
             "get_gear": copy.deepcopy(fx.GEAR),
             "get_gear_stats": copy.deepcopy(fx.GEAR_STATS),
+            "get_body_composition": copy.deepcopy(fx.BODY_COMPOSITION),
+            "get_daily_weigh_ins": copy.deepcopy(fx.DAILY_WEIGH_INS),
+            "get_hydration_data": copy.deepcopy(fx.HYDRATION),
+            "get_nutrition_daily_food_log": copy.deepcopy(fx.NUTRITION_FOOD_LOG),
+            "get_nutrition_daily_meals": copy.deepcopy(fx.NUTRITION_MEALS),
+            "get_nutrition_daily_settings": copy.deepcopy(fx.NUTRITION_SETTINGS),
         }
         self.profile_id: int | None = 1001  # fake; the real library sets it at login
         self.gear_stats_fail: dict[str, Exception] = {}
@@ -109,6 +116,13 @@ class FakeGarmin:
             raise self.fail["schedule_workout"]
         self.scheduled.append((workout_id, date_str))
         return {"workoutScheduleId": 31337, "calendarDate": date_str}
+
+    def add_weigh_in(self, weight: float, unitKey: str = "kg", timestamp: str = "") -> None:
+        self.calls.append(("add_weigh_in", (weight, unitKey, timestamp)))
+        if "add_weigh_in" in self.fail:
+            raise self.fail["add_weigh_in"]
+        self.weigh_ins.append((weight, unitKey, timestamp))
+        return None  # the real endpoint answers 204
 
     def unschedule_workout(self, scheduled_workout_id: int) -> Any:
         self.calls.append(("unschedule_workout", (scheduled_workout_id,)))

@@ -1,7 +1,7 @@
 # garmin-mcp (garmin-coach-mcp)
 
 Tenký MCP server nad [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) 0.3.17
-s ~18 vybranými nástroji pro kouče. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp`
+s ~21 vybranými nástroji pro kouče. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp`
 v privátní Docker síti; ven se dostane jen přes gateway, která posílá interní bearer token
 (`/run/secrets/garmin_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed).
 
@@ -17,7 +17,9 @@ v březnu 2026 rozbil; `Taxuspt/garmin_mcp` má 153 nástrojů a je zaseknutý n
 | `get_training_readiness`, `get_hrv_trend`, `get_sleep`, `get_body_battery`, `get_daily_summary`, `get_training_status` | `schedule_workout` – na datum (idempotentní) |
 | `list_activities`, `get_activity` (kola, zóny TF) | `unschedule_workout` – odebrat z kalendáře (destructive) |
 | `get_performance_metrics` – předpovědi závodů (čas + tempo/km), laktátový práh (TF, tempo, výkon), tepové zóny podle sportu, výkonové zóny na kole, endurance a hill score, týdenní trend VO2max | |
-| `get_personal_records` (osobní rekordy), `get_gear` (boty, kola: najeté km, počet aktivit, limit, vyřazené) | |
+| `get_personal_records` (osobní rekordy), `get_gear` (boty, kola: najeté km, počet aktivit, limit, vyřazené) | `log_weight` – ruční vážení v kg (volitelně datum, ne v budoucnu) pro sportovce bez Garmin váhy; není idempotentní |
+| `get_body_composition` – vážení za období (max 366 dní, default 30): váha, BMI, % tuku, svalová hmota, % vody, kostní hmota + souhrn (první/poslední, změna, 7denní průměr) | |
+| `get_nutrition` – jeden den: kalorie vs. cíl, bílkoviny/sacharidy/tuky vs. cíle, jídla, hydratace vs. cíl; co Garmin nemá, vrací `available: false` | |
 | `list_workouts`, `get_workout`, `list_scheduled_workouts` | *(žádné mazání workoutů ani úpravy aktivit)* |
 
 Cíle kroků: HR zóna 1–5, rozsah tepovky, tempo `M:SS`/km (běh), výkon W (kolo), kadence.
@@ -81,6 +83,10 @@ docker run --rm -e HOME=/tmp -v "$PWD/garmin-mcp:/work" -w /work \
   uv pip compile pyproject.toml --generate-hashes --python-version 3.13 --python-platform aarch64-unknown-linux-gnu --no-header --annotation-style line -o requirements.lock &&
   uv pip compile pyproject.toml --extra test --generate-hashes --python-version 3.13 --python-platform aarch64-unknown-linux-gnu --no-header --annotation-style line -o requirements-dev.lock'
 ```
+
+Známá nejistota: nutriční endpointy Garminu (`nutrition-service`) nejsou na reálném účtu ověřené; `get_nutrition`
+hledá hodnoty pod několika názvy klíčů a při neznámém tvaru odpovědi vrací `available: false` (hydratace a vážení
+jdou přes ověřené endpointy). Garmin je primární zdroj váhy; stejné vážení se nezapisuje i do Hevy.
 
 Známá nejistota: vlastní rozsah výkonu pro kolo posíláme jako `power.zone` + `targetValueOne/Two`
 (konvence typovaných modelů python-garminconnect); po prvním vytvoření takového workoutu ověř v Garmin

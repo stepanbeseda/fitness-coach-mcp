@@ -124,6 +124,15 @@ def main() -> int:
                 print(f"{key}: {json.dumps(data.get(key), ensure_ascii=False)[:2000]}")
         except (ValueError, AttributeError):
             print(text[:3000])
+        section("Garmin: tělesné složení za posledních 30 dní (souhrn) a dnešní výživa/hydratace")
+        text = garmin.call("get_body_composition", {})
+        try:
+            data = json.loads(text)
+            print(f"body_composition: {data.get('count')} dní, summary={json.dumps(data.get('summary'), ensure_ascii=False)}"
+                  if data.get("count") else f"body_composition: {json.dumps(data, ensure_ascii=False)[:500]}")
+        except (ValueError, AttributeError):
+            print(text[:1500])
+        print(f"nutrition: {garmin.call('get_nutrition', {})[:1500]}")
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")

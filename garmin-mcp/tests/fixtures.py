@@ -456,3 +456,65 @@ GEAR_STATS = {  # keyed by gear uuid (FakeGarmin.get_gear_stats looks the uuid u
     GEAR_UUID_BIKE: {"uuid": GEAR_UUID_BIKE, "totalDistance": 4210000.0, "totalActivities": 140, "processing": False},
     GEAR_UUID_OLD: {},
 }
+
+
+# --------------------------------------------------- body composition / nutrition (PR 02)
+
+# weight-service/weight/dateRange: grams for weight / muscle / bone, percent for fat / water, epoch ms "date".
+BODY_COMPOSITION = {
+    "startDate": "2026-09-01",
+    "endDate": DAY,
+    "dateWeightList": [
+        {"samplePk": 5, "date": 1759226400000, "calendarDate": "2026-09-30", "weight": 77800.0, "bmi": 23.8,
+         "bodyFat": 15.1, "bodyWater": 59.2, "boneMass": 3300, "muscleMass": 38100, "sourceType": "INDEX_SCALE"},
+        {"samplePk": 1, "date": 1756792800000, "calendarDate": "2026-09-02", "weight": 79100.0, "bmi": 24.2,
+         "bodyFat": 16.2, "bodyWater": 58.1, "boneMass": 3300, "muscleMass": 37500, "sourceType": "INDEX_SCALE"},
+        {"samplePk": 4, "date": 1758740400000, "calendarDate": "2026-09-24", "weight": 78900.0, "bmi": 24.1,
+         "bodyFat": None, "bodyWater": None, "boneMass": None, "muscleMass": None, "sourceType": "MANUAL"},
+        {"samplePk": 3, "date": 1758697200000, "calendarDate": "2026-09-24", "weight": 78400.0, "bmi": 24.0,
+         "bodyFat": 15.6, "bodyWater": None, "boneMass": None, "muscleMass": None, "sourceType": "INDEX_SCALE"},
+        {"samplePk": 2, "date": 1757484000000, "calendarDate": "2026-09-10", "weight": 78600.0, "bmi": None,
+         "bodyFat": 15.9, "bodyWater": None, "boneMass": None, "muscleMass": None, "sourceType": "MANUAL"},
+        {"samplePk": 6, "date": 1759041600000, "calendarDate": "2026-09-28", "weight": 78000.0, "bmi": 23.9,
+         "bodyFat": 15.3, "bodyWater": 59.0, "boneMass": 3300, "muscleMass": 38000, "sourceType": "INDEX_SCALE"},
+    ],
+    "totalAverage": {"from": 1756684800000, "until": 1759276799999, "weight": 78466.7, "bmi": 24.0,
+                     "bodyFat": 15.6, "bodyWater": 58.8, "boneMass": 3300, "muscleMass": 37866.7},
+}
+
+# weight-service/weight/dayview/<date> after a manual weigh-in of 77.8 kg.
+DAILY_WEIGH_INS = {
+    "startDate": DAY,
+    "endDate": DAY,
+    "dateWeightList": [
+        {"samplePk": 7, "date": 1759215600000, "calendarDate": DAY, "weight": 78200.0, "bmi": 23.9,
+         "bodyFat": 15.2, "bodyWater": 59.1, "boneMass": 3300, "muscleMass": 38000, "sourceType": "INDEX_SCALE"},
+        {"samplePk": 8, "date": 1759240800000, "calendarDate": DAY, "weight": 77800.0, "bmi": 23.8,
+         "bodyFat": None, "bodyWater": None, "boneMass": None, "muscleMass": None, "sourceType": "MANUAL"},
+    ],
+    "totalAverage": {"weight": 78000.0, "bmi": 23.85},
+}
+
+# usersummary-service/usersummary/hydration/daily/<date>
+HYDRATION = {"userId": 1, "calendarDate": DAY, "valueInML": 1750.0, "goalInML": 2800.0, "dailyAverageinML": 2100.0,
+             "lastEntryTimestampLocal": "2026-09-30T14:05:00.0", "sweatLossInML": 420.0, "activityIntakeInML": 500.0}
+
+# nutrition-service/*: the real payload shape is unverified (plan section 5). These canned payloads use
+# plausible key names; the shaper searches several spellings, so the tests also cover flat variants.
+NUTRITION_FOOD_LOG = {
+    "calendarDate": DAY,
+    "nutritionSummary": {"totalCalories": 2150.4, "totalProtein": 142.5, "totalCarbohydrates": 231.0, "totalFat": 71.25,
+                         "fiber": 28.0},
+}
+NUTRITION_MEALS = {
+    "calendarDate": DAY,
+    "meals": [
+        {"mealType": "BREAKFAST", "calories": 520, "protein": 32.0, "carbs": 60.0, "fat": 15.0, "foods": [{}, {}, {}]},
+        {"mealType": "LUNCH", "calories": 830, "protein": 55.0, "carbs": 90.0, "fat": 28.0, "foods": [{}, {}, {}, {}]},
+        {"mealType": "DINNER", "calories": 800.4, "protein": 55.5, "carbs": 81.0, "fat": 28.25, "foods": []},
+        {"mealType": "SNACK"},
+        {"notes": "no name, no calories"},
+    ],
+}
+NUTRITION_SETTINGS = {"calendarDate": DAY, "calorieGoal": 2400, "proteinGoal": 150, "carbohydrateGoal": 270,
+                      "fatGoal": 80}

@@ -34,3 +34,10 @@ agents read it before working; general lessons are in
   and say "re-wrap" where a comment must change. (PR 01, spec check W1–W3)
 
 ## Operational lessons
+
+- **`docker compose build` with stdout redirected needs an explicit progress mode.** A newer
+  Compose picks the tty renderer when stderr is a terminal and then fails on the redirected
+  stdout with `failed to get console: provided file is not a console`. `scripts/e2e-test.sh`
+  builds with `--progress=plain` into a log file since PR 02; use the same in any new script
+  that silences a build. (PR 02, local check)
+
