@@ -6,7 +6,7 @@
 #   scripts/setup-secrets.sh ts-authkey      set the Tailscale auth key (first start only)
 #   scripts/setup-secrets.sh password        change the gateway login password
 #   scripts/setup-secrets.sh totp            enrol a new TOTP authenticator
-#   scripts/setup-secrets.sh backend-tokens  rotate the gateway <-> backend secrets
+#   scripts/setup-secrets.sh backend-tokens  rotate the gateway <-> backend secrets (hevy, garmin, coach)
 #   scripts/setup-secrets.sh fix-perms       re-apply ownership/permissions
 #
 # Secrets are typed with hidden input and written directly to files (mode 0640,
@@ -127,10 +127,31 @@ cmd_totp() {
   die "TOTP neověřeno, nic jsem neuložil."
 }
 
+new_backend_token() {
+  write_secret "$1" "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+}
+
 cmd_backend_tokens() {
-  write_secret hevy_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-  write_secret garmin_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-  recreate hevy-mcp garmin-mcp gateway
+  new_backend_token hevy_backend_token
+  new_backend_token garmin_backend_token
+  new_backend_token coach_backend_token
+  recreate hevy-mcp garmin-mcp coach-mcp gateway
+}
+
+# Create only the backend tokens that are missing (an existing install gains the coach
+# token without rotating the others) and recreate just those backends plus the gateway.
+ensure_backend_tokens() {
+  local b created=()
+  for b in hevy garmin coach; do
+    if ! has_secret "${b}_backend_token"; then
+      new_backend_token "${b}_backend_token"
+      created+=("${b}-mcp")
+    fi
+  done
+  if (( ${#created[@]} > 0 )); then
+    recreate "${created[@]}" gateway
+  fi
+  return 0
 }
 
 cmd_fix_perms() {
@@ -145,7 +166,7 @@ cmd_fix_perms() {
 cmd_all() {
   require_env
   ensure_dir
-  has_secret hevy_backend_token && has_secret garmin_backend_token || cmd_backend_tokens
+  ensure_backend_tokens
   has_secret ts_authkey || cmd_ts_authkey
   has_secret hevy_api_key || cmd_hevy_key
   has_secret gateway_password_hash || cmd_password

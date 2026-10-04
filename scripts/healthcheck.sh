@@ -6,7 +6,8 @@
 #
 # Checks: container health, Tailscale node + Funnel, OAuth discovery over the
 # tailnet and through the public Funnel path, the login page not being public,
-# Garmin tokens, the Hevy API key and drift of the pinned Claude client metadata.
+# Garmin tokens, the coach memory database, the Hevy API key and drift of the
+# pinned Claude client metadata.
 source "$(dirname "$0")/lib.sh"
 require_docker
 require_env
@@ -19,7 +20,7 @@ report_warn() { warn "$*"; }
 report_fail() { fail "$*"; problems=$((problems + 1)); }
 
 # 1. containers
-for svc in ts gateway hevy-mcp garmin-mcp; do
+for svc in ts gateway hevy-mcp garmin-mcp coach-mcp; do
   cid="$(dc ps -q "$svc" 2>/dev/null || true)"
   if [[ -z "$cid" ]]; then
     report_fail "$svc: neběží"
@@ -56,12 +57,14 @@ if [[ "$(jq -r '.issuer // empty' <<<"$meta" 2>/dev/null)" == "$PUBLIC_BASE_URL"
 else
   report_fail "tailnet: OAuth metadata nedostupná ($PUBLIC_BASE_URL)"
 fi
-challenge="$(curl -sS --max-time 10 -o /dev/null -D - -X POST "$PUBLIC_BASE_URL/hevy/mcp" 2>/dev/null | tr -d '\r' || true)"
-if grep -q '^HTTP/[0-9.]* 401' <<<"$challenge" && grep -qi '^www-authenticate: Bearer resource_metadata=' <<<"$challenge"; then
-  report_ok "tailnet: MCP bez tokenu vrací 401 + resource_metadata"
-else
-  report_fail "tailnet: MCP endpoint nevrací očekávanou 401 výzvu"
-fi
+for b in hevy garmin coach; do
+  challenge="$(curl -sS --max-time 10 -o /dev/null -D - -X POST "$PUBLIC_BASE_URL/$b/mcp" 2>/dev/null | tr -d '\r' || true)"
+  if grep -q '^HTTP/[0-9.]* 401' <<<"$challenge" && grep -qi '^www-authenticate: Bearer resource_metadata=' <<<"$challenge"; then
+    report_ok "tailnet: /$b/mcp bez tokenu vrací 401 + resource_metadata"
+  else
+    report_fail "tailnet: /$b/mcp nevrací očekávanou 401 výzvu"
+  fi
+done
 
 # 4. public path (Funnel) resolved via public DNS
 public_ip="$(curl -fsS --max-time 10 -H 'accept: application/dns-json' \
@@ -84,6 +87,13 @@ if dc exec -T garmin-mcp python -m garmin_coach_mcp.login --check >/dev/null 2>&
   report_ok "garmin: tokeny platné"
 else
   report_fail "garmin: tokeny chybí nebo expirovaly → scripts/garmin-login.sh"
+fi
+
+# 5b. coach memory database
+if dc exec -T coach-mcp python -c "import json,sys,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)); sys.exit(0 if d.get('db') == 'ok' else 1)" >/dev/null 2>&1; then
+  report_ok "coach: databáze OK"
+else
+  report_fail "coach: databáze nedostupná → docker compose logs coach-mcp"
 fi
 
 # 6. Hevy API key

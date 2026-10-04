@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against the running stack, over the tailnet (MagicDNS):
-# tools/list on both endpoints, the last 3 Hevy workouts, today's Garmin
-# recovery data, race predictions and heart-rate zones. Also checks that the
-# public (Funnel) path refuses tokens from non-Anthropic networks.
+# tools/list on all three endpoints, the last 3 Hevy workouts, today's Garmin
+# recovery data, race predictions and heart-rate zones, the coach memory summary.
+# Also checks that the public (Funnel) path refuses tokens from non-Anthropic
+# networks.
 #
 #   scripts/smoke-test.sh
 source "$(dirname "$0")/lib.sh"
@@ -15,10 +16,11 @@ mint() {
 
 HEVY_TOKEN="$(mint hevy)" || die "mint-token hevy selhal (běží gateway?)"
 GARMIN_TOKEN="$(mint garmin)" || die "mint-token garmin selhal"
+COACH_TOKEN="$(mint coach)" || die "mint-token coach selhal"
 
 info "Test přes tailnet: $PUBLIC_BASE_URL (MagicDNS)"
 status=0
-python3 "$REPO_ROOT/scripts/smoke_test.py" "$PUBLIC_BASE_URL" "$HEVY_TOKEN" "$GARMIN_TOKEN" || status=1
+python3 "$REPO_ROOT/scripts/smoke_test.py" "$PUBLIC_BASE_URL" "$HEVY_TOKEN" "$GARMIN_TOKEN" "$COACH_TOKEN" || status=1
 
 echo
 info "Test veřejné cesty (Funnel) z VPS: token z ne-Anthropic IP musí být odmítnut"
