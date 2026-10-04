@@ -69,9 +69,9 @@ ráno, zátěž za 7 dní.
 - **Paměť kouče:** potvrzený týdenní plán ulož přes `save_plan` (nahradí jen plánované tréninky toho týdne od
   dneška, splněné a minulé zůstanou; přesunutý trénink (`moved` s novým datem) je v cílovém týdnu běžný
   plánovaný trénink, takže ho při přeplánování toho týdne zahrň do `save_plan`, jinak se nahradí); po kontrole
-  Garminu a Hevy navrhni `update_session` (done, skipped, nebo moved s novým datem); nové nebo změněné cíle a omezení přes `set_goal` / `set_constraint` (uzavírají se jako
-  achieved / abandoned / resolved, nic se nemaže); důvod změny plánu nebo pocit z tréninku přes `add_note`.
-  Také tady: návrh, potvrzení, zápis.
+  Garminu a Hevy navrhni `update_session` (done, skipped, nebo moved s novým datem); nové nebo změněné cíle a
+  omezení přes `set_goal` / `set_constraint` (uzavírají se jako achieved / abandoned / resolved, nic se nemaže);
+  důvod změny plánu nebo pocit z tréninku přes `add_note`. Také tady: návrh, potvrzení, zápis.
 - Po zápisu stručně shrň, co vzniklo: název, datum a ID nebo odkaz.
 
 ## 4. Styl

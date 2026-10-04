@@ -300,21 +300,29 @@ Výjimka je `fitness-coach-mcp_coach-data`: je to **jediná kopie** cílů, omez
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data:ro --entrypoint tar fitness-coach-mcp/coach-mcp:0.1.0 -C /data -czf - . > coach-data.tgz
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach:ro --entrypoint tar fitness-coach-mcp/coach-mcp:0.1.0 -C /data/coach -czf - . > coach-data.tgz
 docker compose start coach-mcp
 ```
 
-Obnova **nahradí celý obsah** volume: smaže aktuální databázi i případný zbytek žurnálu `coach.db-journal`
-po pádu služby (SQLite by ho jinak po startu vrátil do obnoveného souboru a poškodil ho) a rozbalí archiv.
-Pokud chceš současný stav zachovat, udělej nejdřív zálohu výše. Služba musí stát; `-i` předá archiv na stdin.
+Obnova **nahradí celý obsah** volume archivem `coach-data.tgz`; služba přitom musí stát. První `docker run`
+nejdřív uloží současný stav do nového souboru `coach-data-pred-obnovou-<datum-čas>.tgz` (jiné jméno než
+obnovovaný archiv, takže ho nepřepíše). Druhý `docker run` archiv celý rozbalí do dočasného adresáře a ověří,
+že obsahuje neprázdný `coach.db`; teprve potom smaže obsah volume (včetně případného zbytku žurnálu
+`coach.db-journal` po pádu služby, který by SQLite jinak vrátil do obnoveného souboru) a nahradí ho.
+Poškozený nebo neúplný archiv skončí chybou a volume zůstane beze změny. Když některý příkaz skončí chybou,
+nepokračuj dalším a služba se po `docker compose start coach-mcp` spustí se stávajícími daty. Na novém
+hostu nejdřív spusť stack podle Instalace (`docker compose up -d --build`), aby volume vytvořil Compose, a
+teprve potom obnovuj.
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm -i --network none -v fitness-coach-mcp_coach-data:/data --entrypoint sh fitness-coach-mcp/coach-mcp:0.1.0 -c 'find /data -mindepth 1 -delete && tar -C /data -xzf -' < coach-data.tgz
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach:ro --entrypoint tar fitness-coach-mcp/coach-mcp:0.1.0 -C /data/coach -czf - . > "coach-data-pred-obnovou-$(date +%Y%m%d-%H%M%S).tgz"
+docker run --rm -i --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint sh fitness-coach-mcp/coach-mcp:0.1.0 -c 'mkdir /tmp/r && tar -C /tmp/r -xzf - && test -s /tmp/r/coach.db && find /data/coach -mindepth 1 -delete && cp -a /tmp/r/. /data/coach/' < coach-data.tgz
 docker compose start coach-mcp
 ```
 
-Archiv `coach-data.tgz` obsahuje osobní tréninková data: ulož ho mimo repo a mimo veřejná úložiště.
+Archivy `coach-data.tgz` i `coach-data-pred-obnovou-*.tgz` obsahují osobní tréninková data: ulož je mimo repo
+a mimo veřejná úložiště.
 
 ## Troubleshooting
 

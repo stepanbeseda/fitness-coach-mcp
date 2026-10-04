@@ -128,7 +128,11 @@ cmd_totp() {
 }
 
 new_backend_token() {
-  write_secret "$1" "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  local value
+  value="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+    || die "Generování interního tokenu $1 selhalo, nic jsem neuložil."
+  [[ ${#value} -ge 32 ]] || die "Generování interního tokenu $1 selhalo, nic jsem neuložil."
+  write_secret "$1" "$value"
 }
 
 cmd_backend_tokens() {
