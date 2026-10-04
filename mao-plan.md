@@ -68,7 +68,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 
 | NN | Name | Depends on | Status |
 |---|---|---|---|
-| 01 | Performance metrics and race predictions | — | planned |
+| 01 | Performance metrics and race predictions | — | done |
 | 02 | Body composition, hydration and nutrition | — | planned |
 | 03 | Coach memory server | — | planned |
 | 04 | Morning briefing and alerts | 03 | planned |
@@ -122,6 +122,25 @@ curves, badges and challenges.
    predictions and heart-rate zones.
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 4).
+
+**Delivered:** 2026-10-04, PR #1 (`mao/pr01-performance-metrics`), merged
+into `main` as `6032986`. New module
+`garmin-mcp/src/garmin_coach_mcp/performance.py` with the three read-only
+tools registered in `server.py`; 28 new tests in
+`garmin-mcp/tests/test_performance.py` plus canned payloads in
+`fixtures.py` / `conftest.py`; docs and `scripts/smoke_test.py` updated; no
+new dependency. Criteria 1–6 verified offline (`docker build --target test
+garmin-mcp`: 104 passed; gateway test build and `scripts/e2e-test.sh`
+green, Garmin `tools/list` reports 18 tools). Criterion 7 is still open:
+`scripts/smoke-test.sh` on the test host has not been run — it needs an
+approved deploy of `garmin-mcp` to the live stack and is the only check of
+the real Garmin payload shapes (lactate-threshold speed unit, personal-record
+`typeId` mapping). Deviation accepted in review: race times use the
+existing `formatting.clock()` output (`21:30`, `1:39:30`), not zero-padded
+`H:MM:SS`. Non-blocking follow-ups from the review: N1 — the `activityType`
+guard in `shape_personal_records` has no test; N2 — `garminconnect` logs a
+gear UUID at WARNING on a 404 in `get_gear_stats` (quiet the logger or
+accept it explicitly). Lessons recorded in `.claude/mao/lessons.md`.
 
 ### PR 02 — Body composition, hydration and nutrition
 
