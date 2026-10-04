@@ -131,11 +131,16 @@ tools registered in `server.py`; 28 new tests in
 `fixtures.py` / `conftest.py`; docs and `scripts/smoke_test.py` updated; no
 new dependency. Criteria 1–6 verified offline (`docker build --target test
 garmin-mcp`: 104 passed; gateway test build and `scripts/e2e-test.sh`
-green, Garmin `tools/list` reports 18 tools). Criterion 7 is still open:
-`scripts/smoke-test.sh` on the test host has not been run — it needs an
-approved deploy of `garmin-mcp` to the live stack and is the only check of
-the real Garmin payload shapes (lactate-threshold speed unit, personal-record
-`typeId` mapping). Deviation accepted in review: race times use the
+green, Garmin `tools/list` reports 18 tools). Criterion 7 verified
+2026-10-04 on the test host after the owner deployed `garmin-mcp` to the
+live stack: `scripts/smoke-test.sh` printed `race_predictions` (5 km, 10 km,
+half marathon, marathon with time and pace per km, internally consistent)
+and `heart_rate_zones` (one `HR_MAX` profile with max and threshold HR and
+five contiguous zones) from the real account. Still unconfirmed on a real
+account because the smoke test does not print them: the lactate-threshold
+speed unit heuristic and the personal-record `typeId` mapping (spec risk
+R1) — check them the first time the coach calls those sections live.
+Deviation accepted in review: race times use the
 existing `formatting.clock()` output (`21:30`, `1:39:30`), not zero-padded
 `H:MM:SS`. Non-blocking follow-ups from the review: N1 — the `activityType`
 guard in `shape_personal_records` has no test; N2 — `garminconnect` logs a
