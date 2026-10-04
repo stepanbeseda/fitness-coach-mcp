@@ -196,12 +196,12 @@ def get_plan(
         raise ToolError(f"date range too long (max {MAX_RANGE_DAYS} days)")
 
     rows = store.sessions_between(start, end, include_superseded=include_superseded)
-    counted = [r for r in rows if r["status"] != "superseded"]
-    count = {s: sum(1 for r in counted if r["status"] == s) for s in ("planned", "done", "skipped", "moved")}
+    # Counts are per status, so superseded rows (listed only on request) never enter them.
+    count = {s: sum(1 for r in rows if r["status"] == s) for s in ("planned", "done", "skipped", "moved")}
     finished = count["done"] + count["skipped"]
     adherence = {
         **count,
-        "overdue_planned": sum(1 for r in counted if r["status"] == "planned" and r["date"] < today.isoformat()),
+        "overdue_planned": sum(1 for r in rows if r["status"] == "planned" and r["date"] < today.isoformat()),
         "completion_rate": round(count["done"] / finished, 2) if finished else None,
     }
     return {

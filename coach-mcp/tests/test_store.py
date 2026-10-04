@@ -70,6 +70,25 @@ def test_failed_migration_rolls_back(db_path, monkeypatch):
     assert "extra" not in _tables(db_path)
 
 
+def test_failed_migration_leaves_no_open_transaction(db_path, monkeypatch):
+    """The failure path rolls back explicitly: no connection is closed mid-transaction."""
+    Store(db_path)
+    open_at_close: list[bool] = []
+    real_connect = sqlite3.connect
+
+    class Recording(sqlite3.Connection):
+        def close(self):
+            open_at_close.append(self.in_transaction)
+            super().close()
+
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: real_connect(*a, factory=Recording, **kw))
+    broken = (MIGRATIONS[0], "CREATE TABLE extra (a INTEGER); INSERT INTO missing_table VALUES (1);")
+    monkeypatch.setattr(store_module, "MIGRATIONS", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        Store(db_path)
+    assert open_at_close == [False]
+
+
 def test_migration_applies_pending_entries_in_order(db_path, monkeypatch):
     Store(db_path)
     extended = (MIGRATIONS[0], "CREATE TABLE extra (a INTEGER);")
