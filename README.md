@@ -9,8 +9,10 @@ Self-hosted MCP servery pro osobního fitness kouče v Claude:
   rekordy, vybavení, tělesné složení (vážení, % tuku), výživa a hydratace, ruční zápis váhy a tvorba
   strukturovaných workoutů naplánovaných do hodinek (vlastní server `garmin-mcp/` nad
   [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect) 0.3.17).
+- **Kouč (paměť)**: cíle, omezení (zranění, dostupné dny, vybavení), tréninkový plán po dnech se stavem
+  a deník poznámek, aby si kouč pamatoval stav mezi konverzacemi (vlastní server `coach-mcp/` se SQLite).
 
-Oba běží za jednou OAuth 2.1 gateway a ven jsou vystavené jen přes **vlastní Tailscale uzel**:
+Všechny tři běží za jednou OAuth 2.1 gateway a ven jsou vystavené jen přes **vlastní Tailscale uzel**:
 Funnel na portu 443 pro claude.ai (web, mobil, Desktop) a tailnet pro Claude Code / lokální Claude Desktop.
 
 ```
@@ -24,8 +26,10 @@ Claude Code / mcp-remote (Mac, tailnet) ──WireGuard────────�
  ├─ gateway ────── OAuth 2.1 AS + resource server + reverse proxy + audit + rate limit (Python)
  │                   /hevy/mcp   → hevy-mcp:3000/mcp
  │                   /garmin/mcp → garmin-mcp:8000/mcp
+ │                   /coach/mcp  → coach-mcp:8000/mcp
  ├─ hevy-mcp ───── oficiální image (Streamable HTTP), privátní síť "mcp"
- └─ garmin-mcp ─── vlastní server, tokeny ve volume garmin-tokens, privátní síť "mcp"
+ ├─ garmin-mcp ─── vlastní server, tokeny ve volume garmin-tokens, privátní síť "mcp"
+ └─ coach-mcp ──── vlastní server, SQLite ve volume coach-data, privátní síť "mcp"
 ```
 
 URL konektorů (stejné z claude.ai i z tailnetu, MagicDNS v tailnetu vrací 100.x adresu). `<tailnet>` je
@@ -33,6 +37,7 @@ DNS přípona tvého tailnetu: `tailscale status --json | jq -r .MagicDNSSuffix`
 
 - `https://fitness-mcp.<tailnet>/hevy/mcp`
 - `https://fitness-mcp.<tailnet>/garmin/mcp`
+- `https://fitness-mcp.<tailnet>/coach/mcp`
 
 Proč vlastní uzel a ne Funnel na hostu: claude.ai volá konektory jen na port 443 a Funnel se zapíná pro
 celý port. Vlastní uzel nechá cokoli, co host na :443 už servíruje (třeba jen do tailnetu), netknuté, a
@@ -134,8 +139,8 @@ scripts/garmin-login.sh --check
 ### 7. Ověření
 
 ```bash
-scripts/healthcheck.sh             # kontejnery, uzel, Funnel, discovery, login jen z tailnetu, Garmin, Hevy
-scripts/smoke-test.sh              # tools/list na obou endpointech, 3 poslední Hevy workouty, dnešní HRV/spánek, předpovědi závodů a tepové zóny
+scripts/healthcheck.sh             # kontejnery, uzel, Funnel, discovery, login jen z tailnetu, Garmin, Hevy, databáze kouče
+scripts/smoke-test.sh              # tools/list na všech třech endpointech, souhrn paměti kouče, 3 poslední Hevy workouty, dnešní HRV/spánek, předpovědi závodů a tepové zóny
 ```
 
 ## Funnel
@@ -158,7 +163,8 @@ scripts/smoke-test.sh              # tools/list na obou endpointech, 3 poslední
    prázdné (claude.ai se identifikuje přes CIMD) → **Add** → **Connect**.
 3. Otevře se přihlašovací stránka gateway: zadej heslo + TOTP kód → **Povolit**.
 4. Totéž pro `Garmin`, URL `https://fitness-mcp.<tailnet>/garmin/mcp`.
-5. V projektu „Fitness kouč“ oba konektory zapni. Custom Instructions jsou v
+5. Totéž pro `Kouč`, URL `https://fitness-mcp.<tailnet>/coach/mcp`.
+6. V projektu „Fitness kouč“ všechny tři konektory zapni. Custom Instructions jsou v
    [`docs/coach-instructions.md`](docs/coach-instructions.md).
 
 Konektory se automaticky objeví v Claude Desktop i v mobilní aplikaci (volání jdou vždy z cloudu
@@ -170,6 +176,7 @@ token (90 dní bez použití) nebo když grant zrušíš.
 ```bash
 claude mcp add --transport http hevy   https://fitness-mcp.<tailnet>/hevy/mcp
 claude mcp add --transport http garmin https://fitness-mcp.<tailnet>/garmin/mcp
+claude mcp add --transport http coach  https://fitness-mcp.<tailnet>/coach/mcp
 # v Claude Code: /mcp → vyber server → Authenticate (otevře prohlížeč s loginem gateway)
 ```
 
@@ -196,6 +203,12 @@ Konektory z claude.ai fungují v Desktopu samy. Pokud chceš spojení čistě p�
       "args": ["-y", "mcp-remote@0.14.3", "https://fitness-mcp.<tailnet>/garmin/mcp",
                "--static-oauth-client-info", "{\"client_id\":\"mcp-remote\"}",
                "--resource", "https://fitness-mcp.<tailnet>/garmin/mcp"]
+    },
+    "coach-tailnet": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@0.14.3", "https://fitness-mcp.<tailnet>/coach/mcp",
+               "--static-oauth-client-info", "{\"client_id\":\"mcp-remote\"}",
+               "--resource", "https://fitness-mcp.<tailnet>/coach/mcp"]
     }
   }
 }
@@ -276,10 +289,31 @@ Digest pro nový tag: `docker buildx imagetools inspect <image:tag>` (řádek `D
 
 ### Zálohy
 
-Stav je ve volumes `fitness-coach-mcp_gateway-data` (granty, audit), `fitness-coach-mcp_garmin-tokens` a
-`fitness-coach-mcp_ts-state` + adresář `secrets/`. Při ztrátě stačí znovu `setup-secrets.sh`,
-`garmin-login.sh` a znovu připojit konektory. Uzel Tailscale je pak potřeba znovu přihlásit novým auth
-key.
+Stav je ve volumes `fitness-coach-mcp_gateway-data` (granty, audit), `fitness-coach-mcp_garmin-tokens`,
+`fitness-coach-mcp_coach-data` a `fitness-coach-mcp_ts-state` + adresář `secrets/`. Při ztrátě stačí
+znovu `setup-secrets.sh`, `garmin-login.sh` a znovu připojit konektory. Uzel Tailscale je pak potřeba
+znovu přihlásit novým auth key.
+
+Výjimka je `fitness-coach-mcp_coach-data`: je to **jediná kopie** cílů, omezení, plánu a poznámek kouče a
+žádný skript ji nedokáže znovu vytvořit. Záloha je konzistentní, když se `coach-mcp` na chvíli zastaví
+(databáze je jediný soubor; SQLite používá klasický rollback žurnál, ne WAL):
+
+```bash
+docker compose stop coach-mcp
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data:ro --entrypoint tar fitness-coach-mcp/coach-mcp:0.1.0 -C /data -czf - . > coach-data.tgz
+docker compose start coach-mcp
+```
+
+Obnova se dělá při zastavené službě (`-i` předá archiv na stdin, volume proto není `:ro`); potom se služba
+spustí:
+
+```bash
+docker compose stop coach-mcp
+docker run --rm -i --network none -v fitness-coach-mcp_coach-data:/data --entrypoint tar fitness-coach-mcp/coach-mcp:0.1.0 -C /data -xzf - < coach-data.tgz
+docker compose start coach-mcp
+```
+
+Archiv `coach-data.tgz` obsahuje osobní tréninková data: ulož ho mimo repo a mimo veřejná úložiště.
 
 ## Troubleshooting
 
@@ -292,6 +326,8 @@ key.
 | Konektor po čase přestane fungovat a chce login | Refresh token vypršel nebo grant byl zrušen (`scripts/admin.sh grants list --all` ukáže důvod, např. `refresh token reuse`). Připoj znovu z tailnetu. |
 | MCP volání vrací 403 | Token přišel přes Funnel z IP mimo `160.79.104.0/21`. U claude.ai to znamená, že Anthropic změnil rozsah: ověř [docs](https://platform.claude.com/docs/en/api/ip-addresses) a uprav `FUNNEL_TOKEN_CIDRS` v `.env`. |
 | MCP volání vrací 502 `backend_misconfigured` | Nesedí interní token gateway ↔ backend → `scripts/setup-secrets.sh backend-tokens`. |
+| Gateway se po aktualizaci nespustí: `cannot read secret /run/secrets/coach_backend_token` | `scripts/setup-secrets.sh` (doplní chybějící interní token) a pak `docker compose up -d --build coach-mcp gateway`. |
+| `coach-mcp` unhealthy, v logu `database schema version N is newer` | Běží starší image než data: nasaď znovu novější verzi; volume `coach-data` nemaž. |
 | Hevy nástroje vrací 401 | Neplatný Hevy klíč nebo vypršelo Hevy PRO → `scripts/setup-secrets.sh hevy-key`. |
 | Garmin nástroje: „spusť scripts/garmin-login.sh“ | Tokeny chybí nebo expirovaly → `scripts/garmin-login.sh`. |
 | Garmin login: 429 / 403 od Cloudflare | Blokace z datacentrové IP → přihlas se na Macu a importuj tokeny (viz výše). |
@@ -310,6 +346,7 @@ tailscale/               sidecar image (non-root) + serve.json s Funnelem
 gateway/                 OAuth 2.1 gateway (Python, Starlette), testy, config.toml
 hevy-mcp/                wrapper nad oficiální image (secrets ze souborů, telemetrie vypnutá)
 garmin-mcp/              Garmin MCP server (Python, python-garminconnect + MCP SDK), testy
+coach-mcp/               paměť kouče (Python, MCP SDK, SQLite), testy
 scripts/                 setup-secrets, garmin-login, healthcheck, smoke-test, e2e-test, admin, check-updates, lock-deps
 docs/coach-instructions.md   Custom Instructions pro Claude projekt „Fitness kouč“
 ```

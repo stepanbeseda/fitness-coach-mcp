@@ -5,7 +5,7 @@ takes precedence over the skill's general procedure. Do not copy the repo's
 own rules (`README.md`) here — only link to them.
 
 Stack: Python >= 3.13 MCP servers in Docker (`garmin-mcp/`, `gateway/`,
-`hevy-mcp/`), hash-locked dependencies, no UI. The host has only Python 3.12,
+`hevy-mcp/`, `coach-mcp/`), hash-locked dependencies, no UI. The host has only Python 3.12,
 no pytest/ruff/uv/just/make — tests run inside Docker.
 
 ## Files
@@ -30,16 +30,26 @@ no pytest/ruff/uv/just/make — tests run inside Docker.
 
 All commands run from ROOT (`/home/ubuntu/dev/fitness-coach-mcp`).
 
-- Check (must be green before the PR), all three:
+- `docker-compose.yml` fixes `name: fitness-coach-mcp`, so `docker compose`
+  without `-p` targets the live project from any directory. When a PR's code
+  lives in a separate worktree, run only `docker build`, `docker run`,
+  `scripts/lock-deps.sh` and `scripts/e2e-test.sh` there;
+  `scripts/setup-secrets.sh`, `healthcheck.sh`, `smoke-test.sh`, `admin.sh` and
+  `garmin-login.sh` run only in the live checkout.
+
+- Check (must be green before the PR), all four:
   1. `docker build --target test garmin-mcp`
   2. `docker build --target test gateway`
-  3. `scripts/e2e-test.sh` (builds all images, separate compose project
+  3. `docker build --target test coach-mcp`
+  4. `scripts/e2e-test.sh` (builds all images, separate compose project
      `fcm-e2e`, throwaway secrets, no internet/Tailscale; ~50 s; ends with
      "E2E OK")
   A new service adds its own `docker build --target test <svc>`. Docker layer
   cache can re-print a cached result for an unchanged tree; that is fine.
 - Targeted tests (tests are baked into the image, rebuild after edits):
   `docker build --target test -t fcm-garmin-test garmin-mcp && docker run --rm --network none --entrypoint python fcm-garmin-test -m pytest tests/<file>.py -k <expr>`
+  and for coach-mcp:
+  `docker build --target test -t fcm-coach-test coach-mcp && docker run --rm --network none --entrypoint python fcm-coach-test -m pytest tests/<file>.py -k <expr>`
 - Dependency locking: change dependencies only via `scripts/lock-deps.sh`
   (regenerates the `requirements*.lock` hash locks); never edit a lock by hand.
 - Forbidden (this machine runs the LIVE stack, compose project
@@ -69,13 +79,13 @@ All commands run from ROOT (`/home/ubuntu/dev/fitness-coach-mcp`).
 ## Test host
 
 Profile `live` = the live docker compose stack on this machine (project
-`fitness-coach-mcp`: `ts`, `gateway`, `hevy-mcp`, `garmin-mcp`).
+`fitness-coach-mcp`: `ts`, `gateway`, `hevy-mcp`, `garmin-mcp`, `coach-mcp`).
 
 - Plan criteria marked "On the test host" are verified with
-  `scripts/smoke-test.sh` (tools/list on both endpoints through the tailnet,
+  `scripts/smoke-test.sh` (tools/list on all three endpoints through the tailnet,
   last 3 Hevy workouts, today's Garmin recovery snapshot).
 - The worker verifies the profile is up: `docker compose ps` in ROOT shows
-  `ts`, `gateway`, `hevy-mcp`, `garmin-mcp` all healthy, and the garmin
+  `ts`, `gateway`, `hevy-mcp`, `garmin-mcp`, `coach-mcp` all healthy, and the garmin
   `/healthz` returns `{"status":"ok","garmin_auth":"ok"}`.
 - EVERY deploy to the host (`docker compose up -d --build <svc>` or anything
   that restarts live services) is stop-and-ask; smoke-test criteria are
@@ -116,7 +126,10 @@ sections 1 and 2; `README.md` (Czech, operations and architecture);
   `GarminService.call` / `call_many`).
 - A tool-list change touches `garmin-mcp/tests/test_http.py` (`EXPECTED_TOOLS`,
   `WRITE_TOOLS`), `garmin-mcp/README.md` tool table, `README.md`,
-  `docs/coach-instructions.md` and the `INSTRUCTIONS` string in `server.py`.
+  `docs/coach-instructions.md` and the `INSTRUCTIONS` string in `server.py`;
+  for coach-mcp: `coach-mcp/tests/test_http.py` (`EXPECTED_TOOLS`,
+  `WRITE_TOOLS`), `coach-mcp/README.md`, `INSTRUCTIONS` in
+  `coach-mcp/src/coach_mcp/server.py`.
 - Logs and audit never contain arguments, results or health values.
 
 ### Worker (additional spec checks)
@@ -133,5 +146,5 @@ sections 1 and 2; `README.md` (Czech, operations and architecture);
 
 ### Reviewer (repo rules)
 - Check plan section 1 (curated tools, log privacy, supply chain, language)
-  and section 2 conditions; confirm the three-command check was run and no
+  and section 2 conditions; confirm the four-command check was run and no
   secrets or hostnames are in the diff.
