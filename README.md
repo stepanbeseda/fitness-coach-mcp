@@ -304,12 +304,13 @@ docker run --rm --network none -v fitness-coach-mcp_coach-data:/data:ro --entryp
 docker compose start coach-mcp
 ```
 
-Obnova se dělá při zastavené službě (`-i` předá archiv na stdin, volume proto není `:ro`); potom se služba
-spustí:
+Obnova **nahradí celý obsah** volume: smaže aktuální databázi i případný zbytek žurnálu `coach.db-journal`
+po pádu služby (SQLite by ho jinak po startu vrátil do obnoveného souboru a poškodil ho) a rozbalí archiv.
+Pokud chceš současný stav zachovat, udělej nejdřív zálohu výše. Služba musí stát; `-i` předá archiv na stdin.
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm -i --network none -v fitness-coach-mcp_coach-data:/data --entrypoint tar fitness-coach-mcp/coach-mcp:0.1.0 -C /data -xzf - < coach-data.tgz
+docker run --rm -i --network none -v fitness-coach-mcp_coach-data:/data --entrypoint sh fitness-coach-mcp/coach-mcp:0.1.0 -c 'find /data -mindepth 1 -delete && tar -C /data -xzf -' < coach-data.tgz
 docker compose start coach-mcp
 ```
 

@@ -313,6 +313,8 @@ def test_get_plan_defaults_to_this_iso_week(store):
 def test_get_plan_rejects_bad_ranges(store):
     assert "is not a valid date" in err(tools.get_plan, store, TODAY, start_date="2026-13-01")
     assert "must be YYYY-MM-DD" in err(tools.get_plan, store, TODAY, start_date="07.10.2026")
+    assert "must be YYYY-MM-DD" in err(tools.get_plan, store, TODAY, start_date="２０２６-10-07")
+    assert "must be YYYY-MM-DD" in err(tools.get_plan, store, TODAY, start_date="2026-10-07x")
     assert err(tools.get_plan, store, TODAY, start_date="2026-10-08", end_date="2026-10-07") == (
         "start_date must be on or before end_date"
     )
@@ -340,14 +342,14 @@ def test_update_session_moved_creates_linked_copy(store, monkeypatch):
         store,
         TODAY,
         week="2026-10-07",
-        sessions=[planned("2026-10-08", "Long run", intensity="easy", duration_min=90, distance_km=15, garmin_workout_id=7)],
+        sessions=[planned("2026-10-08", "Long run", intensity="easy", duration_min=90, distance_km=15, garmin_workout_id=7, hevy_routine_id="r-1")],
     )["created_ids"][0]
     result = tools.update_session(store, TODAY, session_id=sid, status="moved", new_date="2026-10-10", note="knee")
     copy = result["moved_copy"]
     assert result["session"]["status"] == "moved"
     assert result["session"]["moved_to"] == {"id": copy["id"], "date": "2026-10-10"}
     assert copy["date"] == "2026-10-10" and copy["status"] == "planned" and copy["moved_from_id"] == sid
-    for key in ("type", "description", "intensity", "duration_min", "distance_km", "garmin_workout_id"):
+    for key in ("type", "description", "intensity", "duration_min", "distance_km", "garmin_workout_id", "hevy_routine_id"):
         assert copy[key] == result["session"][key]
     assert result["note"]["session_id"] == sid and result["note"]["date"] == "2026-10-07"
 
@@ -363,6 +365,38 @@ def test_update_session_moved_creates_linked_copy(store, monkeypatch):
         tools.update_session(store, TODAY, session_id=other, status="moved", new_date="2026-10-12", note="x")
     assert store.get_session(other)["status"] == "planned"
     assert (count(store, "sessions"), count(store, "notes")) == (sessions_before, notes_before)
+
+
+def test_update_session_moved_copy_superseded_by_replan(store):
+    tables = ("goals", "athlete_constraints", "sessions", "notes")
+
+    def snapshot():
+        conn = sqlite3.connect(store.path)
+        try:
+            return {t: conn.execute(f"SELECT * FROM {t} ORDER BY id").fetchall() for t in tables}
+        finally:
+            conn.close()
+
+    plain = seed(store, "2026-10-08")
+    plain_copy = tools.update_session(store, TODAY, session_id=plain, status="moved", new_date="2026-10-12")[
+        "moved_copy"
+    ]["id"]
+    before = snapshot()
+    message = err(tools.update_session, store, TODAY, session_id=plain, status="done")
+    assert message == f"session {plain} was already moved to session {plain_copy} on 2026-10-12; update that one"
+    assert snapshot() == before
+
+    sid = seed(store, "2026-10-09")
+    copy_id = tools.update_session(store, TODAY, session_id=sid, status="moved", new_date="2026-10-13")["moved_copy"]["id"]
+    tools.save_plan(store, TODAY, week="2026-10-13", sessions=[planned("2026-10-14", "Other")])
+    assert store.get_session(copy_id)["status"] == "superseded"
+    before = snapshot()
+    message = err(tools.update_session, store, TODAY, session_id=sid, status="done")
+    assert "which a later plan superseded" in message and f"session {copy_id}" in message
+    assert message == (
+        f"session {sid} was moved to session {copy_id} on 2026-10-13, which a later plan superseded; nothing left to update"
+    )
+    assert snapshot() == before
 
 
 def test_update_session_move_rules(store):
@@ -502,6 +536,42 @@ def test_add_note_defaults_to_today_and_links_session(store):
 
 
 # ------------------------------------------------------------- no hard delete
+
+
+NUL_CASES = {
+    "goal title": lambda st: tools.set_goal(st, TODAY, title="\x00abc"),
+    "goal target": lambda st: tools.set_goal(st, TODAY, title="Goal", target="a\x00"),
+    "constraint details": lambda st: tools.set_constraint(st, TODAY, kind="injury", title="Knee", details="x\x00y"),
+    "plan description": lambda st: tools.save_plan(st, TODAY, week="2026-10-07", sessions=[planned("2026-10-08", "\x00run")]),
+    "plan intensity": lambda st: tools.save_plan(
+        st, TODAY, week="2026-10-07", sessions=[planned("2026-10-08", intensity="easy\x00")]
+    ),
+    "plan hevy_routine_id": lambda st: tools.save_plan(
+        st, TODAY, week="2026-10-07", sessions=[planned("2026-10-08", hevy_routine_id="r\x00")]
+    ),
+    "note text": lambda st: tools.add_note(st, TODAY, text="\x00"),
+    "update note": lambda st: tools.update_session(st, TODAY, session_id=1, status="done", note="ok\x00"),
+}
+NUL_FIELDS = {
+    "goal title": "title",
+    "goal target": "target",
+    "constraint details": "details",
+    "plan description": "sessions[0].description",
+    "plan intensity": "sessions[0].intensity",
+    "plan hevy_routine_id": "sessions[0].hevy_routine_id",
+    "note text": "text",
+    "update note": "note",
+}
+
+
+@pytest.mark.parametrize("case", list(NUL_CASES))
+def test_nul_characters_are_rejected_without_writing(store, case):
+    seed(store, "2026-10-08")
+    tables = ("goals", "athlete_constraints", "sessions", "notes")
+    before = {t: count(store, t) for t in tables}
+    assert err(NUL_CASES[case], store) == f"{NUL_FIELDS[case]} must not contain NUL characters"
+    assert {t: count(store, t) for t in tables} == before
+    assert statuses(store) == [("2026-10-08", "planned")]
 
 
 def test_writes_never_reduce_row_counts(store):

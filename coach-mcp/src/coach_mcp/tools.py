@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .store import Store
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 MAX_RANGE_DAYS = 92
 LATEST_NOTES = 10
@@ -51,7 +51,7 @@ class PlannedSession(BaseModel):
 
 def parse_date(value: str, name: str) -> dt.date:
     text = value.strip() if isinstance(value, str) else value
-    if not isinstance(text, str) or not _DATE_RE.match(text):
+    if not isinstance(text, str) or not _DATE_RE.fullmatch(text):
         raise ToolError(f"{name} must be YYYY-MM-DD, got {value!r}")
     try:
         return dt.date.fromisoformat(text)
@@ -79,28 +79,37 @@ def _strip(value: str | None) -> str | None:
     return None if value is None else value.strip()
 
 
+def _no_nul(text: str, field: str) -> str:
+    """SQLite's length() stops at NUL, so a NUL would trip a CHECK instead of giving a clear error."""
+    if "\x00" in text:
+        raise ToolError(f"{field} must not contain NUL characters")
+    return text
+
+
 def _required_text(value: str, field: str) -> str:
-    text = value.strip()
+    text = _no_nul(value.strip(), field)
     if not text:
         raise ToolError(f"{field} must not be empty")
     return text
 
 
-def _optional_text(value: str | None) -> str | None:
+def _optional_text(value: str | None, field: str) -> str | None:
     """Empty after strip counts as absent (create) or as 'clear the field' (update)."""
     text = _strip(value)
+    if text is not None:
+        _no_nul(text, field)
     return text or None
 
 
 def _optional_date(value: str | None, name: str) -> str | None:
-    text = _optional_text(value)
+    text = _strip(value) or None
     return None if text is None else parse_date(text, name).isoformat()
 
 
 def _workout_id(value: str | int | None, name: str) -> str | None:
     if value is None:
         return None
-    text = str(value)
+    text = _no_nul(str(value), name)
     if not 1 <= len(text) <= 64:
         raise ToolError(f"{name} must be 1-64 characters")
     return text
@@ -228,9 +237,9 @@ def set_goal(
             raise ToolError("title is required to create a goal")
         fields: dict[str, Any] = {
             "title": _required_text(title, "title"),
-            "target": _optional_text(target),
+            "target": _optional_text(target, "target"),
             "target_date": _optional_date(target_date, "target_date"),
-            "target_result": _optional_text(target_result),
+            "target_result": _optional_text(target_result, "target_result"),
             "status": status or "active",
         }
         new_id = store.insert_goal({k: v for k, v in fields.items() if v is not None})
@@ -243,11 +252,11 @@ def set_goal(
     if title is not None:
         fields["title"] = _required_text(title, "title")
     if target is not None:
-        fields["target"] = _optional_text(target)
+        fields["target"] = _optional_text(target, "target")
     if target_date is not None:
         fields["target_date"] = _optional_date(target_date, "target_date")
     if target_result is not None:
-        fields["target_result"] = _optional_text(target_result)
+        fields["target_result"] = _optional_text(target_result, "target_result")
     if status is not None:
         fields["status"] = status
     if not store.update_goal(goal_id, fields):
@@ -271,7 +280,7 @@ def set_constraint(
         fields: dict[str, Any] = {
             "kind": kind,
             "title": _required_text(title, "title"),
-            "details": _optional_text(details),
+            "details": _optional_text(details, "details"),
             "status": status or "active",
         }
         new_id = store.insert_constraint({k: v for k, v in fields.items() if v is not None})
@@ -286,7 +295,7 @@ def set_constraint(
     if title is not None:
         fields["title"] = _required_text(title, "title")
     if details is not None:
-        fields["details"] = _optional_text(details)
+        fields["details"] = _optional_text(details, "details")
     if status is not None:
         fields["status"] = status
     if not store.update_constraint(constraint_id, fields):
@@ -309,7 +318,7 @@ def save_plan(store: Store, today: dt.date, *, week: str, sessions: list[Planned
                 "date": day,
                 "type": s.type,
                 "description": _required_text(s.description, f"sessions[{i}].description"),
-                "intensity": _optional_text(s.intensity),
+                "intensity": _optional_text(s.intensity, f"sessions[{i}].intensity"),
                 "duration_min": s.duration_min,
                 "distance_km": s.distance_km,
                 "garmin_workout_id": _workout_id(s.garmin_workout_id, f"sessions[{i}].garmin_workout_id"),
@@ -348,8 +357,16 @@ def update_session(
         raise ToolError(f"session {session_id} was superseded by a later plan and cannot be updated")
     if row["status"] == "moved":
         link = store.moved_to([session_id]).get(session_id)
-        where = f" to session {link[0]} on {link[1]}" if link else ""
-        raise ToolError(f"session {session_id} was already moved{where}; update that one")
+        if link is None:
+            raise ToolError(f"session {session_id} was already moved; update that one")
+        copy_id, copy_date = link
+        copy = store.get_session(copy_id)
+        if copy is not None and copy["status"] == "superseded":
+            raise ToolError(
+                f"session {session_id} was moved to session {copy_id} on {copy_date}, "
+                "which a later plan superseded; nothing left to update"
+            )
+        raise ToolError(f"session {session_id} was already moved to session {copy_id} on {copy_date}; update that one")
     if status == "moved":
         assert target is not None
         if row["status"] != "planned":

@@ -166,7 +166,8 @@ def build_server(store: Store, settings: Settings, today: Callable[[], date]) ->
     ) -> Any:
         """Save the confirmed plan for one ISO week (week = any date in it). Planned sessions of that week
         from today on are replaced (kept as superseded); done, skipped, moved and past sessions stay.
-        Session dates must lie in that week and not before today. Only after the athlete confirmed."""
+        Session dates must lie in that week and not before today. A session moved into this week is a
+        planned session too: include it if it should stay. Only after the athlete confirmed."""
         return tools.save_plan(store, today(), week=week, sessions=sessions)
 
     @tool("update_session", _write("Update session"))

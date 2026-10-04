@@ -46,11 +46,11 @@ def test_newer_schema_refuses_to_open(db_path):
     s = Store(db_path)
     s.insert_goal({"title": "Keep me"})
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA user_version = 2")
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
     conn.close()
     with pytest.raises(SchemaTooNewError, match="newer"):
         Store(db_path)
-    assert _user_version(db_path) == 2
+    assert _user_version(db_path) == SCHEMA_VERSION + 1
     conn = sqlite3.connect(db_path)
     try:
         assert conn.execute("SELECT title FROM goals").fetchall() == [("Keep me",)]
