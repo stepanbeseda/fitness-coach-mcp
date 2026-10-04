@@ -6,8 +6,6 @@ import pytest
 from coach_mcp import store as store_module
 from coach_mcp.store import MIGRATIONS, SCHEMA_VERSION, SchemaTooNewError, Store
 
-NOW = "2026-10-07T00:00:00+00:00"
-
 
 def _tables(path) -> set[str]:
     conn = sqlite3.connect(path)
