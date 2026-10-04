@@ -1,7 +1,7 @@
 # garmin-mcp (garmin-coach-mcp)
 
 Tenký MCP server nad [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) 0.3.17
-s ~15 vybranými nástroji pro kouče. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp`
+s ~18 vybranými nástroji pro kouče. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp`
 v privátní Docker síti; ven se dostane jen přes gateway, která posílá interní bearer token
 (`/run/secrets/garmin_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed).
 
@@ -16,6 +16,8 @@ v březnu 2026 rozbil; `Taxuspt/garmin_mcp` má 153 nástrojů a je zaseknutý n
 | `get_recovery_snapshot` – readiness, HRV, spánek, Body Battery, klidová TF, stres, training status jedním voláním | `create_workout` – strukturovaný běh/kolo (+ volitelně naplánovat) |
 | `get_training_readiness`, `get_hrv_trend`, `get_sleep`, `get_body_battery`, `get_daily_summary`, `get_training_status` | `schedule_workout` – na datum (idempotentní) |
 | `list_activities`, `get_activity` (kola, zóny TF) | `unschedule_workout` – odebrat z kalendáře (destructive) |
+| `get_performance_metrics` – předpovědi závodů (čas + tempo/km), laktátový práh (TF, tempo, výkon), tepové zóny podle sportu, výkonové zóny na kole, endurance a hill score, týdenní trend VO2max | |
+| `get_personal_records` (osobní rekordy), `get_gear` (boty, kola: najeté km, počet aktivit, limit, vyřazené) | |
 | `list_workouts`, `get_workout`, `list_scheduled_workouts` | *(žádné mazání workoutů ani úpravy aktivit)* |
 
 Cíle kroků: HR zóna 1–5, rozsah tepovky, tempo `M:SS`/km (běh), výkon W (kolo), kadence.

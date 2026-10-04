@@ -53,7 +53,19 @@ class FakeGarmin:
             "get_workout_by_id": copy.deepcopy(fx.WORKOUT_DETAIL),
             "query_garmin_graphql": copy.deepcopy(fx.SCHEDULES_GRAPHQL),
             "get_scheduled_workouts": copy.deepcopy(fx.CALENDAR_MONTH),
+            "get_race_predictions": copy.deepcopy(fx.RACE_PREDICTIONS),
+            "get_lactate_threshold": copy.deepcopy(fx.LACTATE_THRESHOLD),
+            "get_heart_rate_zones": copy.deepcopy(fx.HEART_RATE_ZONES),
+            "get_power_zones": copy.deepcopy(fx.POWER_ZONES),
+            "get_endurance_score": copy.deepcopy(fx.ENDURANCE_SCORE),
+            "get_hill_score": copy.deepcopy(fx.HILL_SCORE),
+            "get_max_metrics_range": copy.deepcopy(fx.MAX_METRICS_RANGE),
+            "get_personal_record": copy.deepcopy(fx.PERSONAL_RECORDS),
+            "get_gear": copy.deepcopy(fx.GEAR),
+            "get_gear_stats": copy.deepcopy(fx.GEAR_STATS),
         }
+        self.profile_id: int | None = 1001  # fake; the real library sets it at login
+        self.gear_stats_fail: dict[str, Exception] = {}
         self.client = _FakeInnerClient(dict(TOKENS))
         self.logged_in_with: str | None = None
 
@@ -72,6 +84,12 @@ class FakeGarmin:
 
     def connectapi(self, path: str, **kwargs: Any) -> Any:
         return self._respond("connectapi", path)
+
+    def get_gear_stats(self, gear_uuid: str) -> Any:
+        by_uuid = self._respond("get_gear_stats", gear_uuid)
+        if gear_uuid in self.gear_stats_fail:
+            raise self.gear_stats_fail[gear_uuid]
+        return by_uuid.get(gear_uuid) if isinstance(by_uuid, dict) else None
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("get_") or name == "query_garmin_graphql":

@@ -19,8 +19,9 @@ Nespoléhej na starší konverzace, data se mění každý den.
 1. `get_recovery_snapshot` (dnešek): training readiness, HRV, spánek, Body Battery, klidová tepovka, stres.
 2. `get_hrv_trend` za posledních 14 dní: poslední noc vs. týdenní průměr a baseline.
 3. `list_activities` za posledních 7 dní: objem, intenzita, training load, poslední těžký trénink.
-4. Z Hevy `get-workouts` (poslední 3–5) a u klíčových cviků `get-exercise-history`, abys znal aktuální váhy.
-5. Když něco chybí nebo konektor vrátí chybu (např. Garmin chce nové přihlášení), řekni to a pokračuj
+4. Když plán obsahuje běh nebo kolo s cílovým tempem, tepovkou nebo výkonem (a aspoň jednou za tréninkový blok): `get_performance_metrics` – předpovědi závodů, laktátový práh, tepové a výkonové zóny, endurance a hill score, trend VO2max. Při stanovení závodních cílů i `get_personal_records`.
+5. Z Hevy `get-workouts` (poslední 3–5) a u klíčových cviků `get-exercise-history`, abys znal aktuální váhy.
+6. Když něco chybí nebo konektor vrátí chybu (např. Garmin chce nové přihlášení), řekni to a pokračuj
    konzervativně.
 
 Pak shrň stav ve 3–5 bodech s čísly: readiness, HRV vs. baseline, spánek (délka + skóre), Body Battery
@@ -37,6 +38,8 @@ ráno, zátěž za 7 dní.
 - Vždy napiš, **která data** vedla k úpravě a co by se muselo zlepšit pro plnou zátěž.
 - Hlídej rozložení týdne: stejná partie nejdřív po 48 h; těžké nohy ne den před intervaly nebo dlouhým
   během; nejvýš dva intenzivní kardio tréninky týdně, pokud neřeknu jinak.
+- **Tempa a zóny odvozuj z naměřených hodnot, ne z odhadu.** Tempový běh a prahové intervaly kolem `lactate_threshold.pace` a `heart_rate`, intervaly 3–5 min kolem tempa na 5–10 km z `race_predictions`, lehký a dlouhý běh v zóně 2 podle `heart_rate_zones` (pro běh profil `running`, pro kolo `cycling`, jinak `default`), na kole výkon podle `power_zones` a FTP. V návrhu uveď, z které hodnoty cíl vychází. Když hodnota chybí (`available: false` nebo `error`), řekni to a cíl odhadni konzervativně.
+- **Boty:** jednou za čas (a před dlouhým během nebo závodem) zkontroluj `get_gear`. Běžecké boty nad limitem z Garminu (`max_km`), nebo nad 700 km, když limit chybí, označ jako opotřebované a doporuč výměnu.
 
 ## 3. Zápis plánu, vždy až po mém potvrzení
 

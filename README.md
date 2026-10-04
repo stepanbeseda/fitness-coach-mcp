@@ -4,7 +4,9 @@ Self-hosted MCP servery pro osobního fitness kouče v Claude:
 
 - **Hevy**: historie silových tréninků, rutiny, šablony cviků, zápis rutin a workoutů
   (upstream [`chrisdoc/hevy-mcp`](https://github.com/chrisdoc/hevy-mcp) 6.1.16).
-- **Garmin Connect**: HRV, spánek, Body Battery, training readiness, aktivity a tvorba strukturovaných
+- **Garmin Connect**: HRV, spánek, Body Battery, training readiness, aktivity,
+  výkonnostní metriky (předpovědi závodů, laktátový práh, tepové a výkonové zóny, VO2max), osobní
+  rekordy, vybavení a tvorba strukturovaných
   workoutů naplánovaných do hodinek (vlastní server `garmin-mcp/` nad
   [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect) 0.3.17).
 
@@ -133,7 +135,7 @@ scripts/garmin-login.sh --check
 
 ```bash
 scripts/healthcheck.sh             # kontejnery, uzel, Funnel, discovery, login jen z tailnetu, Garmin, Hevy
-scripts/smoke-test.sh              # tools/list na obou endpointech, 3 poslední Hevy workouty, dnešní HRV/spánek
+scripts/smoke-test.sh              # tools/list na obou endpointech, 3 poslední Hevy workouty, dnešní HRV/spánek, předpovědi závodů a tepové zóny
 ```
 
 ## Funnel

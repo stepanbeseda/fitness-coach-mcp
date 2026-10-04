@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from . import __version__, activities, health, workouts
+from . import __version__, activities, health, performance, workouts
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
 from .formatting import to_json
@@ -30,7 +30,9 @@ log = logging.getLogger("garmin_coach_mcp.tools")
 INSTRUCTIONS = (
     "Garmin Connect data of the athlete, for coaching. Call get_recovery_snapshot first "
     "(today's training readiness, HRV, sleep, Body Battery, resting HR, stress, training status), "
-    "then list_activities for recent load. Dates are YYYY-MM-DD in the athlete's local time zone; "
+    "then list_activities for recent load. "
+    "Before prescribing paces, heart-rate or power targets call get_performance_metrics (race predictions, lactate threshold, zones, VO2max trend). "
+    "Dates are YYYY-MM-DD in the athlete's local time zone; "
     "omit them for today. create_workout, schedule_workout and unschedule_workout change the "
     "athlete's Garmin library/calendar: show the plan and get explicit confirmation first."
 )
@@ -160,6 +162,36 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         OVERREACHING), acute and chronic training load with ACWR, 4-week load balance
         (aerobic low/high, anaerobic vs. targets) and VO2max for running and cycling."""
         return await health.training_status(service, date)
+
+    # --------------------------------------------------------- performance
+
+    @tool("get_performance_metrics", _read("Performance metrics"))
+    async def get_performance_metrics(
+        weeks: Annotated[
+            int, Field(ge=2, le=52, description="Weeks of history for the VO2max trend and the endurance/hill score change (2-52).")
+        ] = 12,
+    ) -> Any:
+        """Measured performance values for setting paces and zones, in one call: Garmin race
+        predictions (5 km, 10 km, half marathon, marathon: time and pace per km), lactate
+        threshold (heart rate, pace, running power), heart-rate zones per sport profile and
+        cycling power zones with their boundaries, endurance score and hill score (latest value
+        and change over the window) and the weekly VO2max trend. Sections that Garmin cannot
+        provide contain an "error" or "available": false instead of failing the whole call."""
+        return await performance.performance_metrics(service, weeks)
+
+    @tool("get_personal_records", _read("Personal records"))
+    async def get_personal_records() -> Any:
+        """Garmin personal records: type (1k, 1_mile, 5k, 10k, half_marathon, marathon,
+        longest_run; other record types as type_id with the raw value), time and pace or
+        distance, date and activity id."""
+        return await performance.personal_records(service)
+
+    @tool("get_gear", _read("Gear"))
+    async def get_gear() -> Any:
+        """The athlete's gear (shoes, bikes, other), active and retired: name, type, start date,
+        total distance, activity count, Garmin's distance limit when set and a retired flag.
+        Use it to flag worn-out shoes."""
+        return await performance.gear(service)
 
     # ---------------------------------------------------------- activities
 

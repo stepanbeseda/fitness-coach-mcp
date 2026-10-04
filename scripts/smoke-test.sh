@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against the running stack, over the tailnet (MagicDNS):
-# tools/list on both endpoints, the last 3 Hevy workouts and today's Garmin
-# recovery data. Also checks that the public (Funnel) path refuses tokens from
-# non-Anthropic networks.
+# tools/list on both endpoints, the last 3 Hevy workouts, today's Garmin
+# recovery data, race predictions and heart-rate zones. Also checks that the
+# public (Funnel) path refuses tokens from non-Anthropic networks.
 #
 #   scripts/smoke-test.sh
 source "$(dirname "$0")/lib.sh"

@@ -1,0 +1,307 @@
+import json
+from datetime import date
+
+import pytest
+from mcp.server.mcpserver.exceptions import ToolError
+
+import fixtures as fx
+from conftest import AUTH_ERROR, CONN_ERROR
+from garmin_coach_mcp import performance
+
+END = date(2026, 9, 30)
+
+VO2MAX_EXPECTED = {
+    "running": 53.4,
+    "cycling": 55.1,
+    "measured_on": "2026-09-28",
+    "change_running": 0.8,
+    "change_cycling": 0.2,
+    "weekly": [
+        {"week": "2026-07-06", "running": 52.8, "cycling": 54.9},
+        {"week": "2026-09-14", "cycling": 55.1},
+        {"week": "2026-09-21", "running": 53.1},
+        {"week": "2026-09-28", "running": 53.4},
+    ],
+}
+
+
+# ------------------------------------------------------------------ shapers
+
+
+def test_shape_race_predictions_formats_with_helpers():
+    assert performance.shape_race_predictions(fx.RACE_PREDICTIONS) == {
+        "date": "2026-09-30",
+        "5k": {"time": "21:30", "pace": "4:18"},
+        "10k": {"time": "45:00", "pace": "4:30"},
+        "half_marathon": {"time": "1:39:30", "pace": "4:43"},
+        "marathon": {"time": "3:25:10", "pace": "4:52"},
+    }
+
+
+def test_shape_race_predictions_list_and_empty():
+    older = {**fx.RACE_PREDICTIONS, "calendarDate": "2026-09-01", "time5K": 1400}
+    out = performance.shape_race_predictions([older, fx.RACE_PREDICTIONS])
+    assert out["5k"]["time"] == "21:30"
+    out = performance.shape_race_predictions([fx.RACE_PREDICTIONS, older])
+    assert out["5k"]["time"] == "21:30"
+    assert performance.shape_race_predictions({}) == {"available": False}
+    assert performance.shape_race_predictions(None) == {"available": False}
+
+
+def test_lt_speed_scaling():
+    assert performance.lt_speed_mps(0.3636) == pytest.approx(3.636)
+    assert performance.lt_speed_mps(3.636) == pytest.approx(3.636)
+    assert performance.lt_speed_mps(None) is None
+    assert performance.lt_speed_mps(0) is None
+
+
+def test_shape_lactate_threshold():
+    assert performance.shape_lactate_threshold(fx.LACTATE_THRESHOLD) == {
+        "date": "2026-09-12",
+        "heart_rate": 172,
+        "pace": "4:35",
+        "power_watts": 345,
+        "power_to_weight": 4.79,
+    }
+    no_power = performance.shape_lactate_threshold({**fx.LACTATE_THRESHOLD, "power": {}})
+    assert "power_watts" not in no_power and no_power["pace"] == "4:35"
+    assert performance.shape_lactate_threshold({"speed_and_heart_rate": {}, "power": {}}) == {"available": False}
+    assert performance.shape_lactate_threshold(None) == {"available": False}
+
+
+def test_shape_heart_rate_zones():
+    out = performance.shape_heart_rate_zones(fx.HEART_RATE_ZONES)
+    profiles = out["profiles"]
+    assert len(profiles) == 3  # SWIMMING has no floors
+    assert profiles[0] == {
+        "sport": "default",
+        "method": "LACTATE_THRESHOLD",
+        "max_hr": 191,
+        "resting_hr": 48,
+        "threshold_hr": 172,
+        "zones": [
+            {"zone": 1, "min_bpm": 103, "max_bpm": 137},
+            {"zone": 2, "min_bpm": 138, "max_bpm": 154},
+            {"zone": 3, "min_bpm": 155, "max_bpm": 162},
+            {"zone": 4, "min_bpm": 163, "max_bpm": 171},
+            {"zone": 5, "min_bpm": 172, "max_bpm": 191},
+        ],
+    }
+    assert profiles[1]["sport"] == "running"
+    assert profiles[2]["sport"] == "cycling" and "threshold_hr" not in profiles[2]
+    assert performance.shape_heart_rate_zones([]) == {"available": False}
+
+
+def test_shape_power_zones_cycling_only():
+    out = performance.shape_power_zones(fx.POWER_ZONES)
+    assert out["sport"] == "cycling" and out["ftp_watts"] == 250
+    assert len(out["zones"]) == 7
+    assert out["zones"][0] == {"zone": 1, "min_watts": 0, "max_watts": 137}
+    assert out["zones"][6] == {"zone": 7, "min_watts": 375}
+    assert performance.shape_power_zones([fx.POWER_ZONES[1]]) == {"available": False}
+
+
+def test_shape_endurance_score():
+    assert performance.shape_endurance_score(fx.ENDURANCE_SCORE) == {
+        "date": "2026-09-30",
+        "score": 7250,
+        "classification": 4,
+        "change": 240,
+    }
+    no_dto = {k: v for k, v in fx.ENDURANCE_SCORE.items() if k != "enduranceScoreDTO"}
+    out = performance.shape_endurance_score(no_dto)
+    assert out["score"] == 7240 and out["date"] == "2026-09-28" and out["change"] == 230
+    assert performance.shape_endurance_score({}) == {"available": False}
+
+
+def test_shape_hill_score():
+    assert performance.shape_hill_score(fx.HILL_SCORE) == {
+        "date": "2026-09-29",
+        "score": 68,
+        "strength": 60,
+        "endurance": 66,
+        "classification": 3,
+        "change": 6,
+    }
+    assert performance.shape_hill_score({"hillScoreDTOList": []}) == {"available": False}
+
+
+def test_shape_vo2max_trend():
+    assert performance.shape_vo2max_trend(fx.MAX_METRICS_RANGE) == VO2MAX_EXPECTED
+    assert performance.shape_vo2max_trend([]) == {"available": False}
+
+
+def test_shape_personal_records():
+    out = performance.shape_personal_records(fx.PERSONAL_RECORDS)
+    assert out["count"] == 4
+    assert out["records"] == [
+        {"type": "5k", "time": "21:05", "pace": "4:13", "date": "2026-05-02", "activity_id": 20001},
+        {"type": "marathon", "time": "3:30:50", "pace": "5:00", "date": "2025-10-12", "activity_id": 20002},
+        {"type": "longest_run", "distance_km": 43.12, "date": "2025-09-14", "activity_id": 20003},
+        {"type_id": 12, "value": 31245.0, "date": "2026-06-01"},
+    ]
+    assert performance.shape_personal_records(None) == {"count": 0, "records": []}
+
+
+def test_shape_gear():
+    shoes = performance.shape_gear_item(fx.GEAR[0], fx.GEAR_STATS[fx.GEAR_UUID_SHOES])
+    assert shoes == {
+        "name": "Pegasus 40",
+        "type": "shoes",
+        "retired": False,
+        "since": "2025-11-01",
+        "distance_km": 652.34,
+        "activities": 81,
+        "max_km": 700.0,
+    }
+    bike = performance.shape_gear_item(fx.GEAR[2], fx.GEAR_STATS[fx.GEAR_UUID_BIKE])
+    assert bike["name"] == "Canyon Endurace" and "max_km" not in bike
+    old = performance.shape_gear_item(fx.GEAR[1], {})
+    assert old["retired"] is True and old["until"] == "2025-10-30" and "distance_km" not in old
+
+
+def test_entries_accepts_list_wrapped_and_single():
+    assert performance._entries([{"a": 1}, "x"], "a") == [{"a": 1}]
+    assert performance._entries({"meta": 1, "items": [{"a": 1}]}, "a") == [{"a": 1}]
+    assert performance._entries({"a": 1}, "a") == [{"a": 1}]
+    assert performance._entries({"meta": 1}, "a") == []
+    assert performance._entries(None, "a") == []
+    assert performance._entries("text", "a") == []
+
+
+def test_shape_personal_records_dict_shapes():
+    assert performance.shape_personal_records({"personalRecords": fx.PERSONAL_RECORDS})["count"] == 4
+    assert performance.shape_personal_records(fx.PERSONAL_RECORDS[2])["records"] == [
+        {"type": "5k", "time": "21:05", "pace": "4:13", "date": "2026-05-02", "activity_id": 20001}
+    ]
+    assert performance.shape_personal_records({"x": 1}) == {"count": 0, "records": []}
+
+
+def test_shape_vo2max_trend_dict_shapes():
+    assert performance.shape_vo2max_trend(fx.MAX_METRICS_RANGE[3]) == {
+        "running": 53.4,
+        "measured_on": "2026-09-28",
+        "weekly": [{"week": "2026-09-28", "running": 53.4}],
+    }
+    assert performance.shape_vo2max_trend({"x": 1}) == {"available": False}
+
+
+# -------------------------------------------------------------------- tools
+
+
+@pytest.mark.anyio
+async def test_performance_metrics_all_sections(service, fake):
+    out = await performance.performance_metrics(service, 12, end=END)
+    assert out["window"] == {"start": "2026-07-09", "end": "2026-09-30", "weeks": 12}
+    for key, section in out.items():
+        if key != "window":
+            assert "error" not in section and "available" not in section, key
+    assert out["race_predictions"]["marathon"]["time"] == "3:25:10"
+    assert out["lactate_threshold"]["pace"] == "4:35"
+    assert len(out["heart_rate_zones"]["profiles"]) == 3
+    assert out["vo2max"]["running"] == 53.4
+    assert out["vo2max"] == VO2MAX_EXPECTED
+    window = ("2026-07-09", "2026-09-30")
+    assert ("get_max_metrics_range", window) in fake.calls
+    assert ("get_endurance_score", window) in fake.calls
+    assert ("get_hill_score", window) in fake.calls
+    names = {n for n, _ in fake.calls}
+    assert {"get_race_predictions", "get_lactate_threshold", "get_heart_rate_zones", "get_power_zones"} <= names
+    assert len(json.dumps(out)) < 4000
+
+
+@pytest.mark.anyio
+async def test_performance_metrics_degrades_per_section(service, fake):
+    fake.fail["get_race_predictions"] = CONN_ERROR
+    fake.responses["get_heart_rate_zones"] = None
+    fake.responses["get_endurance_score"] = {"weird": True}
+    out = await performance.performance_metrics(service, 12, end=END)
+    assert "500" in out["race_predictions"]["error"]
+    assert out["heart_rate_zones"] == {"available": False}
+    assert out["endurance_score"] == {"available": False}
+    assert out["vo2max"]["running"] == 53.4
+    assert out["lactate_threshold"]["heart_rate"] == 172
+
+
+@pytest.mark.anyio
+async def test_performance_metrics_odd_payload_is_section_error(service, fake):
+    fake.responses["get_max_metrics_range"] = [
+        {"generic": {"calendarDate": "not-a-date", "vo2MaxPreciseValue": 50}}
+    ]
+    out = await performance.performance_metrics(service, 12, end=END)
+    assert out["vo2max"] == {"error": "unexpected Garmin response for vo2max"}
+    assert out["race_predictions"]["5k"]["time"] == "21:30"
+
+
+@pytest.mark.anyio
+async def test_performance_metrics_lactate_library_crash_is_fail_soft(service, fake):
+    fake.fail["get_lactate_threshold"] = TypeError("'NoneType' object is not iterable")
+    out = await performance.performance_metrics(service, 12, end=END)
+    assert out["lactate_threshold"] == {"available": False}
+    assert out["race_predictions"]["5k"]["time"] == "21:30"
+
+
+@pytest.mark.anyio
+async def test_performance_metrics_auth_error_fails_whole_tool(service, fake):
+    fake.fail["get_power_zones"] = AUTH_ERROR
+    with pytest.raises(ToolError, match="garmin-login.sh"):
+        await performance.performance_metrics(service, 12, end=END)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("weeks", [1, 53])
+async def test_performance_metrics_validates_weeks(service, fake, weeks):
+    with pytest.raises(ToolError, match="weeks must be between 2 and 52"):
+        await performance.performance_metrics(service, weeks, end=END)
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+async def test_personal_records_tool(service, fake):
+    out = await performance.personal_records(service)
+    assert out["count"] == 4 and out["records"][0]["type"] == "5k"
+    fake.fail["get_personal_record"] = CONN_ERROR
+    with pytest.raises(ToolError):
+        await performance.personal_records(service)
+
+
+@pytest.mark.anyio
+async def test_gear_tool_fetches_stats_per_item(service, fake):
+    fake.gear_stats_fail[fx.GEAR_UUID_BIKE] = CONN_ERROR
+    out = await performance.gear(service)
+    assert ("get_gear", ("1001",)) in fake.calls
+    stats_calls = [a for n, a in fake.calls if n == "get_gear_stats"]
+    assert sorted(stats_calls) == sorted([(fx.GEAR_UUID_SHOES,), (fx.GEAR_UUID_BIKE,), (fx.GEAR_UUID_OLD,)])
+    assert out["count"] == 3
+    assert [g["name"] for g in out["gear"]] == ["Pegasus 40", "Canyon Endurace", "Old trail shoes"]
+    assert "500" in out["gear"][1]["stats_error"]
+    assert out["gear"][0]["distance_km"] == 652.34
+    assert out["gear"][2]["retired"] is True
+
+
+@pytest.mark.anyio
+async def test_gear_tool_sorts_by_distance(service, fake):
+    out = await performance.gear(service)
+    assert [g["name"] for g in out["gear"]] == ["Canyon Endurace", "Pegasus 40", "Old trail shoes"]
+
+
+@pytest.mark.anyio
+async def test_gear_tool_without_profile_id(service, fake):
+    fake.profile_id = None
+    with pytest.raises(ToolError, match="profile id"):
+        await performance.gear(service)
+    assert "get_gear" not in {n for n, _ in fake.calls}
+
+
+@pytest.mark.anyio
+async def test_gear_tool_empty(service, fake):
+    fake.responses["get_gear"] = []
+    assert await performance.gear(service) == {"count": 0, "gear": []}
+    assert "get_gear_stats" not in {n for n, _ in fake.calls}
+
+
+@pytest.mark.anyio
+async def test_gear_tool_accepts_wrapped_list(service, fake):
+    fake.responses["get_gear"] = {"gear": fx.GEAR}
+    out = await performance.gear(service)
+    assert out["count"] == 3
