@@ -16,14 +16,20 @@ export OWNER_TAILSCALE_LOGIN="e2e-owner@test"
 E2E_PASSWORD="e2e-$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
 compose=(docker compose -p "$PROJECT" -f docker-compose.yml -f compose.test.yml)
 
+BUILD_LOG="$(mktemp)"
+
 cleanup() {
   "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-  rm -rf "$TMP_SECRETS"
+  rm -rf "$TMP_SECRETS" "$BUILD_LOG"
 }
 trap cleanup EXIT
 
 info "Build images..."
-"${compose[@]}" build >/dev/null
+# --progress=plain: with stdout redirected, Compose's default (tty) progress renderer fails with
+# "failed to get console: provided file is not a console". The plain log goes to a file and is
+# shown only when the build fails.
+"${compose[@]}" build --progress=plain >/dev/null 2>"$BUILD_LOG" \
+  || { cat "$BUILD_LOG" >&2; die "Build selhal (log výše)."; }
 
 info "Throwaway secrets..."
 put() { printf '%s\n' "$2" > "$TMP_SECRETS/$1"; chmod 0644 "$TMP_SECRETS/$1"; }
