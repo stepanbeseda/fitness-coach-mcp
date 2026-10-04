@@ -361,3 +361,98 @@ CALENDAR_MONTH = {
         {"id": 557, "itemType": "workout", "date": "2026-11-15", "workoutId": 9003, "title": "Far away"},
     ]
 }
+
+# ---------------------------------------------------------------- performance (PR 01)
+
+RACE_PREDICTIONS = {"userId": 1, "calendarDate": DAY, "time5K": 1290, "time10K": 2700,
+                    "timeHalfMarathon": 5970, "timeMarathon": 12310}
+
+LACTATE_THRESHOLD = {  # already merged by garminconnect.get_lactate_threshold(latest=True)
+    "speed_and_heart_rate": {"userProfilePK": 1, "version": 1, "calendarDate": "2026-09-12T00:00:00.0",
+                             "sequence": 1, "speed": 0.3636, "heartRate": 172, "heartRateCycling": None},
+    "power": {"userProfilePk": 1, "calendarDate": "2026-09-12", "sport": "RUNNING",
+              "functionalThresholdPower": 345, "weight": 72.0, "powerToWeight": 4.79},
+}
+
+HEART_RATE_ZONES = [
+    {"sport": "DEFAULT", "trainingMethod": "LACTATE_THRESHOLD", "restingHeartRateUsed": 48,
+     "lactateThresholdHeartRateUsed": 172, "maxHeartRateUsed": 191, "zone1Floor": 103, "zone2Floor": 138,
+     "zone3Floor": 155, "zone4Floor": 163, "zone5Floor": 172, "changeState": "UNCHANGED"},
+    {"sport": "RUNNING", "trainingMethod": "LACTATE_THRESHOLD", "restingHeartRateUsed": 48,
+     "lactateThresholdHeartRateUsed": 172, "maxHeartRateUsed": 191, "zone1Floor": 105, "zone2Floor": 140,
+     "zone3Floor": 156, "zone4Floor": 164, "zone5Floor": 173, "changeState": "UNCHANGED"},
+    {"sport": "CYCLING", "trainingMethod": "PERCENT_MAX_HR", "restingHeartRateUsed": 48,
+     "lactateThresholdHeartRateUsed": None, "maxHeartRateUsed": 185, "zone1Floor": 93, "zone2Floor": 111,
+     "zone3Floor": 130, "zone4Floor": 148, "zone5Floor": 167, "changeState": "UNCHANGED"},
+    {"sport": "SWIMMING", "trainingMethod": "PERCENT_MAX_HR", "maxHeartRateUsed": 180},
+]
+
+POWER_ZONES = [
+    {"sport": "CYCLING", "functionalThresholdPower": 250, "zone1Floor": 0, "zone2Floor": 138, "zone3Floor": 188,
+     "zone4Floor": 225, "zone5Floor": 263, "zone6Floor": 300, "zone7Floor": 375},
+    {"sport": "RUNNING", "functionalThresholdPower": 345, "zone1Floor": 0, "zone2Floor": 276, "zone3Floor": 311,
+     "zone4Floor": 345, "zone5Floor": 380},
+]
+
+ENDURANCE_SCORE = {
+    "userProfilePK": 1, "startDate": "2026-07-09", "endDate": DAY, "avg": 7150, "max": 7300,
+    "groupMap": {"2026-09-28": {"groupAverage": 7240, "groupMax": 7260},
+                 "2026-07-06": {"groupAverage": 7010, "groupMax": 7050},
+                 "2026-08-17": {"groupAverage": 7120, "groupMax": 7180}},
+    "enduranceScoreDTO": {"userProfilePK": 1, "calendarDate": DAY, "overallScore": 7250, "classification": 4,
+                          "primaryTrainingDevice": True},
+}
+
+HILL_SCORE = {
+    "userProfilePK": 1, "startDate": "2026-07-09", "endDate": DAY,
+    "hillScoreDTOList": [
+        {"calendarDate": "2026-09-29", "overallScore": 68, "strengthScore": 60, "enduranceScore": 66,
+         "hillScoreClassificationId": 3},
+        {"calendarDate": "2026-07-09", "overallScore": 62, "strengthScore": 55, "enduranceScore": 60,
+         "hillScoreClassificationId": 3},
+        {"calendarDate": DAY, "overallScore": None},
+    ],
+}
+
+MAX_METRICS_RANGE = [
+    {"generic": {"calendarDate": "2026-07-10", "vo2MaxPreciseValue": 52.6, "vo2MaxValue": 53.0}, "cycling": None},
+    {"generic": {"calendarDate": "2026-07-12", "vo2MaxPreciseValue": 52.8, "vo2MaxValue": 53.0},
+     "cycling": {"calendarDate": "2026-07-12", "vo2MaxPreciseValue": 54.9, "vo2MaxValue": 55.0}},
+    {"generic": {"calendarDate": "2026-09-22", "vo2MaxPreciseValue": 53.1, "vo2MaxValue": 53.0},
+     "cycling": {"calendarDate": "2026-09-20", "vo2MaxPreciseValue": 55.1, "vo2MaxValue": 55.0}},
+    {"generic": {"calendarDate": "2026-09-28", "vo2MaxPreciseValue": 53.4, "vo2MaxValue": 53.0}, "cycling": None},
+]
+
+PERSONAL_RECORDS = [
+    {"id": 14, "typeId": 12, "activityId": None, "activityType": None, "value": 31245.0,
+     "prStartTimeLocalFormatted": "2026-06-01T00:00:00.0"},
+    {"id": 12, "typeId": 6, "activityId": 20002, "activityType": "running", "value": 12650.4,
+     "prStartTimeLocalFormatted": "2025-10-12T09:00:00.0"},
+    {"id": 11, "typeId": 3, "activityId": 20001, "activityName": "Parkrun", "activityType": "running",
+     "activityStartDateTimeLocal": "2026-05-02 09:00:00", "value": 1265.0,
+     "prStartTimeLocalFormatted": "2026-05-02T09:00:00.0"},
+    {"id": 13, "typeId": 7, "activityId": 20003, "activityType": "running", "value": 43120.5,
+     "prStartTimeLocalFormatted": "2025-09-14T08:30:00.0"},
+]
+
+GEAR_UUID_SHOES = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+GEAR_UUID_BIKE = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7"
+GEAR_UUID_OLD = "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
+
+GEAR = [
+    {"gearPk": 501, "uuid": GEAR_UUID_SHOES, "displayName": "Pegasus 40", "customMakeModel": "Nike Pegasus 40",
+     "gearMakeName": "Nike", "gearModelName": "Pegasus 40", "gearTypeName": "Shoes", "gearStatusName": "active",
+     "dateBegin": "2025-11-01T00:00:00.0", "dateEnd": None, "maximumMeters": 700000.0},
+    {"gearPk": 503, "uuid": GEAR_UUID_OLD, "displayName": "Old trail shoes", "gearTypeName": "Shoes",
+     "gearStatusName": "retired", "dateBegin": "2023-05-01T00:00:00.0", "dateEnd": "2025-10-30T00:00:00.0",
+     "maximumMeters": 800000.0},
+    {"gearPk": 502, "uuid": GEAR_UUID_BIKE, "displayName": None, "customMakeModel": "Canyon Endurace",
+     "gearTypeName": "Bike", "gearStatusName": "active", "dateBegin": "2024-04-01T00:00:00.0",
+     "dateEnd": None, "maximumMeters": 0.0},
+]
+
+GEAR_STATS = {  # keyed by gear uuid (FakeGarmin.get_gear_stats looks the uuid up)
+    GEAR_UUID_SHOES: {"uuid": GEAR_UUID_SHOES, "totalDistance": 652340.0, "totalActivities": 81, "processing": False},
+    GEAR_UUID_BIKE: {"uuid": GEAR_UUID_BIKE, "totalDistance": 4210000.0, "totalActivities": 140, "processing": False},
+    GEAR_UUID_OLD: {},
+}

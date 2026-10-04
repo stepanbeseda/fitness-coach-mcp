@@ -116,6 +116,14 @@ def main() -> int:
         print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
         section(f"Garmin: recovery snapshot {date.today().isoformat()} (HRV, spánek, readiness, Body Battery)")
         print(garmin.call("get_recovery_snapshot", {})[:3000])
+        section("Garmin: výkonnostní metriky (předpovědi závodů, tepové zóny)")
+        text = garmin.call("get_performance_metrics", {})
+        try:
+            data = json.loads(text)
+            for key in ("race_predictions", "heart_rate_zones"):
+                print(f"{key}: {json.dumps(data.get(key), ensure_ascii=False)[:2000]}")
+        except (ValueError, AttributeError):
+            print(text[:3000])
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")

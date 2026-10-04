@@ -20,6 +20,9 @@ EXPECTED_TOOLS = {
     "schedule_workout",
     "list_scheduled_workouts",
     "unschedule_workout",
+    "get_performance_metrics",
+    "get_personal_records",
+    "get_gear",
 }
 WRITE_TOOLS = {"create_workout", "schedule_workout", "unschedule_workout"}
 
@@ -101,6 +104,25 @@ async def test_initialize_list_and_call(app, fake):
         assert result["isError"] is False
         payload = json.loads(result["content"][0]["text"])
         assert payload["readiness"]["score"] == 58 and payload["hrv"]["last_night_avg_ms"] == 48
+
+
+@pytest.mark.anyio
+async def test_performance_tools_over_http(app, fake):
+    async with running_client(app) as client:
+        r = await rpc(client, "tools/call", {"name": "get_performance_metrics", "arguments": {"weeks": 8}}, id_=10)
+        result = r.json()["result"]
+        assert result["isError"] is False, result
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["window"]["weeks"] == 8
+        assert payload["race_predictions"]["5k"]["time"] == "21:30"
+
+        r = await rpc(client, "tools/call", {"name": "get_performance_metrics", "arguments": {"weeks": 1}}, id_=11)
+        assert r.json()["result"]["isError"] is True
+
+        r = await rpc(client, "tools/call", {"name": "get_gear", "arguments": {}}, id_=12)
+        result = r.json()["result"]
+        assert result["isError"] is False, result
+        assert json.loads(result["content"][0]["text"])["count"] == 3
 
 
 @pytest.mark.anyio
