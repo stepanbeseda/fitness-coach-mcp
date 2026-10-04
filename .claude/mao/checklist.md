@@ -69,3 +69,6 @@ repeated findings.
   `coach-mcp/src/coach_mcp/server.py` for coach tools.
 - [ ] Czech docs stay Czech; code, comments and commits are English.
 - [ ] Links in docs lead to existing files.
+- [ ] Operator recipes added or changed in docs (backup/restore, recovery)
+  were run on scratch volumes, fresh and existing, and the result is
+  recorded.
