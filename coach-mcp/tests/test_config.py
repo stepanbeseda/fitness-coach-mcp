@@ -63,19 +63,6 @@ def test_from_env_rejects_invalid_values(env):
         Settings.from_env(env)
 
 
-@pytest.fixture
-def restore_logging():
-    root = logging.getLogger()
-    names = ("mcp", "httpx", "httpx2", "httpcore", "httpcore2", "sse_starlette")
-    saved = {n: logging.getLogger(n).level for n in names}
-    saved_root = (root.level, list(root.handlers))
-    yield
-    for n, lvl in saved.items():
-        logging.getLogger(n).setLevel(lvl)
-    root.setLevel(saved_root[0])
-    root.handlers[:] = saved_root[1]
-
-
 def test_configure_logging_keeps_sdk_quiet(restore_logging):
     logging.getLogger("mcp").setLevel(logging.NOTSET)
     configure_logging("DEBUG")

@@ -1,9 +1,11 @@
 import json
+import logging
 import sqlite3
 
 import pytest
 
 from conftest import BACKEND_TOKEN, MCP_HEADERS, TODAY, auth_headers, call_tool, payload, running_client
+from coach_mcp.__main__ import configure_logging
 from coach_mcp.server import create_app
 from coach_mcp.store import Store
 
@@ -198,3 +200,17 @@ async def test_unknown_host_header_is_accepted(app):
     async with running_client(app) as client:
         r = await client.post("/mcp", headers={**auth_headers(), "Host": "coach-mcp:8000"}, json=INIT)
         assert r.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_log_never_contains_arguments_or_stored_text(app, caplog, restore_logging):
+    """Tool errors echo caller input; the SDK logs them at INFO unless configure_logging quiets it."""
+    configure_logging("INFO")
+    caplog.set_level(logging.DEBUG)
+    async with running_client(app) as client:
+        failed = await call_tool(client, "get_plan", {"start_date": "SECRET-DATE-TEXT"})
+        assert failed["isError"] is True and "SECRET-DATE-TEXT" in failed["content"][0]["text"]
+        ok = await call_tool(client, "add_note", {"text": "PRIVATE-NOTE-TEXT"}, id_=3)
+        assert ok["isError"] is False
+    assert "tool=get_plan status=error" in caplog.text and "tool=add_note status=ok" in caplog.text
+    assert "SECRET-DATE-TEXT" not in caplog.text and "PRIVATE-NOTE-TEXT" not in caplog.text

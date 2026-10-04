@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -81,3 +82,16 @@ async def call_tool(client: Any, name: str, arguments: dict[str, Any], id_: int 
 
 def payload(result: dict[str, Any]) -> Any:
     return json.loads(result["content"][0]["text"])
+
+
+@pytest.fixture
+def restore_logging():
+    root = logging.getLogger()
+    names = ("mcp", "httpx", "httpx2", "httpcore", "httpcore2", "sse_starlette")
+    saved = {n: logging.getLogger(n).level for n in names}
+    saved_root = (root.level, list(root.handlers))
+    yield
+    for n, lvl in saved.items():
+        logging.getLogger(n).setLevel(lvl)
+    root.setLevel(saved_root[0])
+    root.handlers[:] = saved_root[1]
