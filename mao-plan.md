@@ -585,9 +585,10 @@ receiving the briefing, and the weekly report (PR 05).
    the body, and the whole text stays within Telegram's limit. The
    `get_daily_briefing` field `push.text` equals the text the transport
    sends (tests).
-4. ntfy is gone: no ntfy code, setting, secret, script subcommand, test or
-   documentation remains outside this plan (`grep -rni ntfy` over the repo,
-   excluding `mao-plan.md` and `.claude/`, is empty).
+4. ntfy is gone: no ntfy code, setting, secret, script subcommand or test
+   remains, and the only documentation that mentions it is the README
+   rollback note of item 7 (`grep -rni ntfy` over the repo, excluding
+   `mao-plan.md` and `.claude/`, finds only that note).
 5. `scripts/setup-secrets.sh telegram-token` stores the token after
    checking it with Telegram, never passes it as a command-line argument or
    prints it, and shows the owner's chat id. `all` creates an empty
