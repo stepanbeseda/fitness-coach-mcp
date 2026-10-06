@@ -35,7 +35,7 @@ async def test_fetch_calls_the_three_read_tools_with_dates_and_token(tmp_path):
     app, calls = fake_garmin_app(TOKEN)
     async with fake_garmin_running(app):
         data = await reader_for(app, tmp_path).fetch(D)
-    assert data.auth == "ok" and data.auth_problem is False
+    assert data.auth == "ok" and data.auth_problem is False and data.credentials_missing is False
     assert data.calls == {name: "ok" for name in ALLOWED_TOOLS}
     assert calls == [
         ("get_recovery_snapshot", {"date": "2026-10-07"}),
@@ -96,6 +96,7 @@ async def test_missing_token_file_returns_no_data_without_requests(tmp_path, tok
     data = await reader.fetch(D)
     assert requests == []
     assert data.auth is None and data.calls == dict.fromkeys(ALLOWED_TOOLS, "error")
+    assert data.credentials_missing is True
     assert "garmin status=error kind=no_credentials" in caplog.text
 
 

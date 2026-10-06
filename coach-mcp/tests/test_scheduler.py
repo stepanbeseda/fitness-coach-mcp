@@ -14,7 +14,7 @@ import pytest
 from fakes import FakeClock, FakeGarmin, FakePush, StopLoop, fake_garmin_app, fake_garmin_running
 
 from coach_mcp.__main__ import configure_logging, main
-from coach_mcp.briefing import ALERT_KEYS
+from coach_mcp.briefing import ALERT_KEYS, EVENT_ALERTS
 from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminReader
 from coach_mcp.push import NtfyPush
@@ -422,8 +422,12 @@ def alert_data(key: str, day: date, holds: bool):
     return garmin_data(auth=auth, snapshot=snapshot, hrv_trend=hrv_trend, scheduled=sched)
 
 
+# Event alerts (yesterday's missed workout) are reported on every day they hold; see the test below.
+STATE_ALERT_KEYS = tuple(k for k in ALERT_KEYS if k not in EVENT_ALERTS)
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("key", ALERT_KEYS)
+@pytest.mark.parametrize("key", STATE_ALERT_KEYS)
 async def test_alert_fires_once_then_not_again(db_path, key):
     async def day_run(day: date, holds: bool, from_hour: int = 0, to_hour: int = 12) -> list[str]:
         garmin = FakeGarmin(lambda d, i: alert_data(key, d, holds))
@@ -460,6 +464,65 @@ async def test_alert_fires_once_then_not_again(db_path, key):
     (message,) = await day_run(d1 + timedelta(days=3), True)
     assert text in message
     assert Store(db_path).alert_states()[key]["fired_on"] == (d1 + timedelta(days=3)).isoformat()
+
+
+@pytest.mark.anyio
+async def test_missed_workout_reports_each_newly_missed_session(db_path):
+    def missed(on: date, name: str, completed: bool = False):
+        entry = {"date": on.isoformat(), "name": name, "completed": completed}
+        return garmin_data(scheduled=scheduled([entry]))
+
+    async def day_run(day: date, data, from_hour: int = 0, to_hour: int = 12) -> list[str]:
+        push, _ = await run_scheduler(
+            db_path, local(day, from_hour), FakeGarmin(data), until=local(day, to_hour), store=Store(db_path)
+        )
+        return [msg.message for _, msg in push.sent]
+
+    d1, d2, d3 = D, D + timedelta(days=1), D + timedelta(days=2)
+    text = "Včera naplánovaný trénink nebyl splněn"
+    # 1. yesterday's session was missed
+    (message,) = await day_run(d1, missed(d1 - timedelta(days=1), "Intervaly 6×800 m"))
+    assert f"{text}: Intervaly 6×800 m." in message
+    # 2. a restart on the same day sends nothing
+    assert await day_run(d1, missed(d1 - timedelta(days=1), "Intervaly 6×800 m"), from_hour=7, to_hour=23) == []
+    # 3. the next day another session was missed: it is reported, the old one is not
+    (message,) = await day_run(d2, missed(d1, "Tempo 10 km"))
+    assert f"{text}: Tempo 10 km." in message and "Intervaly" not in message
+    assert Store(db_path).alert_states()["missed_workout"]["fired_on"] == d2.isoformat()
+    # 4. nothing missed the day after: no text
+    (message,) = await day_run(d3, missed(d2, "Tempo 10 km", completed=True))
+    assert text not in message
+    assert Store(db_path).alert_states()["missed_workout"]["value"] == 0
+
+
+@pytest.mark.anyio
+async def test_missing_baseline_sends_at_the_briefing_time(db_path):
+    garmin = FakeGarmin(garmin_data(snapshot={**GREEN_SNAPSHOT, "hrv": {"last_night_avg_ms": 62}}))
+    push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 1
+    (sent_at, msg), = push.sent
+    assert utc(sent_at) == local(D, 6, 30).astimezone(UTC)
+    assert "Chybí: HRV baseline (Garmin ji počítá až po zhruba 3 týdnech" in msg.message
+
+
+@pytest.mark.anyio
+async def test_store_error_before_the_first_attempt_is_not_a_late_start(db_path, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    store = Store(db_path)
+    real = store.briefing_sent
+    calls = {"n": 0}
+
+    def flaky(day):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("locked")
+        return real(day)
+
+    monkeypatch.setattr(store, "briefing_sent", flaky)
+    push, _ = await run_scheduler(db_path, local(D, 9, 20), FakeGarmin(garmin_data()), stop_pushes=1, store=store)
+    assert "briefing status=crashed kind=OperationalError" in caplog.text
+    assert "late_start" not in caplog.text
+    assert [utc(t) for t, _ in push.sent] == [local(D, 9, 35).astimezone(UTC)]
 
 
 @pytest.mark.anyio

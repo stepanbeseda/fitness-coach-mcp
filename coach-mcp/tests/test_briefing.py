@@ -315,6 +315,26 @@ def test_is_new():
     assert is_new(False, {"value": 0, "evaluated_on": YESTERDAY, "fired_on": None}, DAY) is False
     assert is_new(None, None, DAY) is False
     assert is_new(None, {"value": 0, "evaluated_on": YESTERDAY, "fired_on": None}, DAY) is False
+    # an event alert (yesterday's missed workout) ignores the previous evaluation
+    held_yesterday = {"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}
+    assert is_new(True, held_yesterday, DAY, event=True) is True
+    assert is_new(True, held_yesterday, DAY) is False
+    assert is_new(False, None, DAY, event=True) is False
+    assert is_new(None, None, DAY, event=True) is False
+
+
+def test_missed_workout_on_consecutive_days_is_reported_each_day():
+    rows = {"missed_workout": {"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}}
+    sched = scheduled([{"date": YESTERDAY, "name": "Tempo 10 km", "completed": False}])
+    b = build_briefing(DAY, garmin_data(scheduled=sched), [], rows)
+    alert = next(a for a in b.payload["alerts"] if a["key"] == "missed_workout")
+    assert alert == {"key": "missed_workout", "holds": True, "new": True}
+    assert "- Včera naplánovaný trénink nebyl splněn: Tempo 10 km." in b.message.message.splitlines()
+    # a state alert in the same situation stays quiet
+    state_rows = {"resting_hr_elevated": {"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}}
+    data = garmin_data(snapshot=snapshot(resting_hr={"today": 60, "avg_7d": 50}))
+    quiet = build_briefing(DAY, data, [], state_rows)
+    assert next(a for a in quiet.payload["alerts"] if a["key"] == "resting_hr_elevated")["new"] is False
 
 
 # --------------------------------------------------------------- rendering
@@ -562,6 +582,28 @@ def test_render_sleep_without_score():
     assert "Spánek: 8 h 00 min (zelená)" in text.splitlines()
 
 
+def test_missing_baseline_is_named_and_does_not_wait():
+    snap = snapshot(hrv={"last_night_avg_ms": 62})
+    b = build_briefing(DAY, garmin_data(snapshot=snap), [], {})
+    assert b.waiting is False and b.verdict == "yellow" and b.payload["missing"] == ["hrv"]
+    lines = b.message.message.splitlines()
+    assert "HRV: chybí" in lines
+    assert (
+        "Chybí: HRV baseline (Garmin ji počítá až po zhruba 3 týdnech nošení hodinek). "
+        "Bez těchto dat nemůže být verdikt zelený."
+    ) in lines
+    # no night value at all: still waiting and still called "HRV"
+    nothing = build_briefing(DAY, garmin_data(snapshot=snapshot(hrv=None)), [], {})
+    assert nothing.waiting is True and "Chybí: HRV (" in nothing.message.message
+    # a baseline without last night's value is not "night present": still waiting, still called "HRV"
+    only_baseline = build_briefing(
+        DAY, garmin_data(snapshot=snapshot(hrv={"baseline_balanced_ms": [52, 68]})), [], {}
+    )
+    assert only_baseline.waiting is True and "Chybí: HRV (" in only_baseline.message.message
+    # an unavailable HRV section waits too
+    assert build_briefing(DAY, garmin_data(snapshot=snapshot(hrv={"available": False})), [], {}).waiting is True
+
+
 def test_render_missing_reason():
     def reason(data):
         text = build_briefing(DAY, data, [], {}).message.message
@@ -572,6 +614,19 @@ def test_render_missing_reason():
         "Chybí: spánek (hodinky možná ještě nesynchronizovaly). Bez těchto dat nemůže být verdikt zelený."
     )
     assert "(Garmin není přihlášený)" in reason(garmin_data(auth="missing", snapshot=None))
+    # the coach has no garmin-mcp token: its own configuration problem, not a Garmin login
+    no_token = garmin_data(auth=None, snapshot=None, hrv_trend=None, scheduled=None, credentials_missing=True)
+    assert "(chybí interní token pro garmin-mcp (secrets/garmin_backend_token))" in reason(no_token)
+    assert build_briefing(DAY, no_token, [], {}).payload["garmin"]["auth"] == "no_credentials"
+    assert alert_conditions(DAY, no_token, None)["garmin_auth"] is None
+    # last night's HRV is there but Garmin has no baseline yet
+    assert reason(garmin_data(snapshot=snapshot(hrv={"last_night_avg_ms": 62}))) == (
+        "Chybí: HRV baseline (Garmin ji počítá až po zhruba 3 týdnech nošení hodinek). "
+        "Bez těchto dat nemůže být verdikt zelený."
+    )
+    # with another key missing too, the generic reason applies and the name stays "HRV baseline"
+    two = reason(garmin_data(snapshot=snapshot(hrv={"last_night_avg_ms": 62}, sleep=None)))
+    assert two.startswith("Chybí: HRV baseline, spánek (hodinky možná ještě nesynchronizovaly)")
     assert "(Garmin není přihlášený)" in reason(garmin_data(snapshot=snapshot(sleep=None), calls={"get_recovery_snapshot": "auth_error"}))
     assert "(garmin-mcp neodpovídá)" in reason(garmin_data(auth=None, snapshot=None))
     assert "(data z Garminu se nepodařilo načíst)" in reason(garmin_data(snapshot=None))

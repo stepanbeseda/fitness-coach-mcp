@@ -101,6 +101,7 @@ sched="$(dc exec -T coach-mcp python -c "import json,urllib.request; print(json.
 case "$sched" in
   on) report_ok "coach: ranní briefing zapnutý" ;;
   off) report_ok "coach: ranní briefing vypnutý (COACH_NTFY_URL / COACH_NTFY_TOPIC v .env)" ;;
+  stopped) report_fail "coach: plánovač ranního briefingu skončil → docker compose logs coach-mcp a docker compose restart coach-mcp" ;;
   *) report_warn "coach: stav ranního briefingu nezjištěn" ;;
 esac
 

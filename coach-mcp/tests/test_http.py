@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import anyio
 import httpx2
 import pytest
-from fakes import FakeGarmin, FakePush, fake_garmin_app, fake_garmin_running
+from fakes import FakeGarmin, FakePush, StopLoop, fake_garmin_app, fake_garmin_running
 
 from conftest import BACKEND_TOKEN, MCP_HEADERS, TODAY, auth_headers, call_tool, payload, running_client
 from coach_mcp.__main__ import configure_logging
@@ -247,7 +247,9 @@ def at_0630() -> datetime:
 
 
 async def never_wake(_seconds: float) -> None:
-    await asyncio.Event().wait()
+    """A scheduler sleep that never returns in time; it ends by raising, so a missing cancel is red, not a hang."""
+    await asyncio.sleep(5)
+    raise StopLoop
 
 
 async def wait_for(condition, seconds: float = 2.0) -> None:
@@ -258,6 +260,16 @@ async def wait_for(condition, seconds: float = 2.0) -> None:
 
 @pytest.mark.anyio
 async def test_daily_briefing_over_http(settings, store):
+    # the canonical alert rows of the YELLOW fixture (spec 4.3)
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.executemany(
+            "INSERT INTO alert_state (key, value, evaluated_on, fired_on) VALUES (?, ?, ?, ?)",
+            [
+                ("resting_hr_elevated", 0, "2026-10-06", None),
+                ("acwr_out_of_range", 1, "2026-10-06", "2026-10-04"),
+                ("garmin_auth", 0, "2026-10-06", None),
+            ],
+        )
     garmin = FakeGarmin(yellow_data())
     app = create_app(settings, store, today=lambda: TODAY, garmin=garmin)
     async with running_client(app) as client:
@@ -271,7 +283,7 @@ async def test_daily_briefing_over_http(settings, store):
     assert [(a["key"], a["holds"], a["new"]) for a in briefing["alerts"]] == [
         ("hrv_below_baseline", None, False),
         ("resting_hr_elevated", True, True),
-        ("acwr_out_of_range", True, True),
+        ("acwr_out_of_range", True, False),
         ("missed_workout", True, True),
         ("garmin_auth", False, False),
     ]
@@ -316,15 +328,42 @@ async def test_scheduler_off_without_push_config(settings, store):
 
 
 @pytest.mark.anyio
-async def test_scheduler_on_sends_from_lifespan(settings, store):
+async def test_scheduler_on_sends_from_lifespan(settings, store, caplog):
+    caplog.set_level(logging.DEBUG)
     garmin, push = FakeGarmin(garmin_data()), FakePush()
     app = create_app(push_settings(settings), store, garmin=garmin, push=push, now=at_0630, sleep=never_wake)
     async with running_client(app) as client:
         await wait_for(lambda: len(push.sent) == 1)
         assert (await client.get("/healthz")).json()["scheduler"] == "on"
+    await anyio.sleep(0.05)  # let the task's done-callback run
+    # a normal shutdown is a cancellation, not a "stopped" scheduler, and the callback raised nothing
+    assert "briefing status=stopped" not in caplog.text and "Exception in callback" not in caplog.text
     assert garmin.days == [TODAY]
     assert push.sent[0][1].title == "ZELENÁ · ranní briefing 7. 10."
     assert store.briefing_sent(TODAY)
+
+
+@pytest.mark.anyio
+async def test_scheduler_that_dies_is_reported_stopped(settings, store, caplog):
+    caplog.set_level(logging.DEBUG)
+    before_start = datetime(2026, 10, 7, 5, 0, tzinfo=PRAGUE)
+
+    async def dying_sleep(_seconds: float) -> None:
+        raise RuntimeError("boom")  # outside run()'s try: the scheduler task dies
+
+    app = create_app(
+        push_settings(settings), store, garmin=FakeGarmin(garmin_data()), push=FakePush(),
+        now=lambda: before_start, sleep=dying_sleep,
+    )
+    with anyio.fail_after(10):
+        async with running_client(app) as client:
+            await wait_for(lambda: "briefing status=stopped kind=RuntimeError" in caplog.text)
+            body = (await client.get("/healthz")).json()
+            assert body["scheduler"] == "stopped" and body["status"] == "ok"
+            assert (await client.get("/healthz")).status_code == 200
+            left_at = time.monotonic()
+        assert time.monotonic() - left_at < 2  # the dead task is not awaited again on shutdown
+    assert "boom" not in caplog.text
 
 
 @pytest.mark.anyio
@@ -335,7 +374,8 @@ async def test_lifespan_exit_cancels_a_running_fetch(settings, store):
 
         async def fetch(self, day):
             self.started.set()
-            await anyio.sleep_forever()
+            await asyncio.sleep(5)
+            raise AssertionError("fetch was not cancelled")
 
     garmin, push = HangingGarmin(), FakePush()
     app = create_app(push_settings(settings), store, garmin=garmin, push=push, now=at_0630, sleep=never_wake)

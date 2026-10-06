@@ -48,6 +48,8 @@ class GarminData:
     snapshot: dict[str, Any] | None = None
     hrv_trend: dict[str, Any] | None = None
     scheduled: dict[str, Any] | None = None
+    # The coach itself has no usable garmin-mcp token (a configuration problem, not a Garmin login).
+    credentials_missing: bool = False
 
     @property
     def auth_problem(self) -> bool:
@@ -100,7 +102,7 @@ class GarminReader:
         token = self._token()
         if token is None:
             log.warning("garmin status=error kind=no_credentials")
-            return GarminData(auth=None, calls=outcomes)
+            return GarminData(auth=None, calls=outcomes, credentials_missing=True)
 
         arguments: dict[str, dict[str, Any]] = {
             "get_recovery_snapshot": {"date": day.isoformat()},

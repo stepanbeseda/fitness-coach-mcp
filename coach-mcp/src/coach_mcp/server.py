@@ -25,13 +25,14 @@ from starlette.types import ASGIApp
 from . import __version__, tools
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
-from .garmin import GarminReader, GarminSource
+from .garmin import GarminReader, GarminSource, exception_kind
 from .push import NtfyPush, PushSender
 from .scheduler import BriefingScheduler, compose_briefing
 from .store import Store
 from .tools import PlannedSession, to_json
 
 log = logging.getLogger("coach_mcp.tools")
+briefing_log = logging.getLogger("coach_mcp.briefing")
 
 INSTRUCTIONS = (
     "Coach memory of the athlete: goals, constraints (injuries, limitations, availability, equipment), "
@@ -97,13 +98,24 @@ def build_server(
     garmin: GarminSource,
     scheduler: BriefingScheduler | None,
 ) -> MCPServer:
+    state = {"scheduler": "on" if scheduler is not None else "off"}
+
+    def on_scheduler_done(done: asyncio.Task[None]) -> None:
+        if done.cancelled():  # the normal shutdown
+            return
+        state["scheduler"] = "stopped"
+        exc = done.exception()  # also marks the exception as retrieved
+        briefing_log.error("briefing status=stopped kind=%s", exception_kind(exc) if exc is not None else "returned")
+
     @contextlib.asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
         task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
+        if task is not None:
+            task.add_done_callback(on_scheduler_done)
         try:
             yield None
         finally:
-            if task is not None:
+            if task is not None and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
@@ -242,7 +254,7 @@ def build_server(
             log.warning("healthz: database check failed kind=%s", type(exc).__name__)
             return JSONResponse({"status": "error", "db": "error"}, status_code=503)
         return JSONResponse(
-            {"status": "ok", "db": "ok", "schema_version": version, "scheduler": "on" if scheduler else "off"}
+            {"status": "ok", "db": "ok", "schema_version": version, "scheduler": state["scheduler"]}
         )
 
     return server

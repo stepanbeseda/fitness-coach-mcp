@@ -98,7 +98,9 @@ def fake_garmin_app(
     async def respond(name: str, arguments: dict[str, Any], payload: Any) -> str:
         calls.append((name, {k: v for k, v in arguments.items() if v is not None}))
         if name in hang:
-            await anyio.sleep_forever()
+            # Every awaitable injected into a lifespan test ends by raising, so a missing cancel is red, not a hang.
+            await anyio.sleep(5)
+            raise ToolError("hang ended without cancellation")
         if name in errors:
             raise ToolError(errors[name])
         return json.dumps(payload)

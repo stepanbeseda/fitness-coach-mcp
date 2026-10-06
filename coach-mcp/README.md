@@ -48,19 +48,22 @@ Upozornění (zpráva je uvádí jen tehdy, když jsou **nová**):
 - včera naplánovaný trénink v kalendáři Garminu nebyl splněn;
 - Garmin není přihlášený.
 
-Nové = ráno platí a při minulém vyhodnocení neplatilo; stav je v tabulce `alert_state`. Neznámá podmínka
-(chybějící data) stav nemění.
+Nové = ráno platí a při minulém vyhodnocení neplatilo; stav je v tabulce `alert_state`. Výjimka je nesplněný
+trénink: ten se hlásí každý den, kdy včera nějaký naplánovaný trénink nesplněn zůstal (každý den jde o jiný
+trénink). Neznámá podmínka (chybějící data) stav nemění.
 
-Plánovač běží v `COACH_BRIEFING_TIME` (výchozí 06:30, časové pásmo `TZ`). Když chybí spánek nebo HRV, zkouší
-to každých `COACH_BRIEFING_RETRY_MINUTES` minut a nejpozději v `COACH_BRIEFING_CUTOFF` pošle, co má. Problém
-s přihlášením do Garminu znamená, že push jde hned. Když služba nastartuje až po cutoff, ten den se nic
-neposílá. Push se při dočasné chybě ntfy serveru (5xx, 429, síť) opakuje do cutoffu, při trvalé chybě
+Plánovač běží v `COACH_BRIEFING_TIME` (výchozí 06:30, časové pásmo `TZ`). Když chybí spánek nebo HRV poslední
+noci, zkouší to každých `COACH_BRIEFING_RETRY_MINUTES` minut a nejpozději v `COACH_BRIEFING_CUTOFF` pošle, co
+má. Problém s přihlášením do Garminu znamená, že push jde hned. Když služba nastartuje až po cutoff, ten den
+se nic neposílá. Chybějící HRV baseline (Garmin ji počítá až po zhruba 3 týdnech nošení) se nečeká, jen se
+pojmenuje. Push se při dočasné chybě ntfy serveru (5xx, 429, síť) opakuje do cutoffu, při trvalé chybě
 (jiný 4xx) se ten den vzdá.
 
 Zpráva je česky; titulek začíná verdiktem (`ŽLUTÁ · ranní briefing 7. 10.`), priorita je 4 při červené nebo
 při novém upozornění, jinak 3. Zpráva se ořízne na 4000 bajtů. Bez nastavení `COACH_NTFY_URL` a
-`COACH_NTFY_TOPIC` se plánovač nespustí a `/healthz` hlásí `"scheduler":"off"`. Ruční odeslání (stav
-upozornění se nemění):
+`COACH_NTFY_TOPIC` se plánovač nespustí a `/healthz` hlásí `"scheduler":"off"`. Když plánovač nečekaně
+skončí, v logu je `briefing status=stopped` a `/healthz` hlásí `"scheduler":"stopped"` (`healthcheck.sh` to
+ohlásí jako problém). Ruční odeslání (stav upozornění se nemění):
 
 ```bash
 docker compose exec coach-mcp python -m coach_mcp send-briefing

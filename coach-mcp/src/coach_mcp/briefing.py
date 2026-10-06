@@ -3,7 +3,8 @@
 The verdict (green / yellow / red) comes from four criteria taken from the Garmin
 recovery snapshot. A missing input never makes the verdict greener: it caps it at
 yellow and is named in the message. Alerts are conditions evaluated once a day; an
-alert is *new* when it holds now and did not hold at the previous evaluation.
+alert is *new* when it holds now and did not hold at the previous evaluation, except event alerts
+(yesterday's missed workout), which are new whenever they hold.
 """
 
 from __future__ import annotations
@@ -30,6 +31,9 @@ ALERT_KEYS = (
     "missed_workout",
     "garmin_auth",
 )
+# Event alerts are about a different object each day (yesterday's workouts), so they are not
+# edge-triggered: "it held yesterday too" must not hide today's new event.
+EVENT_ALERTS = frozenset({"missed_workout"})
 # Garmin acwrStatus values that mean "outside the optimal range", shown in Czech. Any other
 # value (including "OPTIMAL") never fires; the raw string never reaches the message.
 ACWR_OUT = {"LOW": "nízký", "HIGH": "vysoký", "VERY_HIGH": "velmi vysoký"}
@@ -292,8 +296,10 @@ def alert_conditions(day: date, data: GarminData, nights_below: int | None) -> d
     return out
 
 
-def is_new(holds: bool | None, row: Mapping[str, Any] | None, day: date) -> bool:
-    """Holds now and (never seen, or did not hold last time, or was already announced today)."""
+def is_new(holds: bool | None, row: Mapping[str, Any] | None, day: date, *, event: bool = False) -> bool:
+    """Holds now and (an event alert, or never seen, or did not hold last time, or was already announced today)."""
+    if event:
+        return holds is True
     return holds is True and (row is None or row["value"] == 0 or row["fired_on"] == day.isoformat())
 
 
@@ -319,13 +325,23 @@ def _missed_names(scheduled: Mapping[str, Any] | None, day: date) -> list[str]:
     return [_one_line(e.get("name") or "bez názvu", 80) for e in entries if e.get("completed") is False]
 
 
-def _missing_reason(data: GarminData) -> str:
+def hrv_night_present(snapshot: Mapping[str, Any] | None) -> bool:
+    """Last night's HRV value is there (the baseline may still be missing)."""
+    section = _section(snapshot, "hrv")
+    return section is not None and _num(section.get("last_night_avg_ms")) is not None
+
+
+def _missing_reason(data: GarminData, missing: Sequence[str]) -> str:
     if data.auth_problem:
         return "Garmin není přihlášený"
+    if data.credentials_missing:
+        return "chybí interní token pro garmin-mcp (secrets/garmin_backend_token)"
     if data.auth is None:
         return "garmin-mcp neodpovídá"
     if data.snapshot is None:
         return "data z Garminu se nepodařilo načíst"
+    if list(missing) == ["hrv"] and hrv_night_present(data.snapshot):
+        return "Garmin ji počítá až po zhruba 3 týdnech nošení hodinek"
     return "hodinky možná ještě nesynchronizovaly"
 
 
@@ -416,8 +432,9 @@ def render(
         lines.append(f"Body Battery ráno: {fmt(criteria['body_battery']['at_wake'])} ({level_of('body_battery')})")
 
     if missing:
-        names = ", ".join(_NAME_CS[key] for key in missing)
-        lines.append(f"Chybí: {names} ({_missing_reason(data)}). Bez těchto dat nemůže být verdikt zelený.")
+        night = hrv_night_present(data.snapshot)
+        names = ", ".join("HRV baseline" if key == "hrv" and night else _NAME_CS[key] for key in missing)
+        lines.append(f"Chybí: {names} ({_missing_reason(data, missing)}). Bez těchto dat nemůže být verdikt zelený.")
 
     # Present criteria that are not green; a green verdict has none, so the line is only for yellow / red.
     items = []
@@ -466,7 +483,9 @@ def build_briefing(
     criteria = criteria_from_snapshot(data.snapshot, nights)
     verdict, missing = decide_verdict({key: criteria[key]["level"] for key in CRITERIA})
     conditions = alert_conditions(day, data, nights)
-    new = {key: is_new(holds, alert_rows.get(key), day) for key, holds in conditions.items()}
+    new = {
+        key: is_new(holds, alert_rows.get(key), day, event=key in EVENT_ALERTS) for key, holds in conditions.items()
+    }
     new_alerts = [key for key in ALERT_KEYS if new[key]]
     garmin_today = _garmin_today(data.scheduled, day)
     planned = list(sessions)
@@ -486,7 +505,10 @@ def build_briefing(
         "planned": planned,
         "garmin_today": garmin_today,
         "alerts": [{"key": key, "holds": conditions[key], "new": new[key]} for key in ALERT_KEYS],
-        "garmin": {"auth": data.auth or "unreachable", "calls": dict(data.calls)},
+        "garmin": {
+            "auth": "no_credentials" if data.credentials_missing else data.auth or "unreachable",
+            "calls": dict(data.calls),
+        },
         "push": {
             "title": message.title,
             "message": message.message,
@@ -494,7 +516,9 @@ def build_briefing(
             "tags": list(message.tags),
         },
     }
-    sleep_or_hrv_missing = "sleep" in missing or "hrv" in missing
+    # Wait only for what can still arrive during the morning: last night's sleep and HRV value (the
+    # HRV baseline does not appear within hours, so a missing baseline never waits).
+    sleep_or_hrv_missing = "sleep" in missing or not hrv_night_present(data.snapshot)
     return Briefing(
         payload=payload,
         message=message,

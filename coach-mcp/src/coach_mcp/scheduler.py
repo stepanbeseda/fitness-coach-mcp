@@ -53,6 +53,7 @@ class BriefingScheduler:
         self._zone = ZoneInfo(settings.timezone)
         self._day: date | None = None
         self._attempts = 0
+        self._window_seen = False
         self._stopped = False
 
     # ----------------------------------------------------------------- time
@@ -85,17 +86,23 @@ class BriefingScheduler:
         now = self._now().astimezone(self._zone)
         day = now.date()
         if day != self._day:
-            self._day, self._attempts, self._stopped = day, 0, False
+            self._day, self._attempts, self._window_seen, self._stopped = day, 0, False, False
         start = self._at(day, settings.briefing_time)
         cutoff = self._at(day, settings.briefing_cutoff)
         to_tomorrow = self._until(self._at(day + timedelta(days=1), settings.briefing_time), now)
 
-        if self._stopped or self._store.briefing_sent(day):
+        if self._stopped:
             return to_tomorrow
         if self._until(start, now) > 0:
             return self._until(start, now)
+        # The first look inside today's window; set before anything that can raise, so a store error
+        # on the first look is not mistaken for "the service started after the cutoff" on the retry.
+        first = not self._window_seen
+        self._window_seen = True
+        if self._store.briefing_sent(day):
+            return to_tomorrow
         final = self._until(cutoff, now) <= 0
-        if final and self._attempts == 0:
+        if final and first:
             log.info("briefing status=skipped reason=late_start")
             self._stopped = True
             return to_tomorrow
