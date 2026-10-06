@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 
 from coach_mcp import store as store_module
+from coach_mcp.briefing import ALERT_KEYS
 from coach_mcp.store import MIGRATIONS, SCHEMA_VERSION, SchemaTooNewError, Store
 
 
@@ -26,9 +27,9 @@ def _user_version(path) -> int:
 def test_empty_file_gets_schema_and_version(db_path):
     assert not db_path.exists()
     s = Store(db_path)
-    assert {"goals", "athlete_constraints", "sessions", "notes"} <= _tables(db_path)
-    assert _user_version(db_path) == 1 == SCHEMA_VERSION == len(MIGRATIONS)
-    assert s.check() == 1
+    assert {"goals", "athlete_constraints", "sessions", "notes", "briefing_runs", "alert_state"} <= _tables(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == 2
+    assert s.check() == SCHEMA_VERSION
 
 
 def test_data_survives_reopen(db_path):
@@ -39,7 +40,7 @@ def test_data_survives_reopen(db_path):
     goal = again.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Half marathon" and goal["target_date"] == "2027-04-05"
     assert goal["status"] == "active"
-    assert again.check() == 1
+    assert again.check() == SCHEMA_VERSION
 
 
 def test_newer_schema_refuses_to_open(db_path):
@@ -60,11 +61,11 @@ def test_newer_schema_refuses_to_open(db_path):
 
 def test_failed_migration_rolls_back(db_path, monkeypatch):
     Store(db_path)
-    broken = (MIGRATIONS[0], "CREATE TABLE extra (a INTEGER); INSERT INTO missing_table VALUES (1);")
+    broken = (*MIGRATIONS, "CREATE TABLE extra (a INTEGER); INSERT INTO missing_table VALUES (1);")
     monkeypatch.setattr(store_module, "MIGRATIONS", broken)
     with pytest.raises(sqlite3.OperationalError):
         Store(db_path)
-    assert _user_version(db_path) == 1
+    assert _user_version(db_path) == SCHEMA_VERSION
     assert "extra" not in _tables(db_path)
 
 
@@ -80,7 +81,7 @@ def test_failed_migration_leaves_no_open_transaction(db_path, monkeypatch):
             super().close()
 
     monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: real_connect(*a, factory=Recording, **kw))
-    broken = (MIGRATIONS[0], "CREATE TABLE extra (a INTEGER); INSERT INTO missing_table VALUES (1);")
+    broken = (*MIGRATIONS, "CREATE TABLE extra (a INTEGER); INSERT INTO missing_table VALUES (1);")
     monkeypatch.setattr(store_module, "MIGRATIONS", broken)
     with pytest.raises(sqlite3.OperationalError):
         Store(db_path)
@@ -89,10 +90,10 @@ def test_failed_migration_leaves_no_open_transaction(db_path, monkeypatch):
 
 def test_migration_applies_pending_entries_in_order(db_path, monkeypatch):
     Store(db_path)
-    extended = (MIGRATIONS[0], "CREATE TABLE extra (a INTEGER);")
+    extended = (*MIGRATIONS, "CREATE TABLE extra (a INTEGER);")
     monkeypatch.setattr(store_module, "MIGRATIONS", extended)
     Store(db_path)
-    assert _user_version(db_path) == 2
+    assert _user_version(db_path) == SCHEMA_VERSION + 1
     assert "extra" in _tables(db_path)
 
 
@@ -132,3 +133,80 @@ def test_unknown_columns_are_rejected(store):
     goal_id = store.insert_goal({"title": "x"})
     with pytest.raises(ValueError):
         store.update_goal(goal_id, {"id": 5})
+
+
+def test_migration_2_upgrades_a_version_1_file_with_data(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:1])
+        old = Store(db_path)
+        goal_id = old.insert_goal({"title": "Keep me"})
+        (session_id,) = old.replace_planned(
+            date(2026, 10, 5),
+            date(2026, 10, 11),
+            date(2026, 10, 5),
+            [{"date": date(2026, 10, 7), "type": "running", "description": "Easy run"}],
+        )[1]
+        note_id = old.insert_note(date(2026, 10, 7), "A note", session_id)
+        assert _user_version(db_path) == 1
+        assert "briefing_runs" not in _tables(db_path)
+    new = Store(db_path)
+    assert _user_version(db_path) == 2
+    goal = new.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    session = new.get_session(session_id)
+    assert session is not None and session["description"] == "Easy run"
+    note = new.get_note(note_id)
+    assert note is not None and note["text"] == "A note"
+    assert new.alert_states() == {}
+    assert new.briefing_sent(date(2026, 10, 7)) is False
+
+
+def test_record_briefing_sent_and_alert_state_upsert(store):
+    day1, day2 = date(2026, 10, 7), date(2026, 10, 8)
+    assert store.briefing_sent(day1) is False
+    store.record_briefing_sent(day1, "yellow", {"hrv_below_baseline": (True, True), "garmin_auth": (False, False)})
+    assert store.briefing_sent(day1) is True
+    assert store.briefing_sent(day2) is False
+    states = store.alert_states()
+    assert states["hrv_below_baseline"] == {"value": 1, "evaluated_on": "2026-10-07", "fired_on": "2026-10-07"}
+    assert states["garmin_auth"] == {"value": 0, "evaluated_on": "2026-10-07", "fired_on": None}
+
+    # Next day: still holds but not new -> fired_on is kept; garmin_auth becomes true and new.
+    store.record_briefing_sent(day2, "green", {"hrv_below_baseline": (True, False), "garmin_auth": (True, True)})
+    states = store.alert_states()
+    assert states["hrv_below_baseline"] == {"value": 1, "evaluated_on": "2026-10-08", "fired_on": "2026-10-07"}
+    assert states["garmin_auth"] == {"value": 1, "evaluated_on": "2026-10-08", "fired_on": "2026-10-08"}
+
+    # An alert absent from the update (unknown condition) is left alone.
+    store.record_briefing_sent(date(2026, 10, 9), "green", {})
+    assert store.alert_states() == states
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.record_briefing_sent(day1, "red", {"hrv_below_baseline": (False, False)})
+    # The failed call rolled back as a whole.
+    assert store.alert_states() == states
+
+    # Every alert key the code knows is accepted by the CHECK in migration 2.
+    store.record_briefing_sent(date(2026, 10, 10), "green", {key: (True, True) for key in ALERT_KEYS})
+    assert set(store.alert_states()) == set(ALERT_KEYS)
+
+
+# Keep in sync with the downgrade command in coach-mcp/README.md.
+DOWNGRADE_SQL = "BEGIN IMMEDIATE; DROP TABLE alert_state; DROP TABLE briefing_runs; PRAGMA user_version = 1; COMMIT;"
+
+
+def test_downgrade_sql_returns_to_a_version_1_file(db_path, monkeypatch):
+    new = Store(db_path)
+    goal_id = new.insert_goal({"title": "Keep me"})
+    new.record_briefing_sent(date(2026, 10, 7), "green", {"garmin_auth": (False, False)})
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == 1
+    assert "briefing_runs" not in _tables(db_path) and "alert_state" not in _tables(db_path)
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:1])
+    old = Store(db_path)
+    goal = old.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
