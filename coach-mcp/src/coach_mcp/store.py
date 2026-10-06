@@ -64,6 +64,20 @@ CREATE TABLE notes (
 );
 CREATE INDEX notes_date ON notes(date, id);
 """,
+    """
+CREATE TABLE briefing_runs (
+  date    TEXT PRIMARY KEY,
+  verdict TEXT NOT NULL CHECK (verdict IN ('green','yellow','red')),
+  sent_at TEXT NOT NULL
+);
+CREATE TABLE alert_state (
+  key          TEXT PRIMARY KEY
+               CHECK (key IN ('hrv_below_baseline','resting_hr_elevated','acwr_out_of_range','missed_workout','garmin_auth')),
+  value        INTEGER NOT NULL CHECK (value IN (0, 1)),
+  evaluated_on TEXT NOT NULL,
+  fired_on     TEXT
+);
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -282,6 +296,35 @@ class Store:
                 copy_id = _insert_session(conn, original, "planned", session_id)
             note_id = _insert_note(conn, note[0], note[1], session_id) if note is not None else None
         return copy_id, note_id
+
+    # ------------------------------------------------------------ briefing
+
+    def briefing_sent(self, day: date) -> bool:
+        return bool(self._all("SELECT 1 FROM briefing_runs WHERE date = ?", (day.isoformat(),)))
+
+    def alert_states(self) -> dict[str, dict[str, Any]]:
+        """Alert key -> ``{value, evaluated_on, fired_on}`` for every alert evaluated so far."""
+        rows = self._all("SELECT key, value, evaluated_on, fired_on FROM alert_state")
+        return {row["key"]: {k: v for k, v in row.items() if k != "key"} for row in rows}
+
+    def record_briefing_sent(self, day: date, verdict: str, alerts: Mapping[str, tuple[bool, bool]]) -> None:
+        """Record a successful scheduled push and the alert states it evaluated, in one transaction.
+
+        ``alerts`` maps a key to ``(holds, new)`` and contains only conditions whose value is known.
+        A second call for the same day raises ``sqlite3.IntegrityError``.
+        """
+        with self._conn() as conn, conn:
+            conn.execute(
+                "INSERT INTO briefing_runs (date, verdict, sent_at) VALUES (?, ?, ?)",
+                (day.isoformat(), verdict, _now()),
+            )
+            for key, (holds, new) in alerts.items():
+                conn.execute(
+                    "INSERT INTO alert_state (key, value, evaluated_on, fired_on) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, evaluated_on = excluded.evaluated_on, "
+                    "fired_on = COALESCE(excluded.fired_on, alert_state.fired_on)",
+                    (key, int(holds), day.isoformat(), day.isoformat() if new else None),
+                )
 
     # --------------------------------------------------------------- notes
 

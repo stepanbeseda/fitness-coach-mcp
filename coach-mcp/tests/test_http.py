@@ -1,13 +1,23 @@
+import asyncio
 import json
 import logging
 import sqlite3
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+import anyio
+import httpx2
 import pytest
+from fakes import FakeGarmin, FakePush, StopLoop, fake_garmin_app, fake_garmin_running
 
 from conftest import BACKEND_TOKEN, MCP_HEADERS, TODAY, auth_headers, call_tool, payload, running_client
 from coach_mcp.__main__ import configure_logging
+from coach_mcp.config import Settings
+from coach_mcp.garmin import GarminData, GarminReader
 from coach_mcp.server import create_app
-from coach_mcp.store import Store
+from coach_mcp.store import SCHEMA_VERSION, Store
+from garmin_payloads import GREEN_SNAPSHOT, YELLOW_SNAPSHOT, garmin_data, yellow_data
 
 EXPECTED_TOOLS = {
     "get_coach_context",
@@ -17,8 +27,11 @@ EXPECTED_TOOLS = {
     "save_plan",
     "update_session",
     "add_note",
+    "get_daily_briefing",
 }
 WRITE_TOOLS = {"set_goal", "set_constraint", "save_plan", "update_session", "add_note"}
+# Tools that reach an outside service (garmin-mcp); every other tool only touches the local store.
+OPEN_WORLD_TOOLS = {"get_daily_briefing"}
 
 INIT = {
     "jsonrpc": "2.0",
@@ -40,7 +53,7 @@ async def test_healthz_reports_db_state(app, store, monkeypatch):
     async with running_client(app) as client:
         r = await client.get("/healthz")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok", "db": "ok", "schema_version": 1}
+        assert r.json() == {"status": "ok", "db": "ok", "schema_version": SCHEMA_VERSION, "scheduler": "off"}
 
         def broken():
             raise sqlite3.OperationalError("x")
@@ -82,6 +95,7 @@ async def test_initialize_list_and_annotations(app):
         init = r.json()["result"]
         assert init["serverInfo"]["name"] == "coach-memory"
         assert "get_coach_context" in init["instructions"]
+        assert "get_daily_briefing" in init["instructions"]
 
         r = await client.post("/mcp", headers=auth_headers(), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert r.status_code == 202
@@ -92,7 +106,7 @@ async def test_initialize_list_and_annotations(app):
         for name, tool in by_name.items():
             assert tool["title"] and tool["description"]
             ann = tool["annotations"]
-            assert ann["openWorldHint"] is False
+            assert ann["openWorldHint"] is (name in OPEN_WORLD_TOOLS)
             assert ann["readOnlyHint"] is (name not in WRITE_TOOLS)
             if name in WRITE_TOOLS:
                 assert ann["destructiveHint"] is False
@@ -214,3 +228,203 @@ async def test_log_never_contains_arguments_or_stored_text(app, caplog, restore_
         assert ok["isError"] is False
     assert "tool=get_plan status=error" in caplog.text and "tool=add_note status=ok" in caplog.text
     assert "SECRET-DATE-TEXT" not in caplog.text and "PRIVATE-NOTE-TEXT" not in caplog.text
+
+
+# ---------------------------------------------------------- daily briefing
+
+PRAGUE = ZoneInfo("Europe/Prague")
+GARMIN_TOKEN = "garmin-backend-token-0123456789abcdef"
+
+
+def push_settings(settings: Settings, **overrides) -> Settings:
+    fields = {**settings.__dict__, "ntfy_url": "https://ntfy.example", "ntfy_topic": "t1"}
+    fields.update(overrides)
+    return Settings(**fields)
+
+
+def at_0630() -> datetime:
+    return datetime(2026, 10, 7, 6, 30, tzinfo=PRAGUE)
+
+
+async def never_wake(_seconds: float) -> None:
+    """A scheduler sleep that never returns in time; it ends by raising, so a missing cancel is red, not a hang."""
+    await asyncio.sleep(5)
+    raise StopLoop
+
+
+async def wait_for(condition, seconds: float = 2.0) -> None:
+    with anyio.fail_after(seconds):
+        while not condition():
+            await anyio.sleep(0.01)
+
+
+@pytest.mark.anyio
+async def test_daily_briefing_over_http(settings, store):
+    # the canonical alert rows of the YELLOW fixture (spec 4.3)
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.executemany(
+            "INSERT INTO alert_state (key, value, evaluated_on, fired_on) VALUES (?, ?, ?, ?)",
+            [
+                ("resting_hr_elevated", 0, "2026-10-06", None),
+                ("acwr_out_of_range", 1, "2026-10-06", "2026-10-04"),
+                ("garmin_auth", 0, "2026-10-06", None),
+            ],
+        )
+    garmin = FakeGarmin(yellow_data())
+    app = create_app(settings, store, today=lambda: TODAY, garmin=garmin)
+    async with running_client(app) as client:
+        result = await call_tool(client, "get_daily_briefing", {})
+    assert result["isError"] is False
+    briefing = payload(result)
+    assert briefing["date"] == "2026-10-07" and briefing["verdict"] == "yellow"
+    assert briefing["missing"] == ["hrv", "body_battery"]
+    assert briefing["criteria"]["readiness"] == {"level": "yellow", "score": 61}
+    assert briefing["criteria"]["sleep"] == {"level": "yellow", "minutes": 375, "score": 70}
+    assert [(a["key"], a["holds"], a["new"]) for a in briefing["alerts"]] == [
+        ("hrv_below_baseline", None, False),
+        ("resting_hr_elevated", True, True),
+        ("acwr_out_of_range", True, False),
+        ("missed_workout", True, True),
+        ("garmin_auth", False, False),
+    ]
+    assert briefing["garmin_today"] == ["Lehký běh 40 min"]
+    assert briefing["push"]["title"] == "ŽLUTÁ · ranní briefing 7. 10."
+    assert briefing["push"]["priority"] == 4 and briefing["push"]["tags"] == ["yellow_circle", "warning"]
+    assert garmin.days == [TODAY]
+
+
+@pytest.mark.anyio
+async def test_daily_briefing_changes_no_state(settings, store, db_path):
+    app = create_app(settings, store, today=lambda: TODAY, garmin=FakeGarmin(yellow_data()))
+    async with running_client(app) as client:
+        await call_tool(client, "get_daily_briefing", {})
+        await call_tool(client, "get_daily_briefing", {}, id_=3)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM briefing_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM alert_state").fetchone()[0] == 0
+
+
+@pytest.mark.anyio
+async def test_daily_briefing_with_unreachable_garmin_is_still_a_result(settings, store):
+    app = create_app(
+        settings, store, today=lambda: TODAY, garmin=FakeGarmin(GarminData(auth=None, calls={"get_hrv_trend": "error"}))
+    )
+    async with running_client(app) as client:
+        result = await call_tool(client, "get_daily_briefing", {})
+    assert result["isError"] is False
+    briefing = payload(result)
+    assert briefing["verdict"] == "yellow" and briefing["garmin"]["auth"] == "unreachable"
+    assert briefing["missing"] == ["readiness", "hrv", "sleep", "body_battery"]
+
+
+@pytest.mark.anyio
+async def test_scheduler_off_without_push_config(settings, store):
+    garmin, push = FakeGarmin(garmin_data()), FakePush()
+    app = create_app(settings, store, today=lambda: TODAY, garmin=garmin, push=push, now=at_0630, sleep=never_wake)
+    async with running_client(app) as client:
+        assert (await client.get("/healthz")).json()["scheduler"] == "off"
+        await anyio.sleep(0.05)
+    assert garmin.calls == 0 and push.sent == []
+
+
+@pytest.mark.anyio
+async def test_scheduler_on_sends_from_lifespan(settings, store, caplog):
+    caplog.set_level(logging.DEBUG)
+    garmin, push = FakeGarmin(garmin_data()), FakePush()
+    app = create_app(push_settings(settings), store, garmin=garmin, push=push, now=at_0630, sleep=never_wake)
+    async with running_client(app) as client:
+        await wait_for(lambda: len(push.sent) == 1)
+        assert (await client.get("/healthz")).json()["scheduler"] == "on"
+    await anyio.sleep(0.05)  # let the task's done-callback run
+    # a normal shutdown is a cancellation, not a "stopped" scheduler, and the callback raised nothing
+    assert "briefing status=stopped" not in caplog.text and "Exception in callback" not in caplog.text
+    assert garmin.days == [TODAY]
+    assert push.sent[0][1].title == "ZELENÁ · ranní briefing 7. 10."
+    assert store.briefing_sent(TODAY)
+
+
+@pytest.mark.anyio
+async def test_scheduler_that_dies_is_reported_stopped(settings, store, caplog):
+    caplog.set_level(logging.DEBUG)
+    before_start = datetime(2026, 10, 7, 5, 0, tzinfo=PRAGUE)
+
+    async def dying_sleep(_seconds: float) -> None:
+        raise RuntimeError("boom")  # outside run()'s try: the scheduler task dies
+
+    app = create_app(
+        push_settings(settings), store, garmin=FakeGarmin(garmin_data()), push=FakePush(),
+        now=lambda: before_start, sleep=dying_sleep,
+    )
+    with anyio.fail_after(10):
+        async with running_client(app) as client:
+            await wait_for(lambda: "briefing status=stopped kind=RuntimeError" in caplog.text)
+            body = (await client.get("/healthz")).json()
+            assert body["scheduler"] == "stopped" and body["status"] == "ok"
+            assert (await client.get("/healthz")).status_code == 200
+            left_at = time.monotonic()
+        assert time.monotonic() - left_at < 2  # the dead task is not awaited again on shutdown
+    assert "boom" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_lifespan_exit_cancels_a_running_fetch(settings, store):
+    class HangingGarmin:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def fetch(self, day):
+            self.started.set()
+            await asyncio.sleep(5)
+            raise AssertionError("fetch was not cancelled")
+
+    garmin, push = HangingGarmin(), FakePush()
+    app = create_app(push_settings(settings), store, garmin=garmin, push=push, now=at_0630, sleep=never_wake)
+    with anyio.fail_after(10):
+        async with running_client(app):
+            await asyncio.wait_for(garmin.started.wait(), 2)
+            left_at = time.monotonic()
+        # a swallowed cancellation would keep the shutdown waiting for the scheduler task
+        assert time.monotonic() - left_at < 2
+    assert push.sent == []
+
+
+@pytest.mark.anyio
+async def test_lifespan_exit_cancels_a_fetch_hanging_inside_the_sdk_client(settings, store, tmp_path):
+    token_file = tmp_path / "garmin_backend_token"
+    token_file.write_text(GARMIN_TOKEN, encoding="utf-8")
+    fake, calls = fake_garmin_app(GARMIN_TOKEN, hang=frozenset({"get_recovery_snapshot"}))
+    config = push_settings(settings, garmin_token_file=token_file)
+    reader = GarminReader(config, transport=httpx2.ASGITransport(app=fake))
+    push = FakePush()
+    app = create_app(config, store, garmin=reader, push=push, now=at_0630, sleep=never_wake)
+    with anyio.fail_after(10):
+        async with fake_garmin_running(fake):
+            async with running_client(app):
+                await wait_for(lambda: [name for name, _ in calls] == ["get_recovery_snapshot"])
+                left_at = time.monotonic()
+            assert time.monotonic() - left_at < 2
+    assert push.sent == []
+
+
+@pytest.mark.anyio
+async def test_push_and_tool_report_the_same_briefing(settings, store):
+    # HRV is present, so the scheduler sends at 06:30 instead of waiting for the watch to sync.
+    snapshot = {**YELLOW_SNAPSHOT, "hrv": GREEN_SNAPSHOT["hrv"]}
+    garmin, push = FakeGarmin(yellow_data(snapshot=snapshot)), FakePush()
+    app = create_app(push_settings(settings), store, garmin=garmin, push=push, now=at_0630, sleep=never_wake)
+    async with running_client(app) as client:
+        await wait_for(lambda: len(push.sent) == 1 and store.briefing_sent(TODAY))
+        tool = payload(await call_tool(client, "get_daily_briefing", {}))
+    (_, sent), = push.sent
+    assert tool["push"] == {
+        "title": sent.title,
+        "message": sent.message,
+        "priority": sent.priority,
+        "tags": list(sent.tags),
+    }
+    assert tool["verdict"] == "yellow"
+    assert [a["key"] for a in tool["alerts"] if a["new"]] == ["resting_hr_elevated", "acwr_out_of_range", "missed_workout"]
+    for text in ("Klidová tepovka 58 bpm", "Poměr akutní a chronické zátěže 1,62", "Intervaly 6×800 m"):
+        assert text in sent.message
+    # the alert state the push wrote keeps the already announced alerts "new" for the day
+    assert store.alert_states()["acwr_out_of_range"]["fired_on"] == "2026-10-07"
