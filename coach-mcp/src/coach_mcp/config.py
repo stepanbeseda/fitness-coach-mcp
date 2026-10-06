@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+_TIME_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
+_TOPIC_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def _split(value: str | None) -> list[str]:
@@ -21,6 +27,27 @@ def _text(env: dict[str, str], name: str, default: str) -> str:
     return value
 
 
+def _opt(env: dict[str, str], name: str, default: str) -> str:
+    """Like ``_text`` but a missing or blank value means the default (Compose passes ``${X:-}``)."""
+    return env.get(name, "").strip() or default
+
+
+def _url(name: str, value: str) -> str:
+    if not value.startswith(("http://", "https://")):
+        raise ValueError(f"{name} must start with http:// or https://")
+    if "?" in value or "#" in value:
+        raise ValueError(f"{name} must not contain ? or #")
+    if not urlsplit(value).hostname:
+        raise ValueError(f"{name} must contain a host")
+    return value
+
+
+def _clock_time(name: str, value: str) -> dt.time:
+    if not _TIME_RE.fullmatch(value):
+        raise ValueError(f"{name} must be HH:MM (00:00-23:59), got {value!r}")
+    return dt.time.fromisoformat(value)
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: Path = Path("/data/coach/coach.db")
@@ -31,6 +58,19 @@ class Settings:
     log_level: str = "INFO"
     # Optional Host allowlist (enables the SDK's DNS-rebinding check when set).
     allowed_hosts: list[str] = field(default_factory=list)
+    # Morning briefing push (off while the ntfy URL or topic is empty).
+    ntfy_url: str = ""
+    ntfy_topic: str = field(default="", repr=False)  # works like a password: never in a repr or a log
+    ntfy_token_file: Path = Path("/run/secrets/ntfy_token")
+    garmin_url: str = "http://garmin-mcp:8000/mcp"
+    garmin_token_file: Path = Path("/run/secrets/garmin_backend_token")
+    briefing_time: dt.time = dt.time(6, 30)
+    briefing_cutoff: dt.time = dt.time(9, 30)
+    briefing_retry_minutes: int = 15
+
+    @property
+    def push_enabled(self) -> bool:
+        return bool(self.ntfy_url and self.ntfy_topic)
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -58,6 +98,33 @@ class Settings:
         if log_level not in LOG_LEVELS:
             raise ValueError(f"COACH_MCP_LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}")
 
+        ntfy_url = _opt(env, "COACH_NTFY_URL", "")
+        if ntfy_url:
+            ntfy_url = _url("COACH_NTFY_URL", ntfy_url).rstrip("/")
+        ntfy_topic = _opt(env, "COACH_NTFY_TOPIC", "")
+        if ntfy_topic and not _TOPIC_RE.fullmatch(ntfy_topic):
+            raise ValueError("COACH_NTFY_TOPIC must match [A-Za-z0-9_-]{1,64}")
+        if bool(ntfy_url) != bool(ntfy_topic):
+            raise ValueError("COACH_NTFY_URL and COACH_NTFY_TOPIC must be set together")
+
+        garmin_url = _opt(env, "COACH_GARMIN_MCP_URL", "http://garmin-mcp:8000/mcp")
+        _url("COACH_GARMIN_MCP_URL", garmin_url)
+        if not garmin_url.endswith("/mcp"):
+            raise ValueError("COACH_GARMIN_MCP_URL must end with /mcp")
+
+        briefing_time = _clock_time("COACH_BRIEFING_TIME", _opt(env, "COACH_BRIEFING_TIME", "06:30"))
+        briefing_cutoff = _clock_time("COACH_BRIEFING_CUTOFF", _opt(env, "COACH_BRIEFING_CUTOFF", "09:30"))
+        if briefing_cutoff <= briefing_time:
+            raise ValueError("COACH_BRIEFING_CUTOFF must be later than COACH_BRIEFING_TIME")
+
+        raw_retry = _opt(env, "COACH_BRIEFING_RETRY_MINUTES", "15")
+        try:
+            retry = int(raw_retry)
+        except ValueError:
+            raise ValueError("COACH_BRIEFING_RETRY_MINUTES must be an integer") from None
+        if not 1 <= retry <= 180:
+            raise ValueError("COACH_BRIEFING_RETRY_MINUTES must be between 1 and 180")
+
         return cls(
             db_path=db_path,
             bearer_token_file=Path(_text(env, "COACH_MCP_BEARER_TOKEN_FILE", "/run/secrets/coach_backend_token")),
@@ -66,4 +133,12 @@ class Settings:
             timezone=timezone,
             log_level=log_level,
             allowed_hosts=_split(env.get("COACH_MCP_ALLOWED_HOSTS")),
+            ntfy_url=ntfy_url,
+            ntfy_topic=ntfy_topic,
+            ntfy_token_file=Path(_opt(env, "COACH_NTFY_TOKEN_FILE", "/run/secrets/ntfy_token")),
+            garmin_url=garmin_url,
+            garmin_token_file=Path(_opt(env, "COACH_GARMIN_TOKEN_FILE", "/run/secrets/garmin_backend_token")),
+            briefing_time=briefing_time,
+            briefing_cutoff=briefing_cutoff,
+            briefing_retry_minutes=retry,
         )

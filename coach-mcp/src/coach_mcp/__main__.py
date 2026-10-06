@@ -18,6 +18,11 @@ def configure_logging(level: str) -> None:
     # WARNING or above.
     for name in ("mcp", "httpx", "httpx2", "httpcore", "httpcore2", "sse_starlette"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    # The SDK *client* (used to read garmin-mcp) logs every client message with
+    # its arguments at DEBUG and tracebacks that can carry response text under
+    # "mcp.client" and under a top-level logger literally named "client".
+    for name in ("mcp.client", "client"):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
 
 
 def main() -> None:

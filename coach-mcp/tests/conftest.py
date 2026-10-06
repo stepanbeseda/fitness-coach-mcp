@@ -87,7 +87,7 @@ def payload(result: dict[str, Any]) -> Any:
 @pytest.fixture
 def restore_logging():
     root = logging.getLogger()
-    names = ("mcp", "httpx", "httpx2", "httpcore", "httpcore2", "sse_starlette")
+    names = ("mcp", "mcp.client", "client", "httpx", "httpx2", "httpcore", "httpcore2", "sse_starlette")
     saved = {n: logging.getLogger(n).level for n in names}
     saved_root = (root.level, list(root.handlers))
     yield
