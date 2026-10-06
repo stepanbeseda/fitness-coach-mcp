@@ -5,7 +5,8 @@ vybavení), tréninkový plán po dnech se stavem a deník poznámek. Data jsou 
 `coach-data`. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp` v privátní Docker síti; MCP klienti
 se k němu dostanou jen přes gateway (`/coach/mcp`), která posílá interní bearer token
 (`/run/secrets/coach_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed). Sám volá
-jen `garmin-mcp` (tři čtecí nástroje, interní token `garmin_backend_token`) a volitelně ntfy server.
+jen `garmin-mcp` (tři čtecí nástroje, interní token `garmin_backend_token`) a volitelně Telegram Bot API
+(ranní briefing).
 Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená a nahrazené tréninky zůstanou
 jako `superseded`.
 
@@ -56,12 +57,13 @@ Plánovač běží v `COACH_BRIEFING_TIME` (výchozí 06:30, časové pásmo `TZ
 noci, zkouší to každých `COACH_BRIEFING_RETRY_MINUTES` minut a nejpozději v `COACH_BRIEFING_CUTOFF` pošle, co
 má. Problém s přihlášením do Garminu znamená, že push jde hned. Když služba nastartuje až po cutoff, ten den
 se nic neposílá. Na chybějící HRV baseline (Garmin ji počítá až po zhruba 3 týdnech nošení) se nečeká, jen se
-pojmenuje. Push se při dočasné chybě ntfy serveru (5xx, 429, síť) opakuje do cutoffu, při trvalé chybě
-(jiný 4xx) se ten den vzdá.
+pojmenuje. Odeslání se při dočasné chybě Telegramu (5xx, 429, síť) opakuje do cutoffu; při trvalé chybě
+(jiný 4xx, třeba špatný token nebo chat id, bot zablokovaný) se ten den vzdá.
 
-Zpráva je česky; titulek začíná verdiktem (`ŽLUTÁ · ranní briefing 7. 10.`), priorita je 4 při červené nebo
-při novém upozornění, jinak 3. Zpráva se ořízne na 4000 bajtů. Bez nastavení `COACH_NTFY_URL` a
-`COACH_NTFY_TOPIC` se plánovač nespustí a `/healthz` hlásí `"scheduler":"off"`. Když plánovač nečekaně
+Zpráva je česky a bez formátování: první řádek je verdikt s barevným kolečkem a datem
+(`🟡 ŽLUTÁ · ranní briefing 7. 10.`, s `⚠️` za kolečkem, když jsou nová upozornění), pak prázdný řádek a text.
+Celá zpráva se ořízne na 4000 bajtů (Telegram bere nejvýš 4096 znaků). Bez `COACH_TELEGRAM_CHAT_ID` se plánovač
+nespustí a `/healthz` hlásí `"scheduler":"off"`. Když plánovač nečekaně
 skončí, v logu je `briefing status=stopped` a `/healthz` hlásí `"scheduler":"stopped"` (`healthcheck.sh` to
 ohlásí jako problém). Ruční odeslání (stav upozornění se nemění):
 
@@ -113,9 +115,8 @@ a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open databa
 | `TZ` | `Europe/Prague` | co znamená „dnes“ |
 | `COACH_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` nebo `ERROR`; logy: jen název nástroje, výsledek, doba, nikdy argumenty ani uložené texty |
 | `COACH_MCP_ALLOWED_HOSTS` | *(prázdné)* | zapne kontrolu Host hlavičky (např. `coach-mcp:8000`) |
-| `COACH_NTFY_URL` | *(prázdné)* | adresa ntfy serveru (`https://ntfy.sh`, bez `?` a `#`); s tématem zapíná ranní push |
-| `COACH_NTFY_TOPIC` | *(prázdné)* | téma ntfy (`A-Za-z0-9_-`, 1 až 64 znaků); funguje jako heslo, nikdy se neloguje; musí být nastavené spolu s URL |
-| `COACH_NTFY_TOKEN_FILE` | `/run/secrets/ntfy_token` | volitelný ntfy access token (prázdný soubor = push bez tokenu) |
+| `COACH_TELEGRAM_CHAT_ID` | *(prázdné)* | chat id tvého chatu s botem (celé číslo, skupina záporné); zapíná ranní briefing; nikdy se neloguje |
+| `COACH_TELEGRAM_TOKEN_FILE` | `/run/secrets/telegram_bot_token` | token bota od @BotFather; s nastaveným chat id musí mít tvar tokenu, jinak se služba nespustí |
 | `COACH_GARMIN_MCP_URL` | `http://garmin-mcp:8000/mcp` | adresa `garmin-mcp` (končí `/mcp`) |
 | `COACH_GARMIN_TOKEN_FILE` | `/run/secrets/garmin_backend_token` | interní token pro `garmin-mcp` (min. 16 znaků) |
 | `COACH_BRIEFING_TIME` | `06:30` | kdy plánovač začne (`HH:MM`, časové pásmo `TZ`) |
@@ -131,5 +132,5 @@ docker build --target test coach-mcp
 ```
 
 Testy běží při každém buildu (bez sítě, SQLite v dočasném adresáři, pevné datum 2026-10-07 a falešné hodiny
-místo skutečného času; Garmin a ntfy nahrazují falešné backendy).
+místo skutečného času; Garmin a Telegram nahrazují falešné backendy).
 Zámky závislostí (`requirements.lock`, `requirements-dev.lock`) se přegenerují jen přes `scripts/lock-deps.sh`.

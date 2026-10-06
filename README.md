@@ -11,7 +11,7 @@ Self-hosted MCP servery pro osobního fitness kouče v Claude:
   [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect) 0.3.17).
 - **Kouč (paměť)**: cíle, omezení (zranění, dostupné dny, vybavení), tréninkový plán po dnech se stavem
   a deník poznámek, aby si kouč pamatoval stav mezi konverzacemi (vlastní server `coach-mcp/` se SQLite).
-  Volitelně ráno pošle na telefon briefing s verdiktem a upozorněními (ntfy, viz Provoz).
+  Volitelně ráno pošle briefing s verdiktem a upozorněními do tvého chatu s Telegram botem (viz Provoz).
 
 Všechny tři běží za jednou OAuth 2.1 gateway a ven jsou vystavené jen přes **vlastní Tailscale uzel**:
 Funnel na portu 443 pro claude.ai (web, mobil, Desktop) a tailnet pro Claude Code / lokální Claude Desktop.
@@ -31,7 +31,7 @@ Claude Code / mcp-remote (Mac, tailnet) ──WireGuard────────�
  ├─ hevy-mcp ───── oficiální image (Streamable HTTP), privátní síť "mcp"
  ├─ garmin-mcp ─── vlastní server, tokeny ve volume garmin-tokens, privátní síť "mcp"
  └─ coach-mcp ──── vlastní server, SQLite ve volume coach-data, privátní síť "mcp"
-                   ranní briefing → ntfy server (HTTPS ven, jen když je nastavený)
+                   ranní briefing → Telegram Bot API (HTTPS ven, jen když je nastavený)
 ```
 
 URL konektorů (stejné z claude.ai i z tailnetu, MagicDNS v tailnetu vrací 100.x adresu). `<tailnet>` je
@@ -49,7 +49,7 @@ gateway nemusí publikovat žádný port na hostu.
 
 | Vrstva | Co dělá |
 |---|---|
-| Síť | Žádný publikovaný port na hostu. Gateway poslouchá jen na 127.0.0.1 v namespace sidecaru, takže jediná cesta dovnitř je `tailscale serve`. Backendy jsou jen v privátní Docker síti; ven volají jen svá API (Hevy, Garmin Connect) a `coach-mcp` volitelně ntfy server pro ranní briefing (viz Provoz → Ranní briefing). Ostatní služby hostu ani jeho vlastní `tailscale serve` se nemění. |
+| Síť | Žádný publikovaný port na hostu. Gateway poslouchá jen na 127.0.0.1 v namespace sidecaru, takže jediná cesta dovnitř je `tailscale serve`. Backendy jsou jen v privátní Docker síti; ven volají jen svá API (Hevy, Garmin Connect) a `coach-mcp` volitelně Telegram Bot API (`api.telegram.org`) pro ranní briefing (viz Provoz → Ranní briefing). Ostatní služby hostu ani jeho vlastní `tailscale serve` se nemění. |
 | Funnel | Veřejně jde jen discovery (`/.well-known/*`), odpověď 401 a `/token`. Cokoli s tokenem a `/token` přes Funnel projde jen z `160.79.104.0/21` (publikovaný odchozí rozsah Anthropicu pro MCP konektory). |
 | Přihlášení | `/authorize` (heslo argon2id + TOTP) jen z tvých zařízení v tailnetu (`Tailscale-User-Login` = `OWNER_TAILSCALE_LOGIN`, ne přes Funnel). Lockout s exponenciálním backoffem, ochrana proti znovupoužití TOTP kódu, CSRF cookie. |
 | OAuth | MCP auth spec 2025-11-25: PKCE S256 povinně, `resource` (RFC 8707), takže každý token platí jen pro jeden endpoint (Hevy token na Garminu nefunguje). `iss` (RFC 9207). Access token 1 h, refresh 90 dní, rotace s detekcí znovupoužití (s oknem 120 s na retry). Revokace (RFC 7009). |
@@ -110,7 +110,7 @@ cp .env.example .env && chmod 600 .env
 
 V `.env` vyplň `PUBLIC_BASE_URL` (`https://fitness-mcp.<tailnet>`) a `OWNER_TAILSCALE_LOGIN` (tvůj
 Tailscale login, např. `jane@github`). Příkazy, které ti obě hodnoty vypíšou, jsou přímo v `.env.example`.
-Volitelně ranní briefing na telefon: proměnné `COACH_NTFY_*` a `COACH_BRIEFING_*` (viz Provoz → Ranní briefing).
+Volitelně ranní briefing do Telegramu: `COACH_TELEGRAM_CHAT_ID` a `COACH_BRIEFING_*` (viz Provoz → Ranní briefing).
 
 ### 4. Secrets
 
@@ -232,7 +232,7 @@ Konektory z claude.ai fungují v Desktopu samy. Pokud chceš spojení čistě p�
 | Změna hesla / nový TOTP | `scripts/setup-secrets.sh password` / `scripts/setup-secrets.sh totp` |
 | Rotace interních tokenů | `scripts/setup-secrets.sh backend-tokens` |
 | Ranní briefing ručně | `docker compose exec coach-mcp python -m coach_mcp send-briefing` |
-| ntfy token | `scripts/setup-secrets.sh ntfy-token` (prázdný vstup = bez tokenu) |
+| Telegram bot | `scripts/setup-secrets.sh telegram-token` (token od @BotFather, vypíše chat id), `scripts/setup-secrets.sh telegram-chat-id` (chat id znovu) |
 | Nové verze | `scripts/check-updates.sh` |
 | Test bez dopadu na provoz | `scripts/e2e-test.sh` (samostatný compose projekt, bez internetu a Tailscale) |
 
@@ -242,29 +242,32 @@ Doporučený cron (hlášení jen při problému):
 17 7 * * * cd /cesta/k/fitness-coach-mcp && scripts/healthcheck.sh --quiet
 ```
 
-### Ranní briefing (push na telefon)
+### Ranní briefing (Telegram)
 
-`coach-mcp` umí jednou denně poslat na telefon krátký briefing přes [ntfy](https://ntfy.sh): verdikt zelená /
+`coach-mcp` umí jednou denně poslat do tvého chatu s vlastním Telegram botem krátký briefing: verdikt zelená /
 žlutá / červená podle pravidel ze sekce 2 `docs/coach-instructions.md`, čísla za ním (readiness, HRV vs.
 baseline, spánek, Body Battery), dnešní plán z paměti kouče a nová upozornění (HRV pod baseline 3+ noci,
 klidová tepovka o 5+ bpm nad 7denním průměrem, zátěž mimo optimální rozsah Garminu, včerejší nesplněný
 trénink, neplatné přihlášení do Garminu). Počítá se bez LLM; nástroj `get_daily_briefing` ho počítá stejně
 z aktuálních dat Garminu.
 
-**Soukromí:** zpráva obsahuje zdravotní údaje. S veřejným serverem `https://ntfy.sh` opustí tvůj server i
-tailnet a ntfy.sh ji několik hodin drží v cache; kdo zná název tématu (topic), může ji číst. Proto použij
-dlouhý náhodný topic, a pokud nechceš, aby data odcházela ven, vlastní ntfy server. `coach-mcp` není
-v tailnetu (jen v Docker síti `mcp`), takže vlastní server musí být dosažitelný z Docker sítě hostu.
+**Soukromí:** zpráva obsahuje zdravotní údaje. Odchází z tvého serveru i tailnetu na servery Telegramu
+a zůstává v historii chatu, dokud ji nesmažeš; chaty s boty nejsou šifrované end-to-end. Token bota
+(`secrets/telegram_bot_token`) dává nad botem plnou kontrolu: při úniku ho v @BotFather zneplatni a nový
+ulož přes `scripts/setup-secrets.sh telegram-token`.
 
 Zapnutí:
 
-1. Vygeneruj jméno tématu a v aplikaci ntfy (Android, iOS) se k němu přihlas na `https://ntfy.sh`:
-   `python3 -c 'import secrets; print("fcm-" + secrets.token_urlsafe(24))'`
-2. Do `.env` přidej `COACH_NTFY_URL=https://ntfy.sh` a `COACH_NTFY_TOPIC=` s tím jménem (čas a další volby
-   jsou v `.env.example`).
-3. `scripts/setup-secrets.sh` vytvoří prázdný `secrets/ntfy_token` (bez něj se `coach-mcp` nespustí);
-   access token z ntfy účtu je volitelný: `scripts/setup-secrets.sh ntfy-token`.
+1. V Telegramu napiš @BotFather `/newbot`, zvol jméno a uživatelské jméno bota a dostaneš jeho token. Pak
+   napiš svému novému botovi libovolnou zprávu (třeba `/start`); dokud to neuděláš, bot ti psát nemůže.
+2. `scripts/setup-secrets.sh telegram-token`: uloží token (skrytý vstup, ověří ho u Telegramu), vypíše chat
+   id tvého chatu s botem (znovu: `scripts/setup-secrets.sh telegram-chat-id`) a restartuje `coach-mcp`.
+   Prázdný `secrets/telegram_bot_token` vytvoří už `scripts/setup-secrets.sh`; bez něj se `coach-mcp` nespustí.
+3. Do `.env` přidej `COACH_TELEGRAM_CHAT_ID=` s tím číslem (čas a další volby jsou v `.env.example`).
 4. `docker compose up -d --build coach-mcp`
+
+Zpráva je prostý text; první řádek je verdikt s barevným kolečkem a datem (`🟡 ŽLUTÁ · ranní briefing 7. 10.`,
+s `⚠️`, když jsou nová upozornění). Briefing vypneš smazáním `COACH_TELEGRAM_CHAT_ID` z `.env`.
 
 Briefing chodí v `COACH_BRIEFING_TIME` (výchozí 06:30, časové pásmo `TZ`). Když hodinky ještě nemají
 spánek nebo HRV, zkouší to každých `COACH_BRIEFING_RETRY_MINUTES` minut (15) a nejpozději
@@ -277,8 +280,13 @@ docker compose exec coach-mcp python -m coach_mcp send-briefing
 ```
 
 V logu plánovače (`docker compose logs coach-mcp`) jsou jen výsledky (`briefing status=sent|waiting|skipped|
-gave_up`, `push status=…`, `garmin status=…`), nikdy obsah zprávy, čísla ani topic. Ruční `send-briefing`
+gave_up`, `push status=…`, `garmin status=…`), nikdy obsah zprávy, čísla, chat id ani token. Ruční `send-briefing`
 běží jako samostatný proces: stejné řádky vypíše jen do terminálu, v logu kontejneru nejsou.
+
+**Návrat na verzi s ntfy** (před PR 08): starší `coach-mcp` se bez souboru `secrets/ntfy_token` nespustí
+(stačí prázdný) a briefing zapíná přes `COACH_NTFY_URL` a `COACH_NTFY_TOPIC` v `.env`. Po
+`git checkout <commit před PR 08>` spusť `scripts/setup-secrets.sh` (ta verze prázdný soubor vytvoří), vrať
+obě proměnné do `.env` a nakonec `docker compose up -d --build --no-deps coach-mcp`. Databáze se nemění.
 
 ### Obnova Garmin tokenů
 
@@ -326,7 +334,7 @@ Nic se neaktualizuje samo. Postup:
 2. Uprav pin (`tailscale/Dockerfile`, `hevy-mcp/Dockerfile` včetně digestu, nebo `pyproject.toml`) a
    pro Python spusť `scripts/lock-deps.sh` (případně `--upgrade`).
 3. `scripts/e2e-test.sh` (build + testy + celý OAuth/MCP flow bez dopadu na provoz).
-4. `scripts/setup-secrets.sh`: doplní chybějící secrets nové verze (třeba prázdný `secrets/ntfy_token`); bez
+4. `scripts/setup-secrets.sh`: doplní chybějící secrets nové verze (třeba prázdný `secrets/telegram_bot_token`); bez
    nich se služba, která je čte, nespustí. U kompletní instalace nic nemění.
 5. `docker compose up -d --build` → `scripts/smoke-test.sh` → commit.
 
@@ -382,8 +390,9 @@ a mimo veřejná úložiště.
 | MCP volání vrací 502 `backend_misconfigured` | Nesedí interní token gateway ↔ backend → `scripts/setup-secrets.sh backend-tokens`. |
 | Gateway se po aktualizaci nespustí: `cannot read secret /run/secrets/coach_backend_token` | `scripts/setup-secrets.sh` (doplní chybějící interní token) a pak `docker compose up -d --build coach-mcp gateway`. |
 | `coach-mcp` unhealthy, v logu `database schema version N is newer` | Běží starší image než data: nasaď znovu novější verzi; volume `coach-data` nemaž. |
-| `coach-mcp` se nespustí: `bind source path does not exist: …/secrets/ntfy_token` | Chybí soubor pro ntfy token (stačí prázdný) → `scripts/setup-secrets.sh` a `docker compose up -d coach-mcp`. |
-| Ranní notifikace nepřišla | `docker compose logs coach-mcp`: `skipped` = služba startovala až po cutoff; `gave_up` = ntfy server odmítl (token, URL) nebo neodpovídal; žádný řádek `briefing` = briefing vypnutý (`healthcheck.sh` to vypíše). |
+| `coach-mcp` se nespustí: `bind source path does not exist: …/secrets/telegram_bot_token` | Chybí soubor pro token bota (stačí prázdný) → `scripts/setup-secrets.sh` a `docker compose up -d coach-mcp`. |
+| `coach-mcp` se pořád restartuje, v logu `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | V `.env` je chat id, ale token chybí nebo je poškozený → `scripts/setup-secrets.sh telegram-token`, nebo chat id z `.env` smaž (briefing vypnutý). |
+| Ranní notifikace nepřišla | `docker compose logs coach-mcp`: `skipped` = služba startovala až po cutoff; `gave_up` = Telegram zprávu odmítl (token, chat id, bot zablokovaný nebo mu ještě nikdo nenapsal) nebo neodpovídal; žádný řádek `briefing` = briefing vypnutý (`healthcheck.sh` to vypíše). |
 | Hevy nástroje vrací 401 | Neplatný Hevy klíč nebo vypršelo Hevy PRO → `scripts/setup-secrets.sh hevy-key`. |
 | Garmin nástroje: „spusť scripts/garmin-login.sh“ | Tokeny chybí nebo expirovaly → `scripts/garmin-login.sh`. |
 | Garmin login: 429 / 403 od Cloudflare | Blokace z datacentrové IP → přihlas se na Macu a importuj tokeny (viz výše). |
