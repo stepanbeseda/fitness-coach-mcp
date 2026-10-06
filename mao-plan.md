@@ -69,8 +69,8 @@ chapter and a table row; existing chapters are never rewritten, only the
 | NN | Name | Depends on | Status |
 |---|---|---|---|
 | 01 | Performance metrics and race predictions | — | done |
-| 02 | Body composition, hydration and nutrition | — | planned |
-| 03 | Coach memory server | — | planned |
+| 02 | Body composition, hydration and nutrition | — | done |
+| 03 | Coach memory server | — | done |
 | 04 | Morning briefing and alerts | 03 | planned |
 | 05 | History store, trends and weekly report | 03 | planned |
 | 06 | Weather and calendar | 03 | planned |
@@ -192,6 +192,24 @@ menstrual data.
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 5).
 
+**Delivered:** 2026-10-04, PR #4 (`claude/dazzling-mccarthy-0wom8v`), merged
+into `main` as `5a38ad5`. New module
+`garmin-mcp/src/garmin_coach_mcp/body.py` with `get_body_composition` and
+`get_nutrition` (read-only) and `log_weight` (write), registered in
+`server.py`; 47 new tests in `garmin-mcp/tests/test_body.py` plus canned
+payloads in `fixtures.py` / `conftest.py`; `garmin-mcp/README.md`,
+`README.md`, `docs/coach-instructions.md` (including the "Garmin is primary
+for weight" rule) and `scripts/smoke_test.py` updated; no new dependency.
+Criteria 1–6 verified offline (`garmin-mcp` test build: 151 passed;
+`scripts/e2e-test.sh` green, Garmin `tools/list` reports 21 tools).
+Criterion 7 was verified late: `garmin-mcp` was deployed to the live stack
+only on 2026-10-05, during the PR 03 run, when the owner ran `docker compose
+up -d --build --no-deps garmin-mcp`; until then the live container predated
+the merge and `scripts/smoke-test.sh` failed with `Unknown tool:
+get_body_composition`. After the deploy `scripts/healthcheck.sh` and
+`scripts/smoke-test.sh` were green, including the Garmin body-composition
+section. The real nutrition payload shape is still not recorded (section 5).
+
 ### PR 03 — Coach memory server
 
 Every conversation starts from zero: the coach does not know the athlete's
@@ -253,6 +271,34 @@ jobs, history of health metrics (PR 05), multi-user data.
    new one.
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 2).
+
+**Delivered:** 2026-10-06, PR #5 (`mao/pr03-coach-memory-server`), merged
+into `main` as `3fa1882`. New service `coach-mcp/` (SQLite on the new volume
+`coach-data` with schema version and forward migrations; tools
+`get_coach_context`, `get_plan`, `set_goal`, `set_constraint`, `save_plan`,
+`update_session`, `add_note`; 86 tests) wired through `docker-compose.yml`
+(service, volume, secret `coach_backend_token`), `gateway/config.toml`
+(`/coach/mcp`), `scripts/setup-secrets.sh`, `scripts/e2e_flow.py`,
+`scripts/healthcheck.sh`, `scripts/smoke_test.py` and the lock files;
+`README.md` (diagram, third connector URL, `coach-data` backup and restore,
+troubleshooting), `coach-mcp/README.md` and `docs/coach-instructions.md`
+updated. Nothing is hard-deleted: sessions replaced by `save_plan` become
+`superseded`. The project check now has four commands (the `coach-mcp` test
+build added). All eight criteria met. Verified offline: the `coach-mcp`
+test build (86 passed) and `scripts/e2e-test.sh` (`E2E OK`, coach
+`tools/list` reports 7 tools, a token issued for another backend is
+rejected). Live deploy 2026-10-05 from the PR head: `setup-secrets.sh`
+created `coach_backend_token`, `coach-mcp` was created and the gateway
+recreated; `scripts/healthcheck.sh` and `scripts/smoke-test.sh` green with
+both coach sections OK. Criterion 8 confirmed 2026-10-06: the owner added
+the claude.ai connector `Kouč`, and the gateway audit shows `set_goal`,
+`set_constraint` and then `get_coach_context` ok from claude.ai, with the
+goal returned in a new conversation (an attempt on 2026-10-05 stored
+nothing and was repeated). Non-blocking follow-ups from the review: O1 —
+the `coach-data` restore recipe does not check that `coach.db` is a valid
+SQLite file (the timestamped safety backup keeps the previous state). The
+volume now holds real data: never `docker compose down -v`. Lessons recorded
+in `.claude/mao/lessons.md`.
 
 ### PR 04 — Morning briefing and alerts
 
@@ -464,6 +510,8 @@ sync.
   owner's decision at the start of PR 04.
 - **PR 02 nutrition data.** The Garmin nutrition endpoints have not been
   called on the owner's account; they may return nothing.
+- **e2e test shares image tags with the live stack.** `scripts/e2e-test.sh`
+  builds images under the same tags as the live project (open since PR 03).
 - **PR 07 strength payload and exercise catalogue.** Unverified; the chapter
   starts with a spike.
 - **Cycling power target.** `garmin-mcp/README.md` notes that a custom power
