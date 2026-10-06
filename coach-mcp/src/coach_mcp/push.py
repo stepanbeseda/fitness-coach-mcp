@@ -1,7 +1,9 @@
-"""Push notification transport (ntfy, JSON publish).
+"""Push transport: the Telegram Bot API (sendMessage, plain text).
 
-Log lines carry outcome words, status codes, durations and exception class names
-only, never the title, the message, the topic, the URL or the token.
+The bot token is part of the request URL, so log lines carry outcome words, status codes,
+durations and exception class names only, never the URL, the token, the chat id or the text.
+``__main__.configure_logging`` keeps the ``httpx2`` logger, which logs every request URL at INFO,
+at WARNING.
 """
 
 from __future__ import annotations
@@ -13,60 +15,53 @@ from typing import Literal, Protocol
 
 import httpx2
 
-from .config import Settings
+from .config import Settings, read_bot_token
 
 log = logging.getLogger("coach_mcp.push")
+
+TELEGRAM_API = "https://api.telegram.org"
 
 PushOutcome = Literal["sent", "transient", "permanent"]
 
 
 @dataclass(frozen=True)
 class PushMessage:
-    title: str
-    message: str
-    priority: int
-    tags: tuple[str, ...]
+    title: str  # first line: verdict circle, level, date
+    body: str
+
+    @property
+    def text(self) -> str:
+        """Exactly what Telegram receives: the title line, a blank line, the body."""
+        return f"{self.title}\n\n{self.body}"
 
 
 class PushSender(Protocol):
     async def send(self, msg: PushMessage) -> PushOutcome: ...
 
 
-class NtfyPush:
-    """Publishes through the ntfy "publish as JSON" endpoint (a POST to the server root).
+class TelegramPush:
+    """Sends one plain-text message to the configured chat through ``sendMessage``.
 
-    The topic travels in the JSON body, never in a URL, so no HTTP client log line can carry it.
+    The token is read from its file on every send, so a rotated token works without a restart,
+    and it exists only inside ``send``: never as an argument, an attribute or a log value.
     """
 
     def __init__(self, settings: Settings, *, transport: httpx2.AsyncBaseTransport | None = None) -> None:
         self._settings = settings
         self._transport = transport
 
-    def _token(self) -> str:
-        try:
-            return self._settings.ntfy_token_file.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            return ""
-
     async def send(self, msg: PushMessage) -> PushOutcome:
-        headers = {}
-        token = self._token()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        body = {
-            "topic": self._settings.ntfy_topic,
-            "title": msg.title,
-            "message": msg.message,
-            "priority": msg.priority,
-            "tags": list(msg.tags),
-        }
+        token = read_bot_token(self._settings.telegram_token_file)
+        if token is None:
+            log.warning("push status=permanent reason=no_token")
+            return "permanent"
+        body = {"chat_id": int(self._settings.telegram_chat_id), "text": msg.text}
         started = time.monotonic()
         try:
-            async with httpx2.AsyncClient(
-                headers=headers, timeout=httpx2.Timeout(20.0), transport=self._transport
-            ) as http:
+            async with httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), transport=self._transport) as http:
                 # stream(): only the status line is needed, the reply body is never read into memory.
-                async with http.stream("POST", f"{self._settings.ntfy_url}/", json=body) as response:
+                # Never raise_for_status() or log exc.request: both carry the URL with the token.
+                async with http.stream("POST", f"{TELEGRAM_API}/bot{token}/sendMessage", json=body) as response:
                     code = response.status_code
         except (httpx2.TimeoutException, httpx2.RequestError, OSError) as exc:
             log.warning("push status=transient kind=%s ms=%.0f", type(exc).__name__, _ms(started))

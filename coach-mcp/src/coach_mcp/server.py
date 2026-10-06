@@ -26,7 +26,7 @@ from . import __version__, tools
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
 from .garmin import GarminReader, GarminSource, exception_kind
-from .push import NtfyPush, PushSender
+from .push import TelegramPush, PushSender
 from .scheduler import BriefingScheduler, compose_briefing
 from .store import Store
 from .tools import PlannedSession, to_json
@@ -288,7 +288,7 @@ def create_app(
     scheduler = None
     if settings.push_enabled:
         scheduler = BriefingScheduler(
-            settings, store, garmin, push or NtfyPush(settings), now=now, sleep=sleep or asyncio.sleep
+            settings, store, garmin, push or TelegramPush(settings), now=now, sleep=sleep or asyncio.sleep
         )
     server = build_server(store, settings, today, garmin=garmin, scheduler=scheduler)
     security = TransportSecuritySettings(

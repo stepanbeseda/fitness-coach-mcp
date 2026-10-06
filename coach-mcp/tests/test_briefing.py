@@ -329,7 +329,7 @@ def test_missed_workout_on_consecutive_days_is_reported_each_day():
     b = build_briefing(DAY, garmin_data(scheduled=sched), [], rows)
     alert = next(a for a in b.payload["alerts"] if a["key"] == "missed_workout")
     assert alert == {"key": "missed_workout", "holds": True, "new": True}
-    assert "- Včera naplánovaný trénink nebyl splněn: Tempo 10 km." in b.message.message.splitlines()
+    assert "- Včera naplánovaný trénink nebyl splněn: Tempo 10 km." in b.message.body.splitlines()
     # a state alert in the same situation stays quiet
     state_rows = {"resting_hr_elevated": {"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}}
     data = garmin_data(snapshot=snapshot(resting_hr={"today": 60, "avg_7d": 50}))
@@ -361,6 +361,9 @@ Upozornění:
 - Klidová tepovka 58 bpm, o 6 víc než 7denní průměr 52 bpm.
 - Včera naplánovaný trénink nebyl splněn: Intervaly 6×800 m."""
 
+GREEN_TITLE = "\U0001f7e2 ZELENÁ · ranní briefing 7. 10."
+YELLOW_TITLE = "\U0001f7e1 \u26a0\ufe0f ŽLUTÁ · ranní briefing 7. 10."
+
 YELLOW_ROWS = {
     "resting_hr_elevated": {"value": 0, "evaluated_on": YESTERDAY, "fired_on": None},
     "acwr_out_of_range": {"value": 1, "evaluated_on": YESTERDAY, "fired_on": "2026-10-04"},
@@ -371,30 +374,22 @@ YELLOW_ROWS = {
 def test_render_green_exact():
     b = build_briefing(DAY, garmin_data(), [GREEN_SESSION], {})
     assert b.verdict == "green"
-    assert b.message.title == "ZELENÁ · ranní briefing 7. 10."
-    assert b.message.message == GREEN_MESSAGE
-    assert b.message.priority == 3
-    assert b.message.tags == ("green_circle",)
+    assert b.message.title == GREEN_TITLE
+    assert b.message.body == GREEN_MESSAGE
+    assert b.message.text == GREEN_TITLE + "\n\n" + GREEN_MESSAGE
     assert b.waiting is False
     assert b.payload["missing"] == []
     assert b.payload["planned"] == [GREEN_SESSION]
-    assert b.payload["push"] == {
-        "title": b.message.title,
-        "message": GREEN_MESSAGE,
-        "priority": 3,
-        "tags": ["green_circle"],
-    }
+    assert b.payload["push"] == {"text": b.message.text}
     assert all(a["new"] is False for a in b.payload["alerts"])
-    assert "Pro plnou zátěž" not in b.message.message and "Upozornění" not in b.message.message
+    assert "Pro plnou zátěž" not in b.message.body and "Upozornění" not in b.message.body
 
 
 def test_render_yellow_with_missing_and_alerts_exact():
     b = build_briefing(DAY, yellow_data(), [], YELLOW_ROWS)
     assert b.verdict == "yellow"
-    assert b.message.title == "ŽLUTÁ · ranní briefing 7. 10."
-    assert b.message.message == YELLOW_MESSAGE
-    assert b.message.priority == 4
-    assert b.message.tags == ("yellow_circle", "warning")
+    assert b.message.title == YELLOW_TITLE
+    assert b.message.body == YELLOW_MESSAGE
     assert b.waiting is True
     assert b.payload == {
         "date": "2026-10-07",
@@ -419,12 +414,7 @@ def test_render_yellow_with_missing_and_alerts_exact():
             "auth": "ok",
             "calls": {"get_recovery_snapshot": "ok", "get_hrv_trend": "ok", "list_scheduled_workouts": "ok"},
         },
-        "push": {
-            "title": "ŽLUTÁ · ranní briefing 7. 10.",
-            "message": YELLOW_MESSAGE,
-            "priority": 4,
-            "tags": ["yellow_circle", "warning"],
-        },
+        "push": {"text": YELLOW_TITLE + "\n\n" + YELLOW_MESSAGE},
     }
     # only known conditions are written back; the unknown HRV streak is not
     assert b.alert_updates == {
@@ -435,26 +425,26 @@ def test_render_yellow_with_missing_and_alerts_exact():
     }
 
 
-def test_render_red_has_priority_4_and_red_circle():
+def test_render_red_title_line():
     b = build_briefing(DAY, garmin_data(snapshot=snapshot(readiness={"score": 30})), [], {})
     assert b.verdict == "red"
-    assert b.message.title == "ČERVENÁ · ranní briefing 7. 10."
-    assert b.message.priority == 4  # red alone, no new alert
-    assert b.message.tags == ("red_circle",)
-    assert b.message.message.splitlines()[0] == (
+    assert b.message.title == "\U0001f534 ČERVENÁ · ranní briefing 7. 10."  # red alone, no warning
+    assert b.message.text.splitlines()[0] == b.message.title
+    assert b.message.text.splitlines()[1] == ""
+    assert b.message.body.splitlines()[0] == (
         "Verdikt: červená – jen regenerace: lehké kardio v zóně 1–2 na 20–40 min, mobilita, nebo volno."
     )
-    assert "Pro plnou zátěž: readiness aspoň 70." in b.message.message
+    assert "Pro plnou zátěž: readiness aspoň 70." in b.message.body
 
 
-def test_render_new_alert_alone_raises_priority_and_adds_warning():
+def test_render_new_alert_adds_warning_to_title():
     data = garmin_data(snapshot=snapshot(resting_hr={"today": 60, "avg_7d": 50}))
     b = build_briefing(DAY, data, [], {})
     assert b.verdict == "green"
-    assert (b.message.priority, b.message.tags) == (4, ("green_circle", "warning"))
+    assert b.message.title == "\U0001f7e2 \u26a0\ufe0f ZELENÁ · ranní briefing 7. 10."
     known = {"resting_hr_elevated": {"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}}
     quiet = build_briefing(DAY, data, [], known)
-    assert (quiet.message.priority, quiet.message.tags) == (3, ("green_circle",))
+    assert quiet.message.title == GREEN_TITLE
 
 
 def test_render_alert_texts_exact():
@@ -473,7 +463,7 @@ def test_render_alert_texts_exact():
             ]
         ),
     )
-    text = build_briefing(DAY, data, [], {}).message.message
+    text = build_briefing(DAY, data, [], {}).message.body
     tail = text.split("Upozornění:\n")[1].splitlines()
     assert tail == [
         "- HRV pod baseline 3 noci po sobě.",
@@ -489,7 +479,7 @@ def test_render_acwr_without_ratio_and_word_variants():
         ts: dict[str, Any] = {"acwr_status": status}
         if ratio is not None:
             ts["acwr_ratio"] = ratio
-        text = build_briefing(DAY, garmin_data(snapshot=snapshot(training_status=ts)), [], {}).message.message
+        text = build_briefing(DAY, garmin_data(snapshot=snapshot(training_status=ts)), [], {}).message.body
         return [line for line in text.splitlines() if "zátěže" in line]
 
     assert alert_line("HIGH") == ["- Poměr akutní a chronické zátěže je mimo optimální rozsah Garminu (vysoký)."]
@@ -507,7 +497,7 @@ def test_render_hrv_variants():
         days = days_range(date(2026, 10, 1), date(2026, 10, 7), 60)
         for offset in range(nights):
             days[f"2026-10-0{7 - offset}"] = 40
-        text = build_briefing(DAY, garmin_data(snapshot=snap, hrv_trend=trend(days)), [], {}).message.message
+        text = build_briefing(DAY, garmin_data(snapshot=snap, hrv_trend=trend(days)), [], {}).message.body
         return next(ln for ln in text.splitlines() if ln.startswith("HRV"))
 
     assert line(48, [52], 0) == "HRV: 48 ms, baseline od 52 ms, pod baseline (žlutá)"
@@ -518,7 +508,7 @@ def test_render_hrv_variants():
     assert line(45, [52, 68], 1) == "HRV: 45 ms, baseline 52–68 ms, pod baseline 1 noc po sobě (žlutá)"
     # unknown streak (no trend entry for today): only "pod baseline"
     snap = snapshot(hrv={"last_night_avg_ms": 45, "baseline_balanced_ms": [52, 68]})
-    text = build_briefing(DAY, garmin_data(snapshot=snap, hrv_trend=None), [], {}).message.message
+    text = build_briefing(DAY, garmin_data(snapshot=snap, hrv_trend=None), [], {}).message.body
     assert "HRV: 45 ms, baseline 52–68 ms, pod baseline (žlutá)" in text.splitlines()
     assert "Pro plnou zátěž: HRV zpět aspoň na 52 ms." in text
 
@@ -528,7 +518,7 @@ def session(**fields: Any) -> dict[str, Any]:
 
 
 def plan_lines(sessions, data=None):
-    text = build_briefing(DAY, data or garmin_data(), sessions, {}).message.message
+    text = build_briefing(DAY, data or garmin_data(), sessions, {}).message.body
     return text.split("\n")[5:]
 
 
@@ -578,7 +568,7 @@ def test_render_plan_variants():
 
 def test_render_sleep_without_score():
     snap = snapshot(sleep={"duration_h": 8})
-    text = build_briefing(DAY, garmin_data(snapshot=snap), [], {}).message.message
+    text = build_briefing(DAY, garmin_data(snapshot=snap), [], {}).message.body
     assert "Spánek: 8 h 00 min (zelená)" in text.splitlines()
 
 
@@ -586,7 +576,7 @@ def test_missing_baseline_is_named_and_does_not_wait():
     snap = snapshot(hrv={"last_night_avg_ms": 62})
     b = build_briefing(DAY, garmin_data(snapshot=snap), [], {})
     assert b.waiting is False and b.verdict == "yellow" and b.payload["missing"] == ["hrv"]
-    lines = b.message.message.splitlines()
+    lines = b.message.body.splitlines()
     assert "HRV: chybí" in lines
     assert (
         "Chybí: HRV baseline (Garmin ji počítá až po zhruba 3 týdnech nošení hodinek). "
@@ -594,19 +584,19 @@ def test_missing_baseline_is_named_and_does_not_wait():
     ) in lines
     # no night value at all: still waiting and still called "HRV"
     nothing = build_briefing(DAY, garmin_data(snapshot=snapshot(hrv=None)), [], {})
-    assert nothing.waiting is True and "Chybí: HRV (" in nothing.message.message
+    assert nothing.waiting is True and "Chybí: HRV (" in nothing.message.body
     # a baseline without last night's value is not "night present": still waiting, still called "HRV"
     only_baseline = build_briefing(
         DAY, garmin_data(snapshot=snapshot(hrv={"baseline_balanced_ms": [52, 68]})), [], {}
     )
-    assert only_baseline.waiting is True and "Chybí: HRV (" in only_baseline.message.message
+    assert only_baseline.waiting is True and "Chybí: HRV (" in only_baseline.message.body
     # an unavailable HRV section waits too
     assert build_briefing(DAY, garmin_data(snapshot=snapshot(hrv={"available": False})), [], {}).waiting is True
 
 
 def test_render_missing_reason():
     def reason(data):
-        text = build_briefing(DAY, data, [], {}).message.message
+        text = build_briefing(DAY, data, [], {}).message.body
         return next(ln for ln in text.splitlines() if ln.startswith("Chybí:"))
 
     sync = reason(garmin_data(snapshot=snapshot(sleep=None)))
@@ -633,7 +623,7 @@ def test_render_missing_reason():
     # all four names, in order
     assert reason(garmin_data(snapshot={})).startswith("Chybí: readiness, HRV, spánek, Body Battery (")
     # a green verdict never carries a "Chybí" line
-    assert "Chybí" not in build_briefing(DAY, garmin_data(), [], {}).message.message
+    assert "Chybí" not in build_briefing(DAY, garmin_data(), [], {}).message.body
 
 
 def test_missing_data_never_green_and_waiting_flag():
@@ -656,16 +646,26 @@ def test_missing_data_never_green_and_waiting_flag():
 
 def test_message_byte_limit():
     big = [session(description="x" * 120, status="planned") for _ in range(30)]
-    message = build_briefing(DAY, garmin_data(), big, {}).message.message
-    raw = message.encode()
-    assert len(raw) <= 4000 and message.endswith("…")
+    b = build_briefing(DAY, garmin_data(), big, {})
+    text = b.message.text
+    assert len(text.encode()) <= 4000 and b.message.body.endswith("…")
+    assert text.startswith(GREEN_TITLE + "\n\n")
     # 2-byte characters: the cut lands inside a character and is dropped, the result still decodes
     wide = [session(description="é" * 120, status="planned") for _ in range(30)]
-    message = build_briefing(DAY, garmin_data(), wide, {}).message.message
-    assert len(message.encode()) <= 4000 and message.endswith("…")
-    assert "�" not in message
-    small = build_briefing(DAY, garmin_data(), [session()], {}).message.message
-    assert not small.endswith("…")
+    b = build_briefing(DAY, garmin_data(), wide, {})
+    text = b.message.text
+    assert len(text.encode()) <= 4000 and b.message.body.endswith("…")
+    assert text.startswith(GREEN_TITLE + "\n\n")
+    assert "�" not in text
+    # A new alert adds the warning sign to the title (7 more bytes); the limit still covers the whole text.
+    alerting = build_briefing(
+        DAY, garmin_data(snapshot=snapshot(resting_hr={"today": 60, "avg_7d": 50})), big, {}
+    )
+    text = alerting.message.text
+    assert len(text.encode()) <= 4000 and alerting.message.body.endswith("…")
+    assert text.startswith("\U0001f7e2 \u26a0\ufe0f ")
+    small = build_briefing(DAY, garmin_data(), [session()], {})
+    assert not small.message.body.endswith("…")
 
 
 def test_nights_plural():

@@ -13,7 +13,12 @@ from zoneinfo import ZoneInfo
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 _TIME_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
-_TOPIC_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# Telegram bot tokens look like 123456789:AA... (bot id, a colon, 30+ token characters).
+# scripts/setup-secrets.sh checks the same shape.
+BOT_TOKEN_RE = re.compile(r"[0-9]{1,20}:[A-Za-z0-9_-]{30,64}")
+# A private chat id is a positive integer, a group id a negative one (-100... for supergroups).
+CHAT_ID_RE = re.compile(r"-?[1-9][0-9]{0,19}")
+CHAT_ID_ERROR = "COACH_TELEGRAM_CHAT_ID must be a numeric Telegram chat id (e.g. 123456789; groups are negative)"
 
 
 def _split(value: str | None) -> list[str]:
@@ -48,6 +53,18 @@ def _clock_time(name: str, value: str) -> dt.time:
     return dt.time.fromisoformat(value)
 
 
+def read_bot_token(path: Path) -> str | None:
+    """The token from ``path`` when the file holds one in bot-token shape, else None.
+
+    Takes only the path, so the token never appears as an argument in a traceback; never raises.
+    """
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return token if BOT_TOKEN_RE.fullmatch(token) else None
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: Path = Path("/data/coach/coach.db")
@@ -58,10 +75,9 @@ class Settings:
     log_level: str = "INFO"
     # Optional Host allowlist (enables the SDK's DNS-rebinding check when set).
     allowed_hosts: list[str] = field(default_factory=list)
-    # Morning briefing push (off while the ntfy URL or topic is empty).
-    ntfy_url: str = ""
-    ntfy_topic: str = field(default="", repr=False)  # works like a password: never in a repr or a log
-    ntfy_token_file: Path = Path("/run/secrets/ntfy_token")
+    # Morning briefing to Telegram (off while the chat id is empty).
+    telegram_chat_id: str = field(default="", repr=False)  # personal: never in a repr or a log
+    telegram_token_file: Path = Path("/run/secrets/telegram_bot_token")
     garmin_url: str = "http://garmin-mcp:8000/mcp"
     garmin_token_file: Path = Path("/run/secrets/garmin_backend_token")
     briefing_time: dt.time = dt.time(6, 30)
@@ -70,7 +86,7 @@ class Settings:
 
     @property
     def push_enabled(self) -> bool:
-        return bool(self.ntfy_url and self.ntfy_topic)
+        return bool(self.telegram_chat_id)
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -98,14 +114,15 @@ class Settings:
         if log_level not in LOG_LEVELS:
             raise ValueError(f"COACH_MCP_LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}")
 
-        ntfy_url = _opt(env, "COACH_NTFY_URL", "")
-        if ntfy_url:
-            ntfy_url = _url("COACH_NTFY_URL", ntfy_url).rstrip("/")
-        ntfy_topic = _opt(env, "COACH_NTFY_TOPIC", "")
-        if ntfy_topic and not _TOPIC_RE.fullmatch(ntfy_topic):
-            raise ValueError("COACH_NTFY_TOPIC must match [A-Za-z0-9_-]{1,64}")
-        if bool(ntfy_url) != bool(ntfy_topic):
-            raise ValueError("COACH_NTFY_URL and COACH_NTFY_TOPIC must be set together")
+        telegram_chat_id = _opt(env, "COACH_TELEGRAM_CHAT_ID", "")
+        if telegram_chat_id and not CHAT_ID_RE.fullmatch(telegram_chat_id):
+            raise ValueError(CHAT_ID_ERROR)
+        telegram_token_file = Path(_opt(env, "COACH_TELEGRAM_TOKEN_FILE", "/run/secrets/telegram_bot_token"))
+        if telegram_chat_id and read_bot_token(telegram_token_file) is None:
+            raise ValueError(
+                f"COACH_TELEGRAM_CHAT_ID is set but {telegram_token_file} does not hold a Telegram bot token "
+                "(scripts/setup-secrets.sh telegram-token)"
+            )
 
         garmin_url = _opt(env, "COACH_GARMIN_MCP_URL", "http://garmin-mcp:8000/mcp")
         _url("COACH_GARMIN_MCP_URL", garmin_url)
@@ -133,9 +150,8 @@ class Settings:
             timezone=timezone,
             log_level=log_level,
             allowed_hosts=_split(env.get("COACH_MCP_ALLOWED_HOSTS")),
-            ntfy_url=ntfy_url,
-            ntfy_topic=ntfy_topic,
-            ntfy_token_file=Path(_opt(env, "COACH_NTFY_TOKEN_FILE", "/run/secrets/ntfy_token")),
+            telegram_chat_id=telegram_chat_id,
+            telegram_token_file=telegram_token_file,
             garmin_url=garmin_url,
             garmin_token_file=Path(_opt(env, "COACH_GARMIN_TOKEN_FILE", "/run/secrets/garmin_backend_token")),
             briefing_time=briefing_time,
