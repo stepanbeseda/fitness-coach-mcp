@@ -71,7 +71,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 01 | Performance metrics and race predictions | — | done |
 | 02 | Body composition, hydration and nutrition | — | done |
 | 03 | Coach memory server | — | done |
-| 04 | Morning briefing and alerts | 03 | planned |
+| 04 | Morning briefing and alerts | 03 | done |
 | 05 | History store, trends and weekly report | 03 | planned |
 | 06 | Weather and calendar | 03 | planned |
 | 07 | Strength workouts on the watch | — | planned |
@@ -357,6 +357,41 @@ to Garmin or Hevy, two-way interaction from the notification.
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 1).
 
+**Delivered:** 2026-10-06, PR #7 (`mao/pr04-morning-briefing-and-alerts`),
+merged into `main` as `03d5ec3`. New modules in `coach-mcp` (`briefing.py`,
+`garmin.py`, `push.py`, `scheduler.py`); the read tool `get_daily_briefing`
+(the coach server now has 8 tools) and the container command `python -m
+coach_mcp send-briefing` as the manual trigger. Schema migration 2 adds
+`briefing_runs` and `alert_state` in one transaction; after it the old image
+refuses the database (`SchemaTooNewError`), and a scratch-tested downgrade
+recipe is in `coach-mcp/README.md`. New optional environment variables
+`COACH_NTFY_URL`, `COACH_NTFY_TOPIC`, `COACH_BRIEFING_TIME`,
+`COACH_BRIEFING_CUTOFF`, `COACH_BRIEFING_RETRY_MINUTES`,
+`COACH_GARMIN_MCP_URL`, `COACH_GARMIN_TOKEN_FILE` and `COACH_NTFY_TOKEN_FILE`;
+new Docker secret `ntfy_token`. Scripts: `scripts/setup-secrets.sh`
+(`ntfy-token`), `scripts/healthcheck.sh` (section 5c), `scripts/smoke-test.sh`
+and `scripts/smoke_test.py`, and the e2e probe in `scripts/e2e_flow.py`;
+`README.md`, `coach-mcp/README.md` and `docs/coach-instructions.md` updated;
+no new dependency. Criteria 1–5 and 7 verified offline (`coach-mcp` test
+build: 293 passed; `scripts/e2e-test.sh` green, coach `tools/list` reports 8
+tools); criterion 6 verified offline and live (L1). Criterion 8 verified
+2026-10-06 on the test host after the owner deployed `coach-mcp` (`coach-data`
+was backed up first; migration 2 ran on the real data): the manual
+`send-briefing` sent the push (200), verdict yellow, no missing data, and the
+owner confirmed the notification and its numbers; the live `acwr_status` was
+observed as `OPTIMAL` only. Design decisions taken with the owner: a public
+ntfy.sh server with the full message (privacy note in the README), alerts
+evaluated only in the morning briefing, and the container command instead of a
+tool as the manual trigger. One spec error was found in review (the
+missed-workout alert is an event, not a state) and fixed by Addendum 1.
+Non-blocking follow-ups: the `LOW` / `HIGH` / `VERY_HIGH` `acwr_status`
+vocabulary is unverified live (an unknown value only suppresses the alert); a
+morning without a sleep sync can cost up to about 91 Garmin Connect calls; the
+coach's Garmin token could reach `garmin-mcp` write tools (only the code
+allowlist prevents it); the e2e test shares image tags with the live stack
+(section 5; it retagged the live tag before the deploy in this run). Lessons
+recorded in `.claude/mao/lessons.md`.
+
 ### PR 05 — History store, trends and weekly report
 
 Garmin tools look back at most 28 days (HRV) or 31 days (Body Battery), and
@@ -505,9 +540,9 @@ sync.
 
 ## 5. Open items
 
-- **PR 04 push channel.** ntfy is the planned default; whether the owner runs
-  a self-hosted ntfy server in the tailnet or accepts a public one is the
-  owner's decision at the start of PR 04.
+- **PR 04 push channel.** Decided 2026-10-06 (PR 04): ntfy on the public
+  server ntfy.sh with a random topic; the privacy note in `README.md` keeps
+  a self-hosted server as the recommendation.
 - **PR 02 nutrition data.** The Garmin nutrition endpoints have not been
   called on the owner's account; they may return nothing.
 - **e2e test shares image tags with the live stack.** `scripts/e2e-test.sh`
