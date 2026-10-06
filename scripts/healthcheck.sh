@@ -96,6 +96,14 @@ else
   report_fail "coach: databáze nedostupná → docker compose logs coach-mcp"
 fi
 
+# 5c. morning briefing scheduler (informational)
+sched="$(dc exec -T coach-mcp python -c "import json,urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)).get('scheduler', '?'))" 2>/dev/null || echo '?')"
+case "$sched" in
+  on) report_ok "coach: ranní briefing zapnutý" ;;
+  off) report_ok "coach: ranní briefing vypnutý (COACH_NTFY_URL / COACH_NTFY_TOPIC v .env)" ;;
+  *) report_warn "coach: stav ranního briefingu nezjištěn" ;;
+esac
+
 # 6. Hevy API key
 if [[ -r "$SECRETS_DIR/hevy_api_key" ]]; then
   code="$(printf 'api-key: %s\n' "$(tr -d '\r\n' < "$SECRETS_DIR/hevy_api_key")" | curl -sS --max-time 15 \

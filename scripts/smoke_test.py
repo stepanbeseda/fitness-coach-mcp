@@ -147,6 +147,10 @@ def main() -> int:
         data = json.loads(coach.call("get_coach_context", {}))
         print(f"today: {data['today']} | week: {data['week']['iso_week']} ({data['week']['start']} - {data['week']['end']})")
         print(", ".join(f"{key}: {len(data[key])}" for key in ("goals", "constraints", "sessions", "notes")))
+        section("Kouč: get_daily_briefing (jen verdikt, chybějící data a stav Garminu)")
+        data = json.loads(coach.call("get_daily_briefing", {}))
+        print(f"briefing: date {data['date']} | verdict {data['verdict']} | missing {', '.join(data['missing']) or '-'} | "
+              f"garmin auth {data['garmin']['auth']} | calls {','.join(data['garmin']['calls'].values())}")
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")

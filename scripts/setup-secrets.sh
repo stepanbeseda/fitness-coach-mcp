@@ -7,6 +7,7 @@
 #   scripts/setup-secrets.sh password        change the gateway login password
 #   scripts/setup-secrets.sh totp            enrol a new TOTP authenticator
 #   scripts/setup-secrets.sh backend-tokens  rotate the gateway <-> backend secrets (hevy, garmin, coach)
+#   scripts/setup-secrets.sh ntfy-token      set or clear the ntfy access token (morning briefing push)
 #   scripts/setup-secrets.sh fix-perms       re-apply ownership/permissions
 #
 # Secrets are typed with hidden input and written directly to files (mode 0640,
@@ -158,6 +159,41 @@ ensure_backend_tokens() {
   return 0
 }
 
+# Empty placeholder so docker compose can mount the secret while the push has no
+# token (an empty file means: publish without an Authorization header).
+ensure_ntfy_token() {
+  local file="$SECRETS_DIR/ntfy_token"
+  if [[ ! -e "$file" ]]; then
+    ensure_dir
+    (umask 077 && : > "$file")
+    set_perms "$file"
+    ok "Vytvořeno: secrets/ntfy_token (prázdný, push bez tokenu)"
+  fi
+  return 0
+}
+
+cmd_ntfy_token() {
+  local token code
+  info "Access token z ntfy (účet → Access tokens, začíná tk_). Prázdný vstup = push bez tokenu."
+  token="$(read_hidden 'ntfy access token: ')"
+  if [[ -n "$token" ]]; then
+    [[ "$token" == tk_* ]] || die "Tohle nevypadá jako ntfy access token (tk_...). Nic jsem neuložil."
+    if [[ -n "${COACH_NTFY_URL:-}" ]]; then
+      code="$(printf 'Authorization: Bearer %s\n' "$token" | curl -sS --max-time 15 -o /dev/null \
+              -w '%{http_code}' -H @- "${COACH_NTFY_URL%/}/v1/account" || true)"
+      case "$code" in
+        200) ok "ntfy token ověřen." ;;
+        401|403) die "ntfy token odmítnut (HTTP $code). Nic jsem neuložil." ;;
+        *) warn "Token se nepodařilo ověřit (HTTP ${code:-?}); ukládám i tak." ;;
+      esac
+    else
+      warn "COACH_NTFY_URL v .env chybí, token neověřuji."
+    fi
+  fi
+  write_secret ntfy_token "$token"
+  recreate coach-mcp
+}
+
 cmd_fix_perms() {
   ensure_dir
   local f
@@ -171,12 +207,13 @@ cmd_all() {
   require_env
   ensure_dir
   ensure_backend_tokens
+  ensure_ntfy_token
   has_secret ts_authkey || cmd_ts_authkey
   has_secret hevy_api_key || cmd_hevy_key
   has_secret gateway_password_hash || cmd_password
   has_secret gateway_totp_secret || cmd_totp
   cmd_fix_perms
-  ok "Všechny secrets jsou připravené. Rotace: scripts/setup-secrets.sh <hevy-key|password|totp|backend-tokens>"
+  ok "Všechny secrets jsou připravené. Rotace: scripts/setup-secrets.sh <hevy-key|password|totp|backend-tokens|ntfy-token>"
 }
 
 require_docker
@@ -187,6 +224,7 @@ case "${1:-all}" in
   password) cmd_password ;;
   totp) cmd_totp ;;
   backend-tokens) cmd_backend_tokens ;;
+  ntfy-token) cmd_ntfy_token ;;
   fix-perms) cmd_fix_perms ;;
-  *) sed -n '2,13p' "$0"; exit 2 ;;
+  *) sed -n '2,14p' "$0"; exit 2 ;;
 esac

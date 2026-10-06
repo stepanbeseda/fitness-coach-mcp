@@ -153,6 +153,20 @@ def exercise_coach_memory(client: httpx.Client, token: str) -> None:
           "coach get_coach_context returns the stored goal")
 
 
+def exercise_daily_briefing(client: httpx.Client, token: str) -> None:
+    """get_daily_briefing reaches garmin-mcp with the internal token (no Garmin login in e2e)."""
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_daily_briefing", "arguments": {}},
+                  msg_id=8)
+    ok, data = tool_result(body)
+    data = data if isinstance(data, dict) else {}
+    garmin = data.get("garmin") if isinstance(data.get("garmin"), dict) else {}
+    calls = garmin.get("calls") if isinstance(garmin.get("calls"), dict) else {}
+    alerts = {a.get("key"): a.get("holds") for a in data.get("alerts", []) if isinstance(a, dict)}
+    check(ok and data.get("verdict") == "yellow" and set(calls.values()) == {"auth_error"}
+          and alerts.get("garmin_auth") is True,
+          "coach get_daily_briefing reads garmin-mcp (not logged in: yellow, garmin_auth alert)")
+
+
 def main() -> int:
     with httpx.Client(timeout=60, follow_redirects=False) as client:
         public = client.get(f"{GW}/authorize", headers=FUNNEL)
@@ -166,6 +180,7 @@ def main() -> int:
         # (current +/- 1 step): do not add a fourth login to this script.
         coach = exercise_backend(client, "coach", "get_coach_context", {})
         exercise_coach_memory(client, coach)
+        exercise_daily_briefing(client, coach)
         cross = client.post(f"{GW}/coach/mcp", headers={**FUNNEL, "authorization": f"Bearer {garmin}"},
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         check(cross.status_code == 401, "Garmin token rejected by the coach endpoint (audience)")
