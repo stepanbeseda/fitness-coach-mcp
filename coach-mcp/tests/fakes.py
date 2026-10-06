@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import anyio
@@ -31,7 +31,7 @@ class FakeClock:
         self, start: datetime, stop_when: Callable[[], bool] = lambda: False, max_sleeps: int = 2000
     ) -> None:
         assert start.tzinfo is not None
-        self._instant = start
+        self._instant = start.astimezone(UTC)  # a UTC instant: wall-clock arithmetic would be wrong across DST
         self._stop_when = stop_when
         self._max_sleeps = max_sleeps
         self.sleeps: list[float] = []

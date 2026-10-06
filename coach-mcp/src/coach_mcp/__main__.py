@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import sys
 
 import uvicorn
 
 from .config import Settings
+from .scheduler import send_briefing_command
 from .server import create_app
+
+USAGE = "usage: python -m coach_mcp [send-briefing]"
 
 
 def configure_logging(level: str) -> None:
@@ -25,7 +30,15 @@ def configure_logging(level: str) -> None:
         logging.getLogger(name).setLevel(logging.CRITICAL)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int | None:
+    args = sys.argv[1:] if argv is None else argv
+    if args == ["send-briefing"]:
+        settings = Settings.from_env()
+        configure_logging(settings.log_level)
+        return asyncio.run(send_briefing_command(settings))
+    if args:
+        print(USAGE, file=sys.stderr)
+        return 2
     settings = Settings.from_env()
     configure_logging(settings.log_level)
     uvicorn.run(
@@ -39,7 +52,8 @@ def main() -> None:
         proxy_headers=False,
         timeout_graceful_shutdown=5,
     )
+    return None
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

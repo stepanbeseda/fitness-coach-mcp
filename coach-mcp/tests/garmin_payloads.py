@@ -81,4 +81,6 @@ def garmin_data(**overrides: Any) -> GarminData:
 
 
 def yellow_data(**overrides: Any) -> GarminData:
-    return garmin_data(snapshot=YELLOW_SNAPSHOT, hrv_trend=YELLOW_TREND, scheduled=YELLOW_SCHEDULED, **overrides)
+    fields: dict[str, Any] = {"snapshot": YELLOW_SNAPSHOT, "hrv_trend": YELLOW_TREND, "scheduled": YELLOW_SCHEDULED}
+    fields.update(overrides)
+    return garmin_data(**fields)

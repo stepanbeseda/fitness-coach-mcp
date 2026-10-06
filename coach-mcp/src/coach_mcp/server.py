@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import functools
 import inspect
 import logging
 import sqlite3
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
@@ -23,6 +25,9 @@ from starlette.types import ASGIApp
 from . import __version__, tools
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
+from .garmin import GarminReader, GarminSource
+from .push import NtfyPush, PushSender
+from .scheduler import BriefingScheduler, compose_briefing
 from .store import Store
 from .tools import PlannedSession, to_json
 
@@ -36,7 +41,10 @@ INSTRUCTIONS = (
     "set_goal, set_constraint, save_plan, update_session and add_note change the stored state: show the "
     "proposal and get explicit confirmation first. "
     "Nothing is deleted: goals end as achieved or abandoned, constraints as resolved, replaced sessions "
-    "as superseded."
+    "as superseded. "
+    "get_daily_briefing returns the morning verdict (green / yellow / red) with its numbers, missing data, "
+    "today's planned sessions and alerts, computed the same way as the morning push from the current Garmin "
+    "data; still read fresh Garmin data before planning."
 )
 
 GoalStatus = Literal["active", "achieved", "abandoned"]
@@ -47,6 +55,11 @@ SessionStatus = Literal["planned", "done", "skipped", "moved"]
 
 def _read(title: str) -> ToolAnnotations:
     return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=False)
+
+
+def _read_open(title: str) -> ToolAnnotations:
+    """A read-only tool that reaches an outside service (here: garmin-mcp)."""
+    return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=True)
 
 
 def _write(title: str, *, idempotent: bool = False) -> ToolAnnotations:
@@ -76,12 +89,31 @@ def _logged(name: str, fn: Callable[..., Awaitable[Any]]) -> Callable[..., Await
     return wrapper
 
 
-def build_server(store: Store, settings: Settings, today: Callable[[], date]) -> MCPServer:
+def build_server(
+    store: Store,
+    settings: Settings,
+    today: Callable[[], date],
+    *,
+    garmin: GarminSource,
+    scheduler: BriefingScheduler | None,
+) -> MCPServer:
+    @contextlib.asynccontextmanager
+    async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
+        task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
+        try:
+            yield None
+        finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
     server = MCPServer(
         name="coach-memory",
         title="Coach memory (fitness coach)",
         instructions=INSTRUCTIONS,
         version=__version__,
+        lifespan=lifespan,
         log_level=settings.log_level if settings.log_level in ("DEBUG", "INFO", "WARNING", "ERROR") else "INFO",
     )
 
@@ -192,6 +224,16 @@ def build_server(store: Store, settings: Settings, today: Callable[[], date]) ->
         a session. Only after the athlete confirmed."""
         return tools.add_note(store, today(), text=text, date=date, session_id=session_id)
 
+    @tool("get_daily_briefing", _read_open("Daily briefing"))
+    async def get_daily_briefing() -> Any:
+        """Today's morning briefing, computed the same way as the push notification from the current Garmin
+        data: a green / yellow / red verdict from deterministic rules (readiness, last night's HRV vs.
+        baseline, sleep, Body Battery at wake), the numbers behind it, what is missing, today's planned
+        sessions and the alerts (HRV below baseline 3+ nights, resting HR 5+ bpm above its 7-day average,
+        load ratio outside Garmin's optimal range, yesterday's scheduled workout not completed, Garmin
+        login). Reads Garmin through garmin-mcp; changes nothing."""
+        return (await compose_briefing(store, garmin, today())).payload
+
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Request) -> JSONResponse:
         try:
@@ -199,7 +241,9 @@ def build_server(store: Store, settings: Settings, today: Callable[[], date]) ->
         except sqlite3.Error as exc:
             log.warning("healthz: database check failed kind=%s", type(exc).__name__)
             return JSONResponse({"status": "error", "db": "error"}, status_code=503)
-        return JSONResponse({"status": "ok", "db": "ok", "schema_version": version})
+        return JSONResponse(
+            {"status": "ok", "db": "ok", "schema_version": version, "scheduler": "on" if scheduler else "off"}
+        )
 
     return server
 
@@ -208,16 +252,33 @@ def create_app(
     settings: Settings | None = None,
     store: Store | None = None,
     today: Callable[[], date] | None = None,
+    *,
+    garmin: GarminSource | None = None,
+    push: PushSender | None = None,
+    now: Callable[[], datetime] | None = None,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     store = store or Store(settings.db_path)
+    zone = ZoneInfo(settings.timezone)
+    if now is None:
+
+        def now() -> datetime:
+            return datetime.now(zone)
+
     if today is None:
-        zone = ZoneInfo(settings.timezone)
+        clock = now
 
         def today() -> date:
-            return datetime.now(zone).date()
+            return clock().astimezone(zone).date()
 
-    server = build_server(store, settings, today)
+    garmin = garmin or GarminReader(settings)
+    scheduler = None
+    if settings.push_enabled:
+        scheduler = BriefingScheduler(
+            settings, store, garmin, push or NtfyPush(settings), now=now, sleep=sleep or asyncio.sleep
+        )
+    server = build_server(store, settings, today, garmin=garmin, scheduler=scheduler)
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=bool(settings.allowed_hosts),
         allowed_hosts=settings.allowed_hosts,
