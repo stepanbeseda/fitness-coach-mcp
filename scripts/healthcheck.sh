@@ -100,7 +100,7 @@ fi
 sched="$(dc exec -T coach-mcp python -c "import json,urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)).get('scheduler', '?'))" 2>/dev/null || echo '?')"
 case "$sched" in
   on) report_ok "coach: ranní briefing zapnutý" ;;
-  off) report_ok "coach: ranní briefing vypnutý (COACH_NTFY_URL / COACH_NTFY_TOPIC v .env)" ;;
+  off) report_ok "coach: ranní briefing vypnutý (COACH_TELEGRAM_CHAT_ID v .env)" ;;
   stopped) report_fail "coach: plánovač ranního briefingu skončil → docker compose logs coach-mcp a docker compose restart coach-mcp" ;;
   *) report_warn "coach: stav ranního briefingu nezjištěn" ;;
 esac
