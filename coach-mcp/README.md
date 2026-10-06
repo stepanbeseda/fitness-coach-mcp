@@ -55,7 +55,7 @@ trénink). Neznámá podmínka (chybějící data) stav nemění.
 Plánovač běží v `COACH_BRIEFING_TIME` (výchozí 06:30, časové pásmo `TZ`). Když chybí spánek nebo HRV poslední
 noci, zkouší to každých `COACH_BRIEFING_RETRY_MINUTES` minut a nejpozději v `COACH_BRIEFING_CUTOFF` pošle, co
 má. Problém s přihlášením do Garminu znamená, že push jde hned. Když služba nastartuje až po cutoff, ten den
-se nic neposílá. Chybějící HRV baseline (Garmin ji počítá až po zhruba 3 týdnech nošení) se nečeká, jen se
+se nic neposílá. Na chybějící HRV baseline (Garmin ji počítá až po zhruba 3 týdnech nošení) se nečeká, jen se
 pojmenuje. Push se při dočasné chybě ntfy serveru (5xx, 429, síť) opakuje do cutoffu, při trvalé chybě
 (jiný 4xx) se ten den vzdá.
 

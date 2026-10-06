@@ -526,6 +526,29 @@ async def test_store_error_before_the_first_attempt_is_not_a_late_start(db_path,
 
 
 @pytest.mark.anyio
+async def test_store_error_on_a_late_first_look_is_still_a_late_start(db_path, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    store = Store(db_path)
+    real = store.briefing_sent
+    calls = {"n": 0}
+
+    def flaky(day):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("locked")
+        return real(day)
+
+    monkeypatch.setattr(store, "briefing_sent", flaky)
+    garmin = FakeGarmin(garmin_data())
+    push, _ = await run_scheduler(db_path, local(D, 10, 0), garmin, stop_pushes=1, store=store)
+    assert "briefing status=crashed kind=OperationalError" in caplog.text
+    assert "briefing status=skipped reason=late_start" in caplog.text
+    # nothing was sent on the day the service started after the cutoff
+    assert [utc(t) for t, _ in push.sent] == [local(D + timedelta(days=1), 6, 30).astimezone(UTC)]
+    assert garmin.days == [D + timedelta(days=1)]
+
+
+@pytest.mark.anyio
 async def test_unknown_condition_does_not_change_alert_state(db_path):
     store = Store(db_path)
     store.record_briefing_sent(D - timedelta(days=1), "green", {"acwr_out_of_range": (True, True)})
