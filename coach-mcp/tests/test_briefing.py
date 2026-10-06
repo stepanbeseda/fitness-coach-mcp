@@ -126,6 +126,10 @@ def test_criteria_from_snapshot_sections():
     # error, available: false, a missing field and a non-dict section all count as missing
     assert levels(snapshot(readiness={"error": "x"}))["readiness"] is None
     assert levels(snapshot(readiness={"available": False}))["readiness"] is None
+    # the marker wins even when a usable value sits next to it
+    assert levels(snapshot(readiness={"error": "x", "score": 78}))["readiness"] is None
+    assert levels(snapshot(readiness={"available": False, "score": 78}))["readiness"] is None
+    assert levels(snapshot(readiness={"available": True, "score": 78}))["readiness"] == "green"
     assert levels(snapshot(readiness={"status": "n/a"}))["readiness"] is None
     assert levels(snapshot(readiness="78"))["readiness"] is None
     assert levels(snapshot(readiness=None))["readiness"] is None
@@ -550,6 +554,12 @@ def test_render_plan_variants():
     # a long Garmin name is cut at 80 characters
     named = garmin_data(scheduled=scheduled([{"date": "2026-10-07", "name": "x" * 100}]))
     assert plan_lines([], named) == ["Dnes v Garminu: " + "x" * 80 + "…"]
+
+
+def test_render_sleep_without_score():
+    snap = snapshot(sleep={"duration_h": 8})
+    text = build_briefing(DAY, garmin_data(snapshot=snap), [], {}).message.message
+    assert "Spánek: 8 h 00 min (zelená)" in text.splitlines()
 
 
 def test_render_missing_reason():

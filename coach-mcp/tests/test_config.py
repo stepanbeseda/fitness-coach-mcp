@@ -69,6 +69,8 @@ def test_from_env_overrides():
         {"COACH_NTFY_URL": "https://ntfy.sh"},
         {"COACH_NTFY_TOPIC": "abc"},
         {"COACH_NTFY_URL": "ftp://x", "COACH_NTFY_TOPIC": "abc"},
+        {"COACH_NTFY_URL": "httpx://ntfy.sh", "COACH_NTFY_TOPIC": "abc"},
+        {"COACH_NTFY_URL": "https:/ntfy.sh", "COACH_NTFY_TOPIC": "abc"},
         {"COACH_NTFY_URL": "https://", "COACH_NTFY_TOPIC": "abc"},
         {"COACH_NTFY_URL": "https://ntfy.sh?x", "COACH_NTFY_TOPIC": "abc"},
         {"COACH_NTFY_URL": "https://ntfy.sh#x", "COACH_NTFY_TOPIC": "abc"},

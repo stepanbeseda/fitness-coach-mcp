@@ -195,9 +195,16 @@ async def test_non_json_and_non_dict_results_are_errors(tmp_path):
 @pytest.mark.anyio
 async def test_a_hung_tool_is_bounded_by_the_overall_timeout(tmp_path, monkeypatch):
     real = anyio.fail_after
-    monkeypatch.setattr(garmin_module.anyio, "fail_after", lambda seconds: real(0.3))
+    requested: list[float] = []
+
+    def short_deadline(seconds: float):
+        requested.append(seconds)
+        return real(0.3)
+
+    monkeypatch.setattr(garmin_module.anyio, "fail_after", short_deadline)
     app, _ = fake_garmin_app(TOKEN, hang=frozenset({"get_hrv_trend"}))
     async with fake_garmin_running(app):
         data = await reader_for(app, tmp_path).fetch(D)
+    assert requested[0] == 180  # the reader's own overall deadline for the whole MCP session (the SDK adds more)
     assert data.calls == {"get_recovery_snapshot": "ok", "get_hrv_trend": "error", "list_scheduled_workouts": "error"}
     assert data.snapshot == GREEN_SNAPSHOT

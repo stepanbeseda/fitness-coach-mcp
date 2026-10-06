@@ -242,6 +242,45 @@ async def test_state_written_only_after_successful_push(db_path, caplog):
 
 
 @pytest.mark.anyio
+async def test_failing_state_write_does_not_cause_a_second_push(db_path, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    store = Store(db_path)
+
+    def broken(*args, **kwargs):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(store, "record_briefing_sent", broken)
+    push, _ = await run_scheduler(
+        db_path, local(D, 0), FakeGarmin(garmin_data()), stop_pushes=2, store=store
+    )
+    # the push of the first day is not repeated; the second one is the next morning's
+    assert [utc(t) for t, _ in push.sent] == [
+        local(D, 6, 30).astimezone(UTC),
+        local(D + timedelta(days=1), 6, 30).astimezone(UTC),
+    ]
+    assert "briefing status=state_error kind=OperationalError" in caplog.text
+    assert "disk full" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_the_briefing_day_is_the_local_date_not_the_utc_date(db_path):
+    import datetime as dt
+
+    # 01:00 Prague on 2026-10-07 is 23:00 UTC on 2026-10-06.
+    garmin = FakeGarmin(garmin_data())
+    push, _ = await run_scheduler(
+        db_path,
+        local(date(2026, 10, 6), 23, 0),
+        garmin,
+        stop_pushes=1,
+        briefing_time=dt.time(1, 0),
+        briefing_cutoff=dt.time(3, 0),
+    )
+    assert [utc(t) for t, _ in push.sent] == [local(D, 1, 0).astimezone(UTC)]
+    assert garmin.days == [D]
+
+
+@pytest.mark.anyio
 async def test_no_push_after_giving_up_on_the_same_day(db_path):
     push = FakePush(["transient"])
     await run_scheduler(db_path, local(D, 9, 20), FakeGarmin(garmin_data()), push, stop_pushes=3)

@@ -419,21 +419,21 @@ def render(
         names = ", ".join(_NAME_CS[key] for key in missing)
         lines.append(f"Chybí: {names} ({_missing_reason(data)}). Bez těchto dat nemůže být verdikt zelený.")
 
-    if verdict != "green":
-        items = []
-        for key in CRITERIA:
-            if key in missing or criteria[key]["level"] == "green":
-                continue
-            if key == "readiness":
-                items.append(f"readiness aspoň {READINESS_GREEN}")
-            elif key == "hrv":
-                items.append(f"HRV zpět aspoň na {fmt(criteria['hrv']['baseline_ms'][0])} ms")
-            elif key == "sleep":
-                items.append("spánek aspoň 7 h")
-            else:
-                items.append(f"Body Battery ráno aspoň {BODY_BATTERY_GREEN}")
-        if items:
-            lines.append(f"Pro plnou zátěž: {'; '.join(items)}.")
+    # Present criteria that are not green; a green verdict has none, so the line is only for yellow / red.
+    items = []
+    for key in CRITERIA:
+        if key in missing or criteria[key]["level"] == "green":
+            continue
+        if key == "readiness":
+            items.append(f"readiness aspoň {READINESS_GREEN}")
+        elif key == "hrv":
+            items.append(f"HRV zpět aspoň na {fmt(criteria['hrv']['baseline_ms'][0])} ms")
+        elif key == "sleep":
+            items.append("spánek aspoň 7 h")
+        else:
+            items.append(f"Body Battery ráno aspoň {BODY_BATTERY_GREEN}")
+    if items:
+        lines.append(f"Pro plnou zátěž: {'; '.join(items)}.")
 
     if planned:
         lines.append("Dnes v plánu:")
