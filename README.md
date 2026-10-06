@@ -267,7 +267,8 @@ Zapnutí:
 4. `docker compose up -d --build coach-mcp`
 
 Zpráva je prostý text; první řádek je verdikt s barevným kolečkem a datem (`🟡 ŽLUTÁ · ranní briefing 7. 10.`,
-s `⚠️`, když jsou nová upozornění). Briefing vypneš smazáním `COACH_TELEGRAM_CHAT_ID` z `.env`.
+s `⚠️`, když jsou nová upozornění). Briefing vypneš smazáním `COACH_TELEGRAM_CHAT_ID` z `.env` a příkazem
+`docker compose up -d coach-mcp`.
 
 Briefing chodí v `COACH_BRIEFING_TIME` (výchozí 06:30, časové pásmo `TZ`). Když hodinky ještě nemají
 spánek nebo HRV, zkouší to každých `COACH_BRIEFING_RETRY_MINUTES` minut (15) a nejpozději

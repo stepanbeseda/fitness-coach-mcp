@@ -63,9 +63,9 @@ pojmenuje. Odeslání se při dočasné chybě Telegramu (5xx, 429, síť) opaku
 Zpráva je česky a bez formátování: první řádek je verdikt s barevným kolečkem a datem
 (`🟡 ŽLUTÁ · ranní briefing 7. 10.`, s `⚠️` za kolečkem, když jsou nová upozornění), pak prázdný řádek a text.
 Celá zpráva se ořízne na 4000 bajtů (Telegram bere nejvýš 4096 znaků). Bez `COACH_TELEGRAM_CHAT_ID` se plánovač
-nespustí a `/healthz` hlásí `"scheduler":"off"`. Když plánovač nečekaně
-skončí, v logu je `briefing status=stopped` a `/healthz` hlásí `"scheduler":"stopped"` (`healthcheck.sh` to
-ohlásí jako problém). Ruční odeslání (stav upozornění se nemění):
+nespustí a `/healthz` hlásí `"scheduler":"off"`. Když plánovač nečekaně skončí, v logu je
+`briefing status=stopped` a `/healthz` hlásí `"scheduler":"stopped"` (`healthcheck.sh` to ohlásí jako problém).
+Ruční odeslání (stav upozornění se nemění):
 
 ```bash
 docker compose exec coach-mcp python -m coach_mcp send-briefing

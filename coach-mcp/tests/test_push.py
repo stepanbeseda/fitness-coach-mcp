@@ -14,7 +14,7 @@ TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1"
 SECOND_TOKEN = "987654321:BBHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw2"
 
 MSG = PushMessage(
-    title="\U0001f7e1 ⚠️ ŽLUTÁ · ranní briefing 7. 10.",
+    title="\U0001f7e1 \u26a0\ufe0f ŽLUTÁ · ranní briefing 7. 10.",
     body="Verdikt: žlutá\nReadiness: 61 (žlutá)",
 )
 
@@ -77,6 +77,16 @@ async def test_negative_group_chat_id_is_sent_as_integer(tmp_path):
 async def test_status_classification(tmp_path, status, outcome):
     push = make_push(tmp_path, lambda request: httpx2.Response(status))
     assert await push.send(MSG) == outcome
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("status", "level"), [(200, logging.INFO), (429, logging.WARNING), (500, logging.WARNING), (400, logging.WARNING)])
+async def test_outcome_line_level(tmp_path, caplog, status, level):
+    caplog.set_level(logging.DEBUG)
+    await make_push(tmp_path, lambda request: httpx2.Response(status)).send(MSG)
+    (record,) = [r for r in caplog.records if r.name == "coach_mcp.push"]
+    assert record.levelno == level
+    assert record.getMessage().startswith("push status=")
 
 
 @pytest.mark.anyio

@@ -19,7 +19,7 @@ from . import tools
 from .briefing import Briefing, build_briefing
 from .config import Settings
 from .garmin import GarminReader, GarminSource, exception_kind
-from .push import TelegramPush, PushSender
+from .push import PushSender, TelegramPush
 from .store import Store
 
 log = logging.getLogger("coach_mcp.briefing")

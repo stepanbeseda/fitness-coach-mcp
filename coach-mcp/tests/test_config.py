@@ -160,11 +160,13 @@ def test_malformed_chat_id_is_rejected(tmp_path, value):
 
 @pytest.mark.parametrize(
     "content",
-    [None, "", "\n", "tk_SECRETabc", "123456789:SECRETshort", "123456789:" + "S" * 35 + " SECRET"],
+    [None, "", "\n", "tk_SECRETabc", "123456789:SECRETshort", "123456789:" + "S" * 35 + " SECRET", b"\xff\xfeSECRET"],
 )
 def test_chat_id_requires_a_usable_token_file(tmp_path, content):
     path = tmp_path / "telegram_bot_token"
-    if content is not None:
+    if isinstance(content, bytes):  # not valid UTF-8: read_bot_token must treat it as no token, not raise
+        path.write_bytes(content)
+    elif content is not None:
         path.write_text(content, encoding="utf-8")
     env = {"COACH_TELEGRAM_CHAT_ID": "123456789", "COACH_TELEGRAM_TOKEN_FILE": str(path)}
     with pytest.raises(ValueError) as exc:

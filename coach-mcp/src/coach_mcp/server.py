@@ -26,7 +26,7 @@ from . import __version__, tools
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
 from .garmin import GarminReader, GarminSource, exception_kind
-from .push import TelegramPush, PushSender
+from .push import PushSender, TelegramPush
 from .scheduler import BriefingScheduler, compose_briefing
 from .store import Store
 from .tools import PlannedSession, to_json
