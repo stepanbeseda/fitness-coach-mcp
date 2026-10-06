@@ -11,7 +11,8 @@ chapter and a table row; existing chapters are never rewritten, only the
   backends (`hevy-mcp/`, `garmin-mcp/`) behind one OAuth 2.1 gateway
   (`gateway/`), exposed only through a dedicated Tailscale node. It is not
   multi-user, has no web UI of its own and stores no health data outside the
-  owner's server.
+  owner's server; the only exception is the morning briefing, which since
+  PR 08 is sent to the owner's Telegram chat and kept there by Telegram.
 - **One way in.** Every MCP backend is reachable only through the gateway. A
   new backend means: a `[[backends]]` entry in `gateway/config.toml`, its own
   internal token secret, a hardened service in `docker-compose.yml` (the
@@ -75,6 +76,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 05 | History store, trends and weekly report | 03 | planned |
 | 06 | Weather and calendar | 03 | planned |
 | 07 | Strength workouts on the watch | — | planned |
+| 08 | Daily briefing via Telegram | 04 | **in progress** (branch mao/pr08-briefing-telegram) |
 
 ## 4. PR briefs
 
@@ -538,11 +540,83 @@ sync.
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 6).
 
+### PR 08 — Daily briefing via Telegram
+
+The morning briefing from PR 04 goes to ntfy. Send it to the owner's
+private chat with their own Telegram bot instead, and remove ntfy
+completely. This reverses "Out of scope: Telegram" in the PR 04 chapter.
+The push transport in `coach-mcp/src/coach_mcp/push.py` calls the Bot API
+method `sendMessage` (HTTPS POST from the `coach-mcp` container, no new
+dependency) with the chat id from the environment and the bot token as a
+Docker secret. The feature stays off unless a chat id is configured. A chat
+id without a usable token stops `coach-mcp` at start-up with an error that
+names the secret file, never its content. The token is part of the request
+URL, so no log line, error or script argument may contain the URL, the
+token, the chat id or the message.
+
+The message keeps its full content, the numbers included, and stays plain
+Czech text with no Telegram formatting. Its first line is the verdict with a
+coloured circle and the date, and every briefing notifies with sound. The
+ntfy title, priority and tags disappear. The `push` part of
+`get_daily_briefing` carries the exact text that is sent. The verdict, the
+alerts, the schedule, the retry and cutoff, the alert state and the manual
+`send-briefing` command do not change, and there is no schema migration.
+`scripts/setup-secrets.sh` stores and checks the bot token and helps the
+owner find the chat id. `README.md` says plainly that Telegram keeps the
+chat history, with the health values, on its servers, and that bot chats are
+not end-to-end encrypted.
+
+Out of scope: keeping ntfy as an alternative channel, group or channel
+targets beyond accepting a numeric chat id, Telegram formatting (Markdown
+or HTML), silent notifications, any interaction with the bot beyond
+receiving the briefing, and the weekly report (PR 05).
+
+**Done when:**
+1. The Telegram transport sends one `sendMessage` with the configured chat
+   id and the full briefing text. It treats 2xx as sent, 429, 5xx and
+   network errors as transient, and every other status as permanent. Its
+   logs never contain the bot token, the chat id or the text (tests with a
+   mock transport).
+2. Push is on only when `COACH_TELEGRAM_CHAT_ID` is set. A malformed chat
+   id, or a set chat id with a missing, empty or malformed token file,
+   fails at start-up. Without a chat id the scheduler does not start and
+   `/healthz` says so (tests).
+3. The message is plain text: an emoji verdict line with the date, then
+   the body, and the whole text stays within Telegram's limit. The
+   `get_daily_briefing` field `push.text` equals the text the transport
+   sends (tests).
+4. ntfy is gone: no ntfy code, setting, secret, script subcommand, test or
+   documentation remains outside this plan (`grep -rni ntfy` over the repo,
+   excluding `mao-plan.md` and `.claude/`, is empty).
+5. `scripts/setup-secrets.sh telegram-token` stores the token after
+   checking it with Telegram, never passes it as a command-line argument or
+   prints it, and shows the owner's chat id. `all` creates an empty
+   placeholder so the stack starts with push off. The behaviour is shown
+   with an offline stub harness, and `scripts/e2e-test.sh` keeps push off.
+6. `docker build --target test garmin-mcp`,
+   `docker build --target test gateway`,
+   `docker build --target test coach-mcp` and `scripts/e2e-test.sh` are
+   green.
+7. `README.md`, `coach-mcp/README.md` and `.env.example` are updated:
+   the Telegram setup (BotFather, chat id), the privacy note, the secrets
+   table, troubleshooting, the env table, and a rollback note saying that
+   the PR 04 image needs the ntfy secret file back.
+8. On the test host, after the owner approves the deploy, the manual
+   `send-briefing` message arrives in the owner's Telegram chat with
+   today's real readiness, HRV, sleep and planned session. Once the owner
+   confirms it, the owner removes the ntfy secret file and the
+   `COACH_NTFY_*` lines from `.env`.
+
+**Requested:** 2026-10-06, by the owner, from the chat after PR 04 ("Send the daily briefing to Telegram instead of ntfy"); questions and answers round 1.
+
 ## 5. Open items
 
 - **PR 04 push channel.** Decided 2026-10-06 (PR 04): ntfy on the public
   server ntfy.sh with a random topic; the privacy note in `README.md` keeps
-  a self-hosted server as the recommendation.
+  a self-hosted server as the recommendation. Superseded 2026-10-06 by
+  PR 08: the briefing goes to the owner's private chat with their own
+  Telegram bot, with the full message, and ntfy is removed; the README
+  privacy note says Telegram keeps the chat history on its servers.
 - **PR 02 nutrition data.** The Garmin nutrition endpoints have not been
   called on the owner's account; they may return nothing.
 - **e2e test shares image tags with the live stack.** `scripts/e2e-test.sh`
