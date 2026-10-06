@@ -56,6 +56,10 @@ repeated findings.
   source; its logger runs at WARNING). For any other library whose logs are
   silenced, the real `getLogger(...)` names were read in the image and each
   one is set and tested; a logger name is not always under the package name.
+- [ ] A test that a library logger stays quiet resets it with
+  `setLevel(logging.NOTSET)` and asserts its own `.level`; `getEffectiveLevel()`
+  passes vacuously under pytest. Removing the logger from the quieting list
+  turns it red.
 - [ ] A new dependency has a reason in the spec and is hash-locked through
   `scripts/lock-deps.sh` (no hand-edited `requirements*.lock`).
 
@@ -78,3 +82,6 @@ repeated findings.
 - [ ] Operator recipes added or changed in docs (backup/restore, recovery)
   were run on scratch volumes, fresh and existing, and the result is
   recorded.
+- [ ] A recipe that appends to a file (`>> .env`) states the outcome of a
+  second run (a duplicate line) and what the user does about it; no step
+  that a worker runs opens `.env` or `secrets/*`.
