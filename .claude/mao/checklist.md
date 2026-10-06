@@ -24,6 +24,10 @@ repeated findings.
   every new `get_*` call.
 - [ ] Nothing was silently weakened: a deleted test has a "new home" line in
   the spec/PR.
+- [ ] Every alert or notification is stated as a *state* (edge-triggered:
+  new when it newly holds) or an *event* (about a different object each day,
+  de-duplicated by the day or the object), and a test takes the consecutive-day
+  case. A change to a per-day guard keeps the pre-fix case as a test.
 - [ ] Time: fixed dates and relative dates in one test file are a calendar
   bomb — freeze the whole file or compute everything from `now`.
 - [ ] The four-command check (`docker build --target test garmin-mcp`,
@@ -49,7 +53,9 @@ repeated findings.
   `secrets/` and `data/` are not in the diff.
 - [ ] Logs and audit never contain tool arguments, results or health values,
   including what `garminconnect` itself logs for the new calls (check its
-  source; its logger runs at WARNING).
+  source; its logger runs at WARNING). For any other library whose logs are
+  silenced, the real `getLogger(...)` names were read in the image and each
+  one is set and tested; a logger name is not always under the package name.
 - [ ] A new dependency has a reason in the spec and is hash-locked through
   `scripts/lock-deps.sh` (no hand-edited `requirements*.lock`).
 

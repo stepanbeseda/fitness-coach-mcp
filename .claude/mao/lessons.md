@@ -49,6 +49,22 @@ agents read it before working; general lessons are in
   fresh volume and cost a review round and a design attempt. (PR 03, review
   2, B1)
 
+- **An edge-triggered de-duplication rule applied to an event-type condition.** "Alert only when the condition
+  newly holds" suits a lasting state (HRV low, auth broken). A condition that is about a different object each
+  day (yesterday's missed workout) must be de-duplicated by the event itself (the day / the object), or the second
+  event is silently swallowed. For every alert or notification, the spec says whether it is a *state* or an
+  *event* and what its de-duplication key is. (PR 04, review 1, N1)
+- **A third-party logger name is not under the package name.** The spec silenced `mcp.client` to keep the MCP
+  SDK quiet, but the client session logs through `logging.getLogger("client")` (`mcp/client/session.py:71`),
+  which stays at the root level and can carry payload text in `exc_info`. For every library whose logs the spec
+  quiets, list the real `getLogger(...)` names with `grep -rn getLogger` in the installed package inside the
+  image, and set and test every one of them. (PR 04, spec check F4)
+- **A fix that changes a per-day guard drops a case the old guard handled.** The A5 fix set "first look
+  of the day" before the store read, so a store error on a late first look (service started after the cutoff)
+  turned the late start into a late send. A spec fix that re-keys or reorders a per-day / first-look guard lists
+  every case the old code handled (including the failure paths) and keeps each one as a test next to the new
+  case. (PR 04, review 2, N10)
+
 ## Operational lessons
 
 - **`docker compose build` with stdout redirected needs an explicit progress mode.** A newer
@@ -62,3 +78,14 @@ agents read it before working; general lessons are in
   run files stay in the main checkout's `.claude/mao-log/`, and the live tree
   gets the PR's code only in an approved deploy step. The command rules are
   in `project.md` ("Commands"). (PR 03)
+- **Measure line lengths with Python, not `awk`.** The host `awk` is mawk, which counts bytes, so a
+  length check on Czech text reports 18 lines instead of 4. Specs prescribe
+  `python3 -c "import sys; [print(i, l[:40]) for i, l in enumerate(open(sys.argv[1], encoding='utf-8').read().split('\n'), 1) if len(l) > 118]" <file>`
+  for character counts. (PR 04, spec check F3)
+- **`scripts/e2e-test.sh` retags the image the live stack would be recreated from.** Run in a worktree, it
+  retags the shared `fitness-coach-mcp/coach-mcp:0.1.0` to the PR build, so a plain `docker compose up -d` in
+  the live checkout would recreate the service from the new image under the old compose file and migrate the
+  live database without a backup. Before any deploy step compare the running container's image ID with the
+  tag (`docker inspect -f '{{.Image}}' <container>` against `docker image inspect -f '{{.Id}}' <tag>`), say
+  so in the live-step warning, and run no compose command that creates `coach-mcp` before the backup. (PR 04,
+  review 1, N6)
