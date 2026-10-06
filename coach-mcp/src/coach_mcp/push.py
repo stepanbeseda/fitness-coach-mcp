@@ -65,11 +65,12 @@ class NtfyPush:
             async with httpx2.AsyncClient(
                 headers=headers, timeout=httpx2.Timeout(20.0), transport=self._transport
             ) as http:
-                response = await http.post(f"{self._settings.ntfy_url}/", json=body)
+                # stream(): only the status line is needed, the reply body is never read into memory.
+                async with http.stream("POST", f"{self._settings.ntfy_url}/", json=body) as response:
+                    code = response.status_code
         except (httpx2.TimeoutException, httpx2.RequestError, OSError) as exc:
             log.warning("push status=transient kind=%s ms=%.0f", type(exc).__name__, _ms(started))
             return "transient"
-        code = response.status_code
         if 200 <= code < 300:
             outcome: PushOutcome = "sent"
         elif code == 429 or code >= 500:
