@@ -19,7 +19,7 @@ lock() {
   ok "$dir/$out"
 }
 
-for dir in gateway garmin-mcp; do
+for dir in gateway garmin-mcp coach-mcp; do
   [[ -f "$dir/pyproject.toml" ]] || continue
   lock "$dir" requirements.lock
   for extra in dev test; do

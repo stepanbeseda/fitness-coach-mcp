@@ -1,6 +1,6 @@
-# fitness-coach-mcp: Hevy + Garmin MCP servers behind an OAuth 2.1 gateway,
-# reachable only through a dedicated Tailscale node (Funnel on :443 for claude.ai,
-# plain tailnet for Claude Code / Claude Desktop).
+# fitness-coach-mcp: Hevy, Garmin and coach-memory MCP servers behind an OAuth 2.1
+# gateway, reachable only through a dedicated Tailscale node (Funnel on :443 for
+# claude.ai, plain tailnet for Claude Code / Claude Desktop).
 #
 # - No service publishes a host port. The gateway shares the network namespace of
 #   the Tailscale sidecar and listens on 127.0.0.1 only, so tailscaled is the only
@@ -97,6 +97,7 @@ services:
       - gateway_totp_secret
       - hevy_backend_token
       - garmin_backend_token
+      - coach_backend_token
     mem_limit: 256m
     pids_limit: 128
     healthcheck:
@@ -156,6 +157,31 @@ services:
       retries: 3
       start_period: 20s
 
+  coach-mcp:
+    <<: *hardening
+    build:
+      context: ./coach-mcp
+      args: *build_args
+    image: fitness-coach-mcp/coach-mcp:0.1.0
+    environment:
+      HOME: /tmp
+    volumes:
+      - coach-data:/data/coach
+    tmpfs:
+      - /tmp:size=16m
+    secrets:
+      - coach_backend_token
+    networks:
+      - mcp
+    mem_limit: 256m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   mcp:
     driver: bridge
@@ -164,6 +190,7 @@ volumes:
   ts-state:
   gateway-data:
   garmin-tokens:
+  coach-data:
 
 secrets:
   ts_authkey:
@@ -178,3 +205,5 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/hevy_backend_token
   garmin_backend_token:
     file: ${SECRETS_DIR:-./secrets}/garmin_backend_token
+  coach_backend_token:
+    file: ${SECRETS_DIR:-./secrets}/coach_backend_token

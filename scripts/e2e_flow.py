@@ -126,15 +126,49 @@ def exercise_backend(client: httpx.Client, name: str, probe_tool: str, probe_arg
     return refreshed.json()["access_token"]
 
 
+def tool_result(body: dict | None) -> tuple[bool, object]:
+    """(call succeeded, JSON payload of the first text content or None) of a tools/call response."""
+    if not isinstance(body, dict) or not isinstance(body.get("result"), dict):
+        return False, None
+    result = body["result"]
+    is_error = result.get("isError") is True
+    try:
+        payload = json.loads(result["content"][0]["text"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        payload = None
+    return not is_error, payload
+
+
+def exercise_coach_memory(client: httpx.Client, token: str) -> None:
+    """Round trip on throwaway data: set_goal, then get_coach_context returns the goal."""
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {
+        "name": "set_goal", "arguments": {"title": "E2E goal", "target_date": "2030-01-01"}}, msg_id=6)
+    ok, _ = tool_result(body)
+    check(ok, "coach set_goal stores a goal")
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_coach_context", "arguments": {}},
+                  msg_id=7)
+    ok, data = tool_result(body)
+    goals = data.get("goals", []) if isinstance(data, dict) else []
+    check(ok and any(isinstance(g, dict) and g.get("title") == "E2E goal" for g in goals),
+          "coach get_coach_context returns the stored goal")
+
+
 def main() -> int:
     with httpx.Client(timeout=60, follow_redirects=False) as client:
         public = client.get(f"{GW}/authorize", headers=FUNNEL)
         check(public.status_code == 403, "login page refused through Funnel")
         hevy = exercise_backend(client, "hevy", "get-workouts", {"page": 1, "page_size": 3})
-        exercise_backend(client, "garmin", "get_recovery_snapshot", {})
+        garmin = exercise_backend(client, "garmin", "get_recovery_snapshot", {})
         cross = client.post(f"{GW}/garmin/mcp", headers={**FUNNEL, "authorization": f"Bearer {hevy}"},
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         check(cross.status_code == 401, "Hevy token rejected by the Garmin endpoint (audience)")
+        # The third OAuth login below uses TOTP step offset +1, the largest the gateway accepts
+        # (current +/- 1 step): do not add a fourth login to this script.
+        coach = exercise_backend(client, "coach", "get_coach_context", {})
+        exercise_coach_memory(client, coach)
+        cross = client.post(f"{GW}/coach/mcp", headers={**FUNNEL, "authorization": f"Bearer {garmin}"},
+                            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        check(cross.status_code == 401, "Garmin token rejected by the coach endpoint (audience)")
     print(f"\n{'E2E OK' if not failures else 'E2E FAILED: ' + '; '.join(failures)}")
     return 1 if failures else 0
 

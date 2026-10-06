@@ -38,6 +38,7 @@ put gateway_password_hash "$(printf '%s\n' "$E2E_PASSWORD" | docker run --rm -i 
 put gateway_totp_secret "$(python3 -c 'import base64, os; print(base64.b32encode(os.urandom(20)).decode())')"
 put hevy_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put garmin_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+put coach_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put hevy_api_key "00000000-0000-0000-0000-000000000000"
 put ts_authkey "tskey-auth-unused-in-e2e"
 
@@ -45,7 +46,7 @@ info "Start stack ($PROJECT)..."
 "${compose[@]}" up -d >/dev/null
 for _ in $(seq 1 60); do
   unhealthy=0
-  for svc in gateway hevy-mcp garmin-mcp; do
+  for svc in gateway hevy-mcp garmin-mcp coach-mcp; do
     cid="$("${compose[@]}" ps -q "$svc")"
     [[ -n "$cid" && "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")" == healthy ]] \
       || unhealthy=1

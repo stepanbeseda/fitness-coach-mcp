@@ -18,7 +18,7 @@ repeated findings.
 - [ ] Tests use only the fake Garmin client and canned payloads; they do not
   depend on network, global config, HOME, time zone or file order.
 - [ ] New MCP tools are added to `EXPECTED_TOOLS` (and `WRITE_TOOLS` when they
-  write) in `garmin-mcp/tests/test_http.py`, and the `tools/list` payload stays
+  write) in the service's `tests/test_http.py` (`garmin-mcp/` or `coach-mcp/`), and the `tools/list` payload stays
   under the size limit asserted there (40 000 chars).
 - [ ] `FakeGarmin.responses` in `garmin-mcp/tests/conftest.py` has a key for
   every new `get_*` call.
@@ -26,9 +26,9 @@ repeated findings.
   the spec/PR.
 - [ ] Time: fixed dates and relative dates in one test file are a calendar
   bomb — freeze the whole file or compute everything from `now`.
-- [ ] The three-command check (`docker build --target test garmin-mcp`,
-  `docker build --target test gateway`, `scripts/e2e-test.sh`) was run and is
-  green.
+- [ ] The four-command check (`docker build --target test garmin-mcp`,
+  `docker build --target test gateway`, `docker build --target test coach-mcp`,
+  `scripts/e2e-test.sh`) was run and is green.
 
 ## Failure
 
@@ -64,6 +64,11 @@ repeated findings.
 
 - [ ] Docs and docstrings describe the new behaviour; grep for the old
   wording is empty. A tool-list change updates `garmin-mcp/README.md`,
-  `README.md`, `docs/coach-instructions.md` and `INSTRUCTIONS` in `server.py`.
+  `README.md`, `docs/coach-instructions.md` and `INSTRUCTIONS` in `server.py`;
+  `coach-mcp/README.md` and `INSTRUCTIONS` in
+  `coach-mcp/src/coach_mcp/server.py` for coach tools.
 - [ ] Czech docs stay Czech; code, comments and commits are English.
 - [ ] Links in docs lead to existing files.
+- [ ] Operator recipes added or changed in docs (backup/restore, recovery)
+  were run on scratch volumes, fresh and existing, and the result is
+  recorded.

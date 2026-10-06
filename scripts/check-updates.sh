@@ -30,8 +30,8 @@ if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
   row "$py_tag (digest)" "${py_digest:7:12}" "${py_now:7:12}" "$(status_for "$py_digest" "$py_now")"
 fi
 
-# Python packages (gateway + garmin-mcp locks)
-for lock in gateway/requirements.lock garmin-mcp/requirements.lock; do
+# Python packages (gateway, garmin-mcp and coach-mcp locks)
+for lock in gateway/requirements.lock garmin-mcp/requirements.lock coach-mcp/requirements.lock; do
   [[ -f "$lock" ]] || continue
   while IFS='=' read -r name _ version; do
     latest="$(curl -fsS "https://pypi.org/pypi/${name}/json" | jq -r .info.version 2>/dev/null || true)"

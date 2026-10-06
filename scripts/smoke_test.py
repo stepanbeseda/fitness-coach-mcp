@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Smoke test of both MCP endpoints through the gateway (stdlib only).
+"""Smoke test of the three MCP endpoints through the gateway (stdlib only).
 
-Usage: smoke_test.py BASE_URL HEVY_TOKEN GARMIN_TOKEN
+Usage: smoke_test.py BASE_URL HEVY_TOKEN GARMIN_TOKEN COACH_TOKEN
 Tokens come from `scripts/admin.sh mint-token` (see scripts/smoke-test.sh).
 """
 
@@ -82,7 +82,7 @@ def section(title: str) -> None:
 
 
 def main() -> int:
-    base, hevy_token, garmin_token = sys.argv[1:4]
+    base, hevy_token, garmin_token, coach_token = sys.argv[1:5]
     failures = 0
 
     section("Hevy: initialize + tools/list")
@@ -133,6 +133,20 @@ def main() -> int:
         except (ValueError, AttributeError):
             print(text[:1500])
         print(f"nutrition: {garmin.call('get_nutrition', {})[:1500]}")
+    except Exception as exc:  # noqa: BLE001
+        failures += 1
+        print(f"FAIL: {exc}")
+
+    section("Kouč: initialize + tools/list")
+    coach = McpSession(f"{base}/coach/mcp", coach_token)
+    try:
+        info = coach.initialize()
+        tools = [t["name"] for t in coach.request("tools/list")["tools"]]
+        print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
+        section("Kouč: get_coach_context (jen počty)")
+        data = json.loads(coach.call("get_coach_context", {}))
+        print(f"today: {data['today']} | week: {data['week']['iso_week']} ({data['week']['start']} - {data['week']['end']})")
+        print(", ".join(f"{key}: {len(data[key])}" for key in ("goals", "constraints", "sessions", "notes")))
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")

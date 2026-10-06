@@ -89,3 +89,11 @@ path = "/garmin/mcp"
 upstream = "http://garmin-mcp:8000/mcp"
 token_file = "/run/secrets/garmin_backend_token"
 tool_denylist = []
+
+[[backends]]
+name = "coach"
+title = "Coach memory"
+path = "/coach/mcp"
+upstream = "http://coach-mcp:8000/mcp"
+token_file = "/run/secrets/coach_backend_token"
+tool_denylist = []
