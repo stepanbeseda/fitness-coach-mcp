@@ -24,6 +24,10 @@ def test_from_env_defaults():
     assert s.briefing_time == dt.time(6, 30)
     assert s.briefing_cutoff == dt.time(9, 30)
     assert s.briefing_retry_minutes == 15
+    assert s.history_enabled is True
+    assert s.history_time == dt.time(3, 30)
+    assert s.history_backfill_days == 90
+    assert s.history_call_delay_seconds == 15
     assert s.push_enabled is False
     assert s == Settings()
 
@@ -136,6 +140,10 @@ def test_blank_briefing_values_fall_back_to_defaults():
         "COACH_BRIEFING_TIME",
         "COACH_BRIEFING_CUTOFF",
         "COACH_BRIEFING_RETRY_MINUTES",
+        "COACH_HISTORY_ENABLED",
+        "COACH_HISTORY_TIME",
+        "COACH_HISTORY_BACKFILL_DAYS",
+        "COACH_HISTORY_CALL_DELAY_SECONDS",
     )
     assert Settings.from_env(dict.fromkeys(names, "")) == Settings()
     assert Settings.from_env(dict.fromkeys(names, "  ")) == Settings()
@@ -185,3 +193,58 @@ def test_chat_id_with_valid_token_enables_push(tmp_path):
     s = Settings.from_env({"COACH_TELEGRAM_CHAT_ID": "123456789", "COACH_TELEGRAM_TOKEN_FILE": str(token_file)})
     assert s.push_enabled is True
     assert all(token not in str(v) for v in s.__dict__.values())
+
+
+def test_history_overrides():
+    s = Settings.from_env(
+        {
+            "COACH_HISTORY_ENABLED": "False",
+            "COACH_HISTORY_TIME": "04:15",
+            "COACH_HISTORY_BACKFILL_DAYS": "30",
+            "COACH_HISTORY_CALL_DELAY_SECONDS": "20",
+        }
+    )
+    assert s.history_enabled is False
+    assert s.history_time == dt.time(4, 15)
+    assert s.history_backfill_days == 30
+    assert s.history_call_delay_seconds == 20
+    assert Settings.from_env({"COACH_HISTORY_ENABLED": "TRUE"}).history_enabled is True
+    for days in ("1", "366"):
+        assert Settings.from_env({"COACH_HISTORY_BACKFILL_DAYS": days}).history_backfill_days == int(days)
+    for seconds in ("1", "600"):
+        assert Settings.from_env({"COACH_HISTORY_CALL_DELAY_SECONDS": seconds}).history_call_delay_seconds == int(
+            seconds
+        )
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("COACH_HISTORY_ENABLED", "yes"),
+        ("COACH_HISTORY_ENABLED", "1"),
+        ("COACH_HISTORY_TIME", "25:00"),
+        ("COACH_HISTORY_TIME", "abc"),
+        ("COACH_HISTORY_BACKFILL_DAYS", "0"),
+        ("COACH_HISTORY_BACKFILL_DAYS", "367"),
+        ("COACH_HISTORY_BACKFILL_DAYS", "abc"),
+        ("COACH_HISTORY_CALL_DELAY_SECONDS", "0"),
+        ("COACH_HISTORY_CALL_DELAY_SECONDS", "601"),
+        ("COACH_HISTORY_CALL_DELAY_SECONDS", "abc"),
+    ],
+)
+def test_invalid_history_values_are_rejected(variable, value):
+    with pytest.raises(ValueError, match=variable):
+        Settings.from_env({variable: value})
+
+
+def test_history_time_inside_briefing_window_is_rejected():
+    for bad in ("06:30", "07:00", "09:29"):
+        with pytest.raises(ValueError, match="COACH_HISTORY_TIME must not fall inside the briefing window"):
+            Settings.from_env({"COACH_HISTORY_TIME": bad})
+    for good in ("09:30", "06:29"):
+        assert Settings.from_env({"COACH_HISTORY_TIME": good}).history_time == dt.time.fromisoformat(good)
+    # The window follows the configured briefing times.
+    env = {"COACH_BRIEFING_TIME": "05:00", "COACH_BRIEFING_CUTOFF": "06:00"}
+    assert Settings.from_env({**env, "COACH_HISTORY_TIME": "06:30"}).history_time == dt.time(6, 30)
+    with pytest.raises(ValueError, match="inside the briefing window"):
+        Settings.from_env({**env, "COACH_HISTORY_TIME": "05:00"})

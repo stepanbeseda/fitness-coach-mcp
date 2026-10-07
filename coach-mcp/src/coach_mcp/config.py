@@ -53,6 +53,17 @@ def _clock_time(name: str, value: str) -> dt.time:
     return dt.time.fromisoformat(value)
 
 
+def _int_in(env: dict[str, str], name: str, default: str, low: int, high: int) -> int:
+    raw = _opt(env, name, default)
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer") from None
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be between {low} and {high}")
+    return value
+
+
 def read_bot_token(path: Path) -> str | None:
     """The token from ``path`` when the file holds one in bot-token shape, else None.
 
@@ -83,6 +94,11 @@ class Settings:
     briefing_time: dt.time = dt.time(6, 30)
     briefing_cutoff: dt.time = dt.time(9, 30)
     briefing_retry_minutes: int = 15
+    # Nightly history of Garmin daily values (get_trends, get_weekly_report).
+    history_enabled: bool = True
+    history_time: dt.time = dt.time(3, 30)
+    history_backfill_days: int = 90
+    history_call_delay_seconds: int = 15
 
     @property
     def push_enabled(self) -> bool:
@@ -142,6 +158,18 @@ class Settings:
         if not 1 <= retry <= 180:
             raise ValueError("COACH_BRIEFING_RETRY_MINUTES must be between 1 and 180")
 
+        raw_history = _opt(env, "COACH_HISTORY_ENABLED", "true").lower()
+        if raw_history not in ("true", "false"):
+            raise ValueError("COACH_HISTORY_ENABLED must be true or false")
+        history_time = _clock_time("COACH_HISTORY_TIME", _opt(env, "COACH_HISTORY_TIME", "03:30"))
+        if briefing_time <= history_time < briefing_cutoff:
+            raise ValueError(
+                "COACH_HISTORY_TIME must not fall inside the briefing window "
+                "(COACH_BRIEFING_TIME to COACH_BRIEFING_CUTOFF)"
+            )
+        backfill_days = _int_in(env, "COACH_HISTORY_BACKFILL_DAYS", "90", 1, 366)
+        call_delay = _int_in(env, "COACH_HISTORY_CALL_DELAY_SECONDS", "15", 1, 600)
+
         return cls(
             db_path=db_path,
             bearer_token_file=Path(_text(env, "COACH_MCP_BEARER_TOKEN_FILE", "/run/secrets/coach_backend_token")),
@@ -157,4 +185,8 @@ class Settings:
             briefing_time=briefing_time,
             briefing_cutoff=briefing_cutoff,
             briefing_retry_minutes=retry,
+            history_enabled=raw_history == "true",
+            history_time=history_time,
+            history_backfill_days=backfill_days,
+            history_call_delay_seconds=call_delay,
         )
