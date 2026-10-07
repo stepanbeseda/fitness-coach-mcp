@@ -1253,3 +1253,21 @@ async def test_history_time_inside_window_runs_at_cutoff_with_one_warning(store,
     # the run due at 2026-10-08 07:00 is paused: its first call is at the cutoff, none inside the window
     assert source.times[3] == local(date(2026, 10, 8), 9, 30)
     assert all(not (local(d, 6, 30) <= t < local(d, 9, 30)) for t in source.times for d in (TODAY, date(2026, 10, 8)))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("history_time", "warns"),
+    [("03:30", False), ("06:29", False), ("06:30", True), ("09:29", True), ("09:30", False)],
+)
+async def test_config_warning_only_for_a_time_inside_the_window(store, caplog, history_time, warns):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    await run_job(
+        store,
+        FakeHistorySource(),
+        AFTER_WINDOW,
+        settings_overrides={"history_time": dt.time.fromisoformat(history_time)},
+        max_sleeps=1,  # the warning comes before the loop; stop at the first sleep
+    )
+    lines = [r.getMessage() for r in history_lines(caplog) if "config_warning" in r.getMessage()]
+    assert lines == (["history status=config_warning reason=time_in_briefing_window"] if warns else [])
