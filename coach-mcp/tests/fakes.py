@@ -95,7 +95,7 @@ class FakeHistorySource:
         self.auth = auth
         self._recovery = recovery or (lambda day, index: ("ok", history_snapshot(day.isoformat())))
         self._activities = activities or (lambda start, end, index: ("ok", activities_payload([])))
-        self._clock = clock
+        self.clock = clock
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.times: list[datetime | None] = []
         self.auth_checks = 0
@@ -109,7 +109,7 @@ class FakeHistorySource:
             raise ValueError(f"tool {name!r} is not allowed")
         index = len(self.calls)
         self.calls.append((name, dict(args)))
-        self.times.append(self._clock.now() if self._clock else None)
+        self.times.append(self.clock.now() if self.clock else None)
         if name == "get_recovery_snapshot":
             return self._recovery(date.fromisoformat(args["date"]), index)
         return self._activities(date.fromisoformat(args["start_date"]), date.fromisoformat(args["end_date"]), index)
