@@ -33,6 +33,7 @@ MAX_BACKOFF_SECONDS = 28800.0
 MAX_SLEEP_SECONDS = 3600.0
 REFETCH_DAYS = 3
 MAX_FAILURES = 3
+OUTAGE_ERRORS = 3
 BLOCK_DAYS = 7
 ACTIVITY_LIMIT = 100
 
@@ -171,11 +172,12 @@ def needs_fetch(day: date, fetched_on: date | None, failures: int, today: date) 
     """Does one part (recovery or activities) of ``day`` need a call now?
 
     A day is fetched on D+1, again on D+2 and D+3 (late watch syncs), never more than once per local date;
-    a day that never succeeded is given up after ``MAX_FAILURES`` item errors.
+    a day that never succeeded is given up after ``MAX_FAILURES`` item errors, and a day with data stops being
+    re-fetched after ``MAX_FAILURES`` item errors.
     """
     if fetched_on is None:
         return failures < MAX_FAILURES
-    return fetched_on < today and fetched_on < day + timedelta(days=REFETCH_DAYS)
+    return fetched_on < today and fetched_on < day + timedelta(days=REFETCH_DAYS) and failures < MAX_FAILURES
 
 
 def _fetched_on(value: Any) -> date | None:
@@ -199,14 +201,27 @@ _STOP_OUTCOMES = {
     "unreachable": "unreachable",
     "no_credentials": "no_credentials",
 }
-_WARNING_OUTCOMES = frozenset({"rate_limited", "auth", "unreachable", "no_credentials"})
+_WARNING_OUTCOMES = frozenset({"rate_limited", "service_error", "auth", "unreachable", "no_credentials"})
+PARTS = ("recovery", "activities")
 
 
-class _Counters:
+class _Run:
+    """State of one collection run: counters plus the item errors that are not charged yet.
+
+    Created at the start of every ``run_once`` from the stored rows, never persisted and never kept across
+    runs: a restart or a crash only leaves held errors uncharged, so those days stay pending.
+    """
+
     def __init__(self) -> None:
         self.fetched = 0
         self.failed = 0
         self.calls = 0
+        self.pending: list[date] = []
+        self.given_up = 0
+        # Per part: the day lists of item errors not charged yet (charged once the backend is shown to work).
+        self.unconfirmed: dict[str, list[list[date]]] = {part: [] for part in PARTS}
+        # Per part: a day for which the backend answered this part correctly, the probe asks for it.
+        self.known_good: dict[str, date | None] = {part: None for part in PARTS}
 
 
 class HistoryJob:
@@ -259,6 +274,9 @@ class HistoryJob:
     # ----------------------------------------------------------------- loop
 
     async def run(self) -> None:
+        if self._settings.briefing_time <= self._settings.history_time < self._settings.briefing_cutoff:
+            # Accepted: the run due at history_time is paused and starts at the cutoff. Said once per start.
+            log.warning("history status=config_warning reason=time_in_briefing_window")
         while True:
             try:
                 delay = await self.tick()
@@ -281,7 +299,7 @@ class HistoryJob:
             self._due, self._backoff = self._next_history_time(after), RATE_LIMIT_BACKOFF_SECONDS
         elif outcome == "paused":
             self._due = self._at(self._today(after), self._settings.briefing_cutoff)
-        elif outcome == "rate_limited":
+        elif outcome in ("rate_limited", "service_error"):  # one shared backoff
             self._due = after + timedelta(seconds=self._backoff)
             self._backoff = min(self._backoff * 2, MAX_BACKOFF_SECONDS)
         else:  # partial, auth, unreachable, no_credentials: try again in an hour, at the latest at history_time
@@ -294,25 +312,25 @@ class HistoryJob:
     async def run_once(self) -> str:
         """One collection run; returns its outcome word (and logs exactly one line)."""
         started = time.monotonic()
-        counters = _Counters()
-        pending: list[date] = []
+        run = _Run()
         try:
-            outcome = await self._collect(counters, pending)
+            outcome = await self._collect(run)
         except _Stop as stop:
-            outcome = stop.outcome
+            outcome = stop.outcome  # the held errors of the run are dropped, not charged
         level = logging.WARNING if outcome in _WARNING_OUTCOMES else logging.INFO
         log.log(
             level,
-            "history status=%s fetched=%d failed=%d pending=%d ms=%.0f",
+            "history status=%s fetched=%d failed=%d pending=%d given_up=%d ms=%.0f",
             outcome,
-            counters.fetched,
-            counters.failed,
-            len(pending),
+            run.fetched,
+            run.failed,
+            len(run.pending),
+            run.given_up,
             (time.monotonic() - started) * 1000,
         )
         return outcome
 
-    async def _collect(self, counters: _Counters, pending: list[date]) -> str:
+    async def _collect(self, run: _Run) -> str:
         today = self._today(self._now())
         first = today - timedelta(days=self._settings.history_backfill_days)
         last = today - timedelta(days=1)
@@ -322,15 +340,20 @@ class HistoryJob:
         day = last
         while day >= first:
             row = stored.get(day.isoformat(), {})
-            if needs_fetch(day, _fetched_on(row.get("recovery_fetched_on")), row.get("recovery_failures") or 0, today):
+            fetched = {part: _fetched_on(row.get(f"{part}_fetched_on")) for part in PARTS}
+            failures = {part: row.get(f"{part}_failures") or 0 for part in PARTS}
+            if needs_fetch(day, fetched["recovery"], failures["recovery"], today):
                 need_recovery.add(day)
-            if needs_fetch(
-                day, _fetched_on(row.get("activities_fetched_on")), row.get("activities_failures") or 0, today
-            ):
+            if needs_fetch(day, fetched["activities"], failures["activities"], today):
                 need_activities.add(day)
+            if any(fetched[p] is None and failures[p] >= MAX_FAILURES for p in PARTS):
+                run.given_up += 1
+            for part in PARTS:  # newest first: the first hit is the newest day that has data
+                if run.known_good[part] is None and fetched[part] is not None:
+                    run.known_good[part] = day
             day -= timedelta(days=1)
-        pending.extend(sorted(need_recovery | need_activities, reverse=True))
-        if not pending:
+        run.pending.extend(sorted(need_recovery | need_activities, reverse=True))
+        if not run.pending:
             return "done"
         if self._in_briefing_window(self._now()):
             return "paused"
@@ -340,14 +363,17 @@ class HistoryJob:
         if auth != "ok":
             return "auth"
 
-        for block in self._blocks(pending):
+        for block in self._blocks(run.pending):
             act = [d for d in block if d in need_activities]
             if act:
-                await self._fetch_activities(act, today, counters)
+                await self._fetch_activities(act, today, run)
             for d in block:
                 if d in need_recovery:
-                    await self._fetch_snapshot(d, today, counters)
-        return "partial" if counters.failed else "done"
+                    await self._fetch_snapshot(d, today, run)
+        for part in PARTS:  # errors held at the end of the loop: the backend must show it works
+            if run.unconfirmed[part]:
+                await self._probe(part, run)
+        return "partial" if run.failed else "done"
 
     @staticmethod
     def _blocks(pending: list[date]) -> list[list[date]]:
@@ -360,13 +386,13 @@ class HistoryJob:
                 blocks.append([d])
         return blocks
 
-    async def _call(self, name: str, args: dict[str, Any], counters: _Counters) -> tuple[str, dict[str, Any] | None]:
+    async def _call(self, name: str, args: dict[str, Any], run: _Run) -> tuple[str, dict[str, Any] | None]:
         """One paced backend call -> ("ok", payload) or ("error", None); anything else stops the run."""
-        if counters.calls:
+        if run.calls:
             await self._sleep(self._settings.history_call_delay_seconds)
             if self._in_briefing_window(self._now()):
                 raise _Stop("paused")
-        counters.calls += 1
+        run.calls += 1
         outcome, payload = await self._source.history_call(name, args)
         if outcome in _STOP_OUTCOMES:
             raise _Stop(_STOP_OUTCOMES[outcome])
@@ -374,34 +400,74 @@ class HistoryJob:
             return "ok", payload
         return "error", None
 
-    async def _fetch_activities(self, days: list[date], today: date, counters: _Counters) -> None:
+    # An item error is not charged to its days at once: during an outage of Garmin Connect (or of the server's
+    # internet) every call fails the same way and every day would be given up. It is held until the backend
+    # answers the same part correctly (``_confirm``); three held errors, or the end of the run, ask the backend
+    # for a day that is known to work (``_probe``).
+
+    def _charge(self, part: str, run: _Run) -> None:
+        for days in run.unconfirmed[part]:
+            self._store.record_history_failure(days, part)
+            run.failed += 1
+        run.unconfirmed[part].clear()
+
+    def _confirm(self, part: str, good_day: date, run: _Run) -> None:
+        """A call of ``part`` worked: the held errors of that part belonged to their days."""
+        run.known_good[part] = good_day
+        self._charge(part, run)
+
+    async def _item_error(self, part: str, days: list[date], run: _Run) -> None:
+        run.unconfirmed[part].append(days)
+        if len(run.unconfirmed[part]) >= OUTAGE_ERRORS:
+            await self._probe(part, run)
+
+    async def _probe(self, part: str, run: _Run) -> None:
+        """Ask for the known-good day of ``part``; success charges the held errors, failure stops the run."""
+        good = run.known_good[part]
+        if good is None:
+            raise _Stop("service_error")
+        if part == "recovery":
+            outcome, payload = await self._call("get_recovery_snapshot", {"date": good.isoformat()}, run)
+            works = outcome == "ok" and payload is not None and not snapshot_failed(payload)
+        else:
+            outcome, payload = await self._call(
+                "list_activities",
+                {"start_date": good.isoformat(), "end_date": good.isoformat(), "limit": ACTIVITY_LIMIT},
+                run,
+            )
+            works = outcome == "ok" and payload is not None and isinstance(payload.get("activities"), list)
+        if not works:
+            raise _Stop("service_error")
+        self._charge(part, run)  # the probe result itself is neither stored nor counted
+
+    async def _fetch_activities(self, days: list[date], today: date, run: _Run) -> None:
         """One ``list_activities`` call over the days in ``days`` (a single day or a short block)."""
         lo, hi = min(days), max(days)
         outcome, payload = await self._call(
             "list_activities",
             {"start_date": lo.isoformat(), "end_date": hi.isoformat(), "limit": ACTIVITY_LIMIT},
-            counters,
+            run,
         )
         if payload is not None and not isinstance(payload.get("activities"), list):
             outcome = "error"
         if outcome != "ok" or payload is None:
-            self._store.record_history_failure(days, "activities")
-            counters.failed += 1
+            await self._item_error("activities", days, run)
             return
+        self._confirm("activities", hi, run)
         if payload.get("truncated") is True and lo != hi:
             # More activities than the limit in the range: ask day by day instead of storing a cut-off list.
             for day in days:
-                await self._fetch_activities([day], today, counters)
+                await self._fetch_activities([day], today, run)
             return
         totals = activity_totals(payload, days)
         self._store.upsert_history_activities({d: totals_json(t) for d, t in totals.items()}, today)
-        counters.fetched += 1
+        run.fetched += 1
 
-    async def _fetch_snapshot(self, day: date, today: date, counters: _Counters) -> None:
-        outcome, payload = await self._call("get_recovery_snapshot", {"date": day.isoformat()}, counters)
+    async def _fetch_snapshot(self, day: date, today: date, run: _Run) -> None:
+        outcome, payload = await self._call("get_recovery_snapshot", {"date": day.isoformat()}, run)
         if outcome != "ok" or payload is None or snapshot_failed(payload):
-            self._store.record_history_failure([day], "recovery")
-            counters.failed += 1
+            await self._item_error("recovery", [day], run)
             return
+        self._confirm("recovery", day, run)
         self._store.upsert_history_recovery(day, recovery_values(payload), today)
-        counters.fetched += 1
+        run.fetched += 1

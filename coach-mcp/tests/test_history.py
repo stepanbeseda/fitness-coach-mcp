@@ -15,7 +15,7 @@ from garmin_payloads import (
     activity,
     history_snapshot,
 )
-from history_helpers import local, make_job, next_run, run_first, run_job
+from history_helpers import local, make_job, next_run, run_first, run_job, seed_activities, seed_day
 
 from coach_mcp import history
 from coach_mcp.history import (
@@ -215,6 +215,20 @@ def all_errors() -> dict[str, Any]:
     return history_snapshot("x", **dict.fromkeys(HISTORY_SECTIONS, ERROR_SECTION))
 
 
+OUTAGE_SECTION = {"error": "Garmin Connect request failed: 503 Server Error"}
+
+
+def outage_snapshot(day: date) -> dict[str, Any]:
+    """What garmin-mcp answers for a snapshot while Garmin Connect is down: every section carries the error."""
+    return history_snapshot(day.isoformat(), **dict.fromkeys(HISTORY_SECTIONS, OUTAGE_SECTION))
+
+
+def seed_known_good(store, day: date) -> None:
+    """A day both parts of which were fetched today (not pending), so the job has a day to probe with."""
+    seed_day(store, day, fetched_on=TODAY, readiness=50)
+    seed_activities(store, day, {}, fetched_on=TODAY)
+
+
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
@@ -254,15 +268,14 @@ T = TODAY
         (T - timedelta(days=3), T - timedelta(days=1), 0, True),
         (T - timedelta(days=4), T - timedelta(days=1), 0, False),
         (T - timedelta(days=10), T - timedelta(days=9), 0, True),
+        # a day with data stops being re-fetched after MAX_FAILURES confirmed item errors
+        (T - timedelta(days=2), T - timedelta(days=1), 2, True),
+        (T - timedelta(days=2), T - timedelta(days=1), 3, False),
+        (T - timedelta(days=2), T - timedelta(days=1), 5, False),
     ],
 )
 def test_needs_fetch_rule(day, fetched_on, failures, expected):
     assert needs_fetch(day, fetched_on, failures, T) is expected
-
-
-def test_needs_fetch_ignores_failures_once_a_fetch_succeeded():
-    # The counter is reset by a success; a stale value must not stop a re-fetch inside the window.
-    assert needs_fetch(T - timedelta(days=2), T - timedelta(days=1), 5, T) is True
 
 
 # --------------------------------------------------------------- the job
@@ -291,7 +304,9 @@ async def test_default_backfill_covers_90_days(store, caplog):
     assert rows["2026-10-06"]["readiness"] == 72 and rows["2026-10-06"]["activities"] == "{}"
     assert clock.now() + timedelta(seconds=delay) == local(date(2026, 10, 8), 3, 30)
     lines = [r.getMessage() for r in caplog.records if r.name == "coach_mcp.history"]
-    assert len(lines) == 1 and lines[0].startswith("history status=done fetched=103 failed=0 pending=90 ms=")
+    assert len(lines) == 1 and lines[0].startswith(
+        "history status=done fetched=103 failed=0 pending=90 given_up=0 ms="
+    )
 
 
 @pytest.mark.anyio
@@ -475,14 +490,18 @@ async def test_rate_limit_stops_the_run_and_backs_off(store, caplog):
 @pytest.mark.parametrize("middle", ["auth_missing", "backend_down", "item_error"])
 async def test_backoff_resets_after_any_run_that_is_not_rate_limited(store, middle):
     mode = {"value": "limited"}
+    good = date(2026, 10, 4)  # the known-good day that proves the backend works (the item errors get charged)
+    seed_known_good(store, good)
 
     def recovery(day: date, index: int):
+        if day == good:
+            return "ok", history_snapshot(day.isoformat())
         if mode["value"] == "limited":
             return "rate_limited", None
         return ("error", None) if mode["value"] == "error" else ("ok", history_snapshot(day.isoformat()))
 
     source = FakeHistorySource(recovery=recovery)
-    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=2)
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
     delay = await run_first(job, clock)
     assert delay == 3600.0  # the backoff is now 7200 for the next limit
     if middle == "auth_missing":
@@ -634,14 +653,24 @@ async def test_day_is_given_up_after_three_failures(store):
 @pytest.mark.anyio
 async def test_activities_error_marks_only_activities_failures(store, caplog):
     caplog.set_level(logging.INFO, logger="coach_mcp.history")
-    source = FakeHistorySource(activities=lambda start, end, index: ("error", None))
-    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    good = date(2026, 10, 3)
+    seed_known_good(store, good)
+    before = rows_by_date(store)[good.isoformat()]
+    source = FakeHistorySource(
+        activities=lambda start, end, index: (
+            ("ok", activities_payload([])) if start == end == good else ("error", None)
+        )
+    )
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=4)
     assert await run_first(job, clock) == 3600.0
-    rows = rows_by_date(store)
+    rows = {d: r for d, r in rows_by_date(store).items() if d != good.isoformat()}
+    assert sorted(rows) == ["2026-10-04", "2026-10-05", "2026-10-06"]
     assert {r["activities_failures"] for r in rows.values()} == {1}
     assert {r["recovery_failures"] for r in rows.values()} == {0}
     assert {r["activities"] for r in rows.values()} == {None}
     assert {r["recovery_fetched_on"] for r in rows.values()} == {"2026-10-07"}
+    assert rows_by_date(store)[good.isoformat()] == before  # the probe is never stored
+    assert source.activity_ranges[-1] == (good, good)  # the activities part was proved by its own call
     assert "history status=partial fetched=3 failed=1" in caplog.text
 
 
@@ -681,10 +710,15 @@ async def test_single_day_still_truncated_is_stored_as_returned(store):
 @pytest.mark.parametrize("answer", [{"activities": {}, "count": 0}, {"count": 0}, {"activities": "none"}])
 async def test_activities_payload_not_a_list_is_an_item_error(store, answer, caplog):
     caplog.set_level(logging.INFO, logger="coach_mcp.history")
-    source = FakeHistorySource(activities=lambda start, end, index: ("ok", answer))
-    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    good = date(2026, 10, 3)
+    seed_known_good(store, good)
+    source = FakeHistorySource(
+        activities=lambda start, end, index: ("ok", activities_payload([])) if start == end == good else ("ok", answer)
+    )
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=4)
     assert await run_first(job, clock) == 3600.0
-    rows = rows_by_date(store)
+    rows = {d: r for d, r in rows_by_date(store).items() if d != good.isoformat()}
+    assert sorted(rows) == ["2026-10-04", "2026-10-05", "2026-10-06"]
     assert {r["activities_failures"] for r in rows.values()} == {1}  # every day of the call
     assert {r["activities"] for r in rows.values()} == {None} and {r["activities_fetched_on"] for r in rows.values()} == {None}
     assert "history status=partial" in caplog.text
@@ -859,3 +893,363 @@ async def test_history_logs_carry_no_values_or_dates(store, caplog):
     assert lines and all(line.startswith("history status=") for line in lines)
     assert not any(bad in line for line in lines for bad in ("4242", "SENTINEL", "2026-", "running"))
     assert store.history_rows(None, TODAY)[-1]["hrv_status"] == "SENTINEL"  # the value was really handled
+
+
+# --------------------------------------- outage rule: item errors are charged only once the backend works
+
+
+def history_lines(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name == "coach_mcp.history"]
+
+
+@pytest.mark.anyio
+async def test_outage_from_run_start_charges_nothing_and_backs_off(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    good = date(2026, 10, 3)
+    seed_known_good(store, good)
+    source = FakeHistorySource(recovery=lambda day, index: ("ok", outage_snapshot(day)))
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=4)
+    delay = await run_first(job, clock)
+    assert source.calls == [
+        ("list_activities", {"start_date": "2026-10-04", "end_date": "2026-10-06", "limit": 100}),
+        ("get_recovery_snapshot", {"date": "2026-10-06"}),
+        ("get_recovery_snapshot", {"date": "2026-10-05"}),
+        ("get_recovery_snapshot", {"date": "2026-10-04"}),
+        ("get_recovery_snapshot", {"date": "2026-10-03"}),  # the probe: the known-good day answers the outage too
+    ]
+    (record,) = history_lines(caplog)  # the run line is the only record
+    assert record.levelno == logging.WARNING
+    assert record.getMessage().startswith("history status=service_error fetched=1 failed=0 pending=3 given_up=0 ms=")
+    rows = rows_by_date(store)
+    assert {rows[d]["recovery_failures"] for d in ("2026-10-04", "2026-10-05", "2026-10-06")} == {0}
+    assert {rows[d]["recovery_fetched_on"] for d in ("2026-10-04", "2026-10-05", "2026-10-06")} == {None}
+    assert delay == 3600.0
+    assert await next_run(job, clock, delay) == 7200.0  # the backoff of rate_limited, doubled
+    assert {r["recovery_failures"] for r in rows_by_date(store).values()} == {0}
+
+
+@pytest.mark.anyio
+async def test_backfill_completes_after_outage_runs(store):
+    outage = {"on": True}
+
+    def recovery(day: date, index: int):
+        return ("ok", outage_snapshot(day)) if outage["on"] else ("ok", history_snapshot(day.isoformat()))
+
+    def activities(start: date, end: date, index: int):
+        return ("error", None) if outage["on"] else ("ok", activities_payload([]))
+
+    source = FakeHistorySource(recovery=recovery, activities=activities)
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=30)
+    delay = await run_first(job, clock)
+    for _ in range(2):  # three runs inside the outage
+        delay = await next_run(job, clock, delay)
+    assert len(source.calls) == 3 * 4  # per run: one activities call and three snapshots, no probe (nothing known)
+    assert all(r["recovery_failures"] == 0 and r["activities_failures"] == 0 for r in rows_by_date(store).values())
+
+    outage["on"] = False  # Garmin is back
+    await next_run(job, clock, delay)
+    rows = rows_by_date(store)
+    window = [d.isoformat() for d in days(date(2026, 9, 7), date(2026, 10, 6))]
+    assert sorted(rows) == window and len(window) == 30
+    assert {(r["recovery_fetched_on"], r["activities_fetched_on"]) for r in rows.values()} == {
+        ("2026-10-07", "2026-10-07")
+    }
+    assert {(r["recovery_failures"], r["activities_failures"]) for r in rows.values()} == {(0, 0)}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stop", ["service_error", "rate_limited", "paused"])
+async def test_outage_mid_run_charges_nothing(store, stop):
+    good = date(2026, 9, 29)
+    back = {"on": False}
+
+    def healthy(day: date) -> tuple[str, Any]:
+        return "ok", history_snapshot(day.isoformat())
+
+    if stop == "service_error":
+        # 10-06 and 10-05 work, every later call errors, the probe (it asks 10-05, the last ok day) too
+        def recovery(day: date, index: int):
+            return healthy(day) if back["on"] or index <= 2 else ("ok", outage_snapshot(day))
+
+        start, window = AFTER_WINDOW, 8
+    elif stop == "rate_limited":
+        # two items error (held), the next call is rate limited
+        def recovery(day: date, index: int):
+            if back["on"] or day in (date(2026, 10, 6), date(2026, 10, 5)):
+                return healthy(day)
+            return ("rate_limited", None) if day == date(2026, 10, 2) else ("error", None)
+
+        start, window = AFTER_WINDOW, 8
+    else:
+        good = date(2026, 10, 3)
+
+        def recovery(day: date, index: int):
+            return healthy(day) if back["on"] else ("error", None)
+
+        start, window = local(TODAY, 6, 27), 4
+    seed_known_good(store, good)
+    source = FakeHistorySource(recovery=recovery)
+    delay_seconds = 30 if stop == "paused" else 20
+    job, clock = make_job(
+        store, source, start, history_backfill_days=window, history_call_delay_seconds=delay_seconds
+    )
+    delay = await run_first(job, clock)
+
+    if stop == "paused":
+        assert source.times == [local(TODAY, 6, 28, s) for s in (0, 30)] + [
+            local(TODAY, 6, 29, s) for s in (0, 30)
+        ]  # the probe's paced call reached 06:30:00: paused, the call itself was not made
+        assert clock.now() == local(TODAY, 6, 30, 0)
+        assert clock.now() + timedelta(seconds=delay) == local(TODAY, 9, 30)
+        assert good not in source.snapshot_days
+    elif stop == "service_error":
+        assert delay == 3600.0
+        assert source.snapshot_days == [date(2026, 10, n) for n in (6, 5, 4, 3, 2, 5)]  # the last one is the probe
+    else:
+        assert delay == 3600.0
+        assert source.snapshot_days == [date(2026, 10, n) for n in (6, 5, 4, 3, 2)]  # two held errors, then the 429
+    assert {r["recovery_failures"] for r in rows_by_date(store).values()} == {0}
+    assert {r["activities_failures"] for r in rows_by_date(store).values()} == {0}
+
+    back["on"] = True  # Garmin is back; the next run is on the same job object
+    await next_run(job, clock, delay)
+    rows = rows_by_date(store)
+    pending = [d for d in days(TODAY - timedelta(days=window), date(2026, 10, 6)) if d != good]
+    assert {rows[d.isoformat()]["recovery_fetched_on"] for d in pending} == {"2026-10-07"}
+    assert {r["recovery_failures"] for r in rows.values()} == {0}
+    assert {r["activities_failures"] for r in rows.values()} == {0}
+
+
+@pytest.mark.anyio
+async def test_item_errors_confirmed_by_probe(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    good = date(2026, 9, 29)
+    seed_known_good(store, good)
+    bad = {date(2026, 10, 6), date(2026, 10, 5), date(2026, 10, 4)}
+    source = FakeHistorySource(
+        recovery=lambda day, index: ("error", None) if day in bad else ("ok", history_snapshot(day.isoformat()))
+    )
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=8, history_call_delay_seconds=20)
+    assert await run_first(job, clock) == 3600.0
+    assert source.snapshot_days == [
+        date(2026, 10, 6), date(2026, 10, 5), date(2026, 10, 4),
+        good,  # the probe: no ok snapshot in this run yet, so the stored known-good day
+        date(2026, 10, 3), date(2026, 10, 2), date(2026, 10, 1), date(2026, 9, 30),
+    ]  # fmt: skip
+    assert (source.times[4] - source.times[3]).total_seconds() == 20.0  # the probe is paced like any call
+    rows = rows_by_date(store)
+    assert {rows[d.isoformat()]["recovery_failures"] for d in bad} == {1}  # each charged once, by the probe
+    assert rows[good.isoformat()]["readiness"] == 50  # the probe answer (72) is not stored
+    assert {rows[d.isoformat()]["readiness"] for d in days(date(2026, 9, 30), date(2026, 10, 3))} == {72}
+    assert "history status=partial fetched=5 failed=3" in caplog.text  # act + 4 stored snapshots; probe not counted
+
+
+@pytest.mark.anyio
+async def test_trailing_item_error_is_charged_after_probe(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    bad = date(2026, 10, 4)
+    source = FakeHistorySource(
+        recovery=lambda day, index: ("error", None) if day == bad else ("ok", history_snapshot(day.isoformat()))
+    )
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    assert await run_first(job, clock) == 3600.0
+    # 10-06 and 10-05 are ok, 10-04 is the last pending day: the end-of-run probe asks the last ok day, 10-05
+    assert source.snapshot_days == [date(2026, 10, 6), date(2026, 10, 5), bad, date(2026, 10, 5)]
+    assert rows_by_date(store)[bad.isoformat()]["recovery_failures"] == 1
+    assert "history status=partial fetched=3 failed=1" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_trailing_item_error_with_failed_probe_is_service_error(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    bad, probed = date(2026, 10, 4), date(2026, 10, 5)
+    asked: list[date] = []
+
+    def recovery(day: date, index: int):
+        asked.append(day)
+        if day == bad or (day == probed and asked.count(probed) == 2):  # the second call for 10-05 is the probe
+            return "ok", outage_snapshot(day)
+        return "ok", history_snapshot(day.isoformat())
+
+    source = FakeHistorySource(recovery=recovery)
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    assert await run_first(job, clock) == 3600.0
+    assert source.snapshot_days == [date(2026, 10, 6), probed, bad, probed]
+    rows = rows_by_date(store)
+    assert rows.get(bad.isoformat(), {}).get("recovery_failures", 0) == 0
+    assert rows[probed.isoformat()]["recovery_fetched_on"] == "2026-10-07" and rows[probed.isoformat()]["readiness"] == 72
+    assert "history status=service_error fetched=3 failed=0" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_no_known_good_day_counts_as_outage(store):
+    source = FakeHistorySource(recovery=lambda day, index: ("ok", outage_snapshot(day)))
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    assert await run_first(job, clock) == 3600.0
+    assert [name for name, _ in source.calls] == ["list_activities", *["get_recovery_snapshot"] * 3]  # no probe
+    assert {r["recovery_failures"] for r in rows_by_date(store).values()} == {0}
+
+
+@pytest.mark.anyio
+async def test_end_of_run_without_known_good_day_is_service_error(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    source = FakeHistorySource(recovery=lambda day, index: ("ok", outage_snapshot(day)))
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=2)
+    assert await run_first(job, clock) == 3600.0  # two held errors at the end of the run, nothing to probe with
+    assert [name for name, _ in source.calls] == ["list_activities", "get_recovery_snapshot", "get_recovery_snapshot"]
+    assert {r["recovery_failures"] for r in rows_by_date(store).values()} == {0}
+    assert "history status=service_error fetched=1 failed=0" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_empty_store_stall_resolves_when_a_new_day_succeeds(store):
+    broken = set(days(date(2026, 10, 4), date(2026, 10, 6)))
+    source = FakeHistorySource(
+        recovery=lambda day, index: ("error", None) if day in broken else ("ok", history_snapshot(day.isoformat()))
+    )
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    delays = [delay]
+    for _ in range(3):  # the runs of 10-07 at 10:01, 11:01, 13:01 and 17:01: three broken newest dates, no proof
+        delay = await next_run(job, clock, delay)
+        delays.append(delay)
+    assert delays == [3600.0, 7200.0, 14400.0, 28800.0]
+    assert {r["recovery_failures"] for r in rows_by_date(store).values()} == {0}  # four runs, no proof, no charge
+    assert {r["recovery_fetched_on"] for r in rows_by_date(store).values()} == {None}
+
+    before = len(source.calls)
+    await next_run(job, clock, delay)  # about 01:03 on 10-08: yesterday (10-07) is new and works
+    assert local(date(2026, 10, 8), 1, 0) < source.times[before] < local(date(2026, 10, 8), 1, 10)  # after the 8 h wait
+    asked = [(n, a) for n, a in source.calls[before:] if n == "get_recovery_snapshot"]
+    assert [a["date"] for _, a in asked] == ["2026-10-07", "2026-10-06", "2026-10-05", "2026-10-07"]  # last = probe
+    rows = rows_by_date(store)
+    assert rows["2026-10-07"]["recovery_fetched_on"] == "2026-10-08" and rows["2026-10-07"]["recovery_failures"] == 0
+    assert (rows["2026-10-06"]["recovery_failures"], rows["2026-10-05"]["recovery_failures"]) == (1, 1)
+
+
+@pytest.mark.anyio
+async def test_activities_errors_are_confirmed_only_by_activities(store):
+    good = date(2026, 9, 22)
+    seed_known_good(store, good)
+    source = FakeHistorySource(activities=lambda start, end, index: ("error", None))
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=15)
+    assert await run_first(job, clock) == 3600.0
+    assert len(source.snapshot_days) == 14  # the recovery part works and goes on
+    rows = rows_by_date(store)
+    assert {rows[d.isoformat()]["recovery_fetched_on"] for d in days(date(2026, 9, 23), date(2026, 10, 6))} == {
+        "2026-10-07"
+    }
+    assert source.activity_ranges.count((good, good)) == 1  # one probe, of the activities part, at the end
+    assert source.activity_ranges[-1] == (good, good)
+    assert len(source.activity_ranges) == 3  # two blocks and the probe
+    assert {r["activities_failures"] for r in rows.values()} == {0}
+
+
+@pytest.mark.anyio
+async def test_probe_is_not_stored_and_not_counted(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    bad, probed = date(2026, 10, 4), date(2026, 10, 5)
+    asked: list[date] = []
+
+    def recovery(day: date, index: int):
+        asked.append(day)
+        if day == bad:
+            return "error", None
+        if day == probed and asked.count(probed) == 2:  # the probe answers differently from the stored fetch
+            return "ok", history_snapshot(day.isoformat(), readiness={"score": 60})
+        return "ok", history_snapshot(day.isoformat())
+
+    source = FakeHistorySource(recovery=recovery)
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    await run_first(job, clock)
+    assert source.snapshot_days == [date(2026, 10, 6), probed, bad, probed]
+    rows = rows_by_date(store)
+    assert rows[probed.isoformat()]["readiness"] == 72  # not overwritten by the probe's 60
+    assert rows[bad.isoformat()]["recovery_failures"] == 1
+    (record,) = history_lines(caplog)
+    assert record.getMessage().startswith("history status=partial fetched=3 failed=1")  # act + 2 snapshots
+
+
+@pytest.mark.anyio
+async def test_refetch_errors_stop_after_three_failures(store):
+    bad = date(2026, 10, 5)
+    for day in days(date(2026, 10, 4), date(2026, 10, 6)):  # data from yesterday: inside the re-fetch window
+        seed_day(store, day, fetched_on=date(2026, 10, 6), readiness=60)
+        seed_activities(store, day, {}, fetched_on=TODAY)
+    source = FakeHistorySource(
+        recovery=lambda day, index: ("error", None) if day == bad else ("ok", history_snapshot(day.isoformat()))
+    )
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    delay = await run_first(job, clock)  # 10-06 ok, 10-05 held, 10-04 ok confirms: charged
+    for _ in range(2):  # runs 2 and 3: the bad day alone, confirmed by the probe of a day fetched today
+        delay = await next_run(job, clock, delay)
+    assert source.snapshot_days.count(bad) == 3
+    row = rows_by_date(store)[bad.isoformat()]
+    assert row["recovery_failures"] == 3 and row["readiness"] == 60 and row["recovery_fetched_on"] == "2026-10-06"
+    before = len(source.calls)
+    await next_run(job, clock, delay)
+    assert len(source.calls) == before  # the fourth run on the same date does not call it again
+
+
+@pytest.mark.anyio
+async def test_service_error_shares_the_rate_limit_backoff(store):
+    mode = {"value": "limited"}
+
+    def recovery(day: date, index: int):
+        if mode["value"] == "limited":
+            return "rate_limited", None
+        return ("ok", outage_snapshot(day)) if mode["value"] == "outage" else ("ok", history_snapshot(day.isoformat()))
+
+    source = FakeHistorySource(recovery=recovery)
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=2)
+    delay = await run_first(job, clock)
+    assert delay == 3600.0  # rate_limited
+    mode["value"] = "outage"
+    delay = await next_run(job, clock, delay)
+    assert delay == 7200.0  # service_error continues the same backoff
+    mode["value"] = "ok"
+    delay = await next_run(job, clock, delay)  # done: the backoff is reset
+    assert clock.now() + timedelta(seconds=delay) == local(date(2026, 10, 8), 3, 30)
+    mode["value"] = "outage"
+    delay = await next_run(job, clock, delay)
+    assert delay == 3600.0
+    assert await next_run(job, clock, delay) == 7200.0
+
+
+@pytest.mark.anyio
+async def test_run_log_counts_given_up_days(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    for day in (date(2026, 10, 4), date(2026, 10, 5)):
+        store.record_history_failure([day] * 3, "recovery")
+    for day in days(date(2026, 10, 4), date(2026, 10, 6)):
+        seed_activities(store, day, {}, fetched_on=TODAY)
+    seed_day(store, date(2026, 10, 6), fetched_on=TODAY, readiness=50)
+    source = FakeHistorySource()
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    await run_first(job, clock)
+    assert source.calls == []
+    (record,) = history_lines(caplog)
+    assert record.getMessage().startswith("history status=done fetched=0 failed=0 pending=0 given_up=2 ms=")
+    assert "2026" not in record.getMessage()
+
+
+@pytest.mark.anyio
+async def test_history_time_inside_window_runs_at_cutoff_with_one_warning(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    source = FakeHistorySource()
+    # 07:00 is inside the default briefing window 06:30-09:30; nothing refuses it, the run waits for the cutoff.
+    await run_job(
+        store,
+        source,
+        local(TODAY, 5, 0),
+        settings_overrides={"history_time": dt.time(7, 0), "history_backfill_days": 2},
+        stop_when=lambda: len(source.calls) >= 4,
+    )
+    warnings = [r for r in history_lines(caplog) if "config_warning" in r.getMessage()]
+    assert [(r.levelno, r.getMessage()) for r in warnings] == [
+        (logging.WARNING, "history status=config_warning reason=time_in_briefing_window")
+    ]
+    assert len(source.calls) == 4 and source.times[:3] == [local(TODAY, 5, 1, s) for s in (0, 15, 30)]
+    # the run due at 2026-10-08 07:00 is paused: its first call is at the cutoff, none inside the window
+    assert source.times[3] == local(date(2026, 10, 8), 9, 30)
+    assert all(not (local(d, 6, 30) <= t < local(d, 9, 30)) for t in source.times for d in (TODAY, date(2026, 10, 8)))
