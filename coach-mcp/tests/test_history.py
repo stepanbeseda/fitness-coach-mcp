@@ -629,6 +629,8 @@ async def test_item_error_counts_a_failure_and_continues(store, caplog):
     assert rows["2026-10-05"]["readiness"] is None
     assert rows["2026-10-06"]["readiness"] == 72 and rows["2026-10-04"]["readiness"] == 72  # the others went on
     assert "history status=partial fetched=3 failed=1" in caplog.text
+    # the ok call after the bad day proved the backend works: the error was charged then, no probe call was needed
+    assert source.snapshot_days == [date(2026, 10, 6), bad, date(2026, 10, 4)]
 
 
 @pytest.mark.anyio
@@ -1042,6 +1044,20 @@ async def test_item_errors_confirmed_by_probe(store, caplog):
     assert rows[good.isoformat()]["readiness"] == 50  # the probe answer (72) is not stored
     assert {rows[d.isoformat()]["readiness"] for d in days(date(2026, 9, 30), date(2026, 10, 3))} == {72}
     assert "history status=partial fetched=5 failed=3" in caplog.text  # act + 4 stored snapshots; probe not counted
+
+
+@pytest.mark.anyio
+async def test_probe_asks_the_newest_stored_day_when_no_call_worked_yet(store):
+    seed_known_good(store, date(2026, 9, 29))  # the oldest day of the window
+    seed_known_good(store, date(2026, 10, 1))  # a newer one: the probe asks for this
+    bad = {date(2026, 10, 6), date(2026, 10, 5), date(2026, 10, 4)}
+    source = FakeHistorySource(
+        recovery=lambda day, index: ("error", None) if day in bad else ("ok", history_snapshot(day.isoformat()))
+    )
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=8)
+    await run_first(job, clock)
+    assert source.snapshot_days[:4] == [date(2026, 10, 6), date(2026, 10, 5), date(2026, 10, 4), date(2026, 10, 1)]
+    assert {rows_by_date(store)[d.isoformat()]["recovery_failures"] for d in bad} == {1}
 
 
 @pytest.mark.anyio
