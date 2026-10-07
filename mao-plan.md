@@ -77,6 +77,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 06 | Weather and calendar | 03 | planned |
 | 07 | Strength workouts on the watch | — | planned |
 | 08 | Daily briefing via Telegram | 04 | **in progress** (branch mao/pr08-briefing-telegram) |
+| 09 | Strength history and progress | 05 | planned |
 
 ## 4. PR briefs
 
@@ -420,6 +421,10 @@ configurable number of weeks). The tools return numbers; Claude renders the
 charts. If the PR has to be split, the dividing line is between the
 Garmin-side snapshot with `get_trends` and the Hevy-side volume with
 `get_strength_progress`.
+Split on 2026-10-07 at the owner's decision: this PR delivers the
+Garmin-side snapshot, `get_trends` and `get_weekly_report` with its strength
+sections marked as having no data; the Hevy side and `get_strength_progress`
+moved to PR 09.
 
 Out of scope: a dashboard or any UI, sending the report by push (can reuse
 PR 04's channel in a later chapter), correlation analysis, exporting data.
@@ -434,16 +439,16 @@ PR 04's channel in a later chapter), correlation analysis, exporting data.
 3. `get_trends` returns correct day / week / month aggregates for a seeded
    database, including ranges longer than 31 days (test).
 4. `get_weekly_report` returns every section listed above for a seeded
-   database and marks sections without data instead of failing (test).
-5. `get_strength_progress` computes Epley e1RM and the plateau flag on
-   seeded sets (test).
+   database and marks sections without data instead of failing (test); the
+   strength sections stay marked as having no data until PR 09.
+5. Moved to PR 09 (`get_strength_progress`, Epley e1RM and plateau flag).
 6. `docker build --target test coach-mcp` and `scripts/e2e-test.sh` are
    green.
 7. `README.md`, the service README and `docs/coach-instructions.md` are
    updated: the coach uses `get_weekly_report` for weekly reviews and
    `get_trends` for anything older than 28 days.
 8. On the test host: after backfill, `get_trends` returns 90 days of HRV and
-   `get_weekly_report` shows last week's real Garmin and Hevy training.
+   `get_weekly_report` shows last week's real Garmin training (Hevy: PR 09).
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 3).
 
@@ -609,6 +614,63 @@ receiving the briefing, and the weekly report (PR 05).
    `COACH_NTFY_*` lines from `.env`.
 
 **Requested:** 2026-10-06, by the owner, from the chat after PR 04 ("Send the daily briefing to Telegram instead of ntfy"); questions and answers round 1.
+
+### PR 09 — Strength history and progress
+
+PR 05 stores the Garmin side of the daily history; its weekly report marks
+the strength sections as having no data. Add the Hevy side to `coach-mcp`: a
+read-only client for `hevy-mcp` built like
+`coach-mcp/src/coach_mcp/garmin.py` (an MCP client on the private `mcp`
+network with the internal token `hevy_backend_token`, mounted into
+`coach-mcp` in `docker-compose.yml`, and a code allowlist of read tools). The
+PR 05 snapshot job also stores per day (local start date of the workout) the
+strength volume in kg, the sets per muscle group, and per exercise the sets,
+the volume and the best set by Epley e1RM. Warm-up sets are excluded; a set
+counts for the primary muscle group of its exercise template. Workouts with
+their sets come from `get-workout-events` since a stored cursor, which also
+reports edited and deleted workouts; muscle groups come from the exercise
+templates, cached in the store. The backfill covers the same configured range
+as the Garmin side, uses the same delay between backend calls and resumes
+after a restart. A schema migration adds the strength tables.
+
+`get_weekly_report` fills its strength sections: volume and sets per muscle
+group against the average of the previous four weeks, new e1RM bests and the
+"volume up more than 30 %" flag. A new read-only tool
+`get_strength_progress` returns the estimated 1RM per exercise over time with
+a plateau flag when it has not improved for a configurable number of weeks
+(default 4). The tools return numbers; Claude renders the charts.
+
+Out of scope: storing raw sets, strength workouts on the watch (PR 07), any
+write to Hevy, a dashboard or any UI.
+
+**Done when:**
+1. The Hevy client calls only allowlisted read tools and fails soft: an
+   unreachable `hevy-mcp` or a missing token stores null for the day's
+   strength section without failing the Garmin part (tests with a fake Hevy
+   backend).
+2. The strength snapshot of a day is idempotent, excludes warm-up sets,
+   counts sets for the primary muscle group, and an edited or deleted Hevy
+   workout updates its day on the next run (tests).
+3. The strength backfill covers the configured range, resumes after a
+   restart and respects the configured delay; the schema migration upgrades a
+   database of the PR 05 schema with its data intact (tests).
+4. `get_weekly_report` returns the strength sections, new bests and the
+   volume flag for a seeded database (test).
+5. `get_strength_progress` computes Epley e1RM per exercise over time and the
+   plateau flag on seeded sets (test).
+6. `docker build --target test garmin-mcp`,
+   `docker build --target test gateway`,
+   `docker build --target test coach-mcp` and `scripts/e2e-test.sh` are
+   green.
+7. `README.md`, `coach-mcp/README.md` (tools, env variables, data, downgrade
+   recipe) and `docs/coach-instructions.md` (the coach uses
+   `get_strength_progress` for strength progression) are updated.
+8. On the test host, after the owner approves the deploy and the backfill:
+   `get_weekly_report` shows last week's real Hevy training and
+   `get_strength_progress` returns e1RM history for an exercise trained in
+   the last 90 days.
+
+**Requested:** 2026-10-07, by the owner, split from PR 05 (PR 05 questions and answers round 1).
 
 ## 5. Open items
 
