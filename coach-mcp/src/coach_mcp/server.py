@@ -1,4 +1,4 @@
-"""MCP server definition: coach memory tools (goals, constraints, plan, notes)."""
+"""MCP server definition: coach memory tools, the daily briefing and the stored history."""
 
 from __future__ import annotations
 
@@ -22,10 +22,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from . import __version__, tools
+from . import __version__, tools, trends
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
-from .garmin import GarminReader, GarminSource, exception_kind
+from .garmin import GarminReader, GarminSource, HistorySource, exception_kind
+from .history import HistoryJob
 from .push import PushSender, TelegramPush
 from .scheduler import BriefingScheduler, compose_briefing
 from .store import Store
@@ -33,6 +34,7 @@ from .tools import PlannedSession, to_json
 
 log = logging.getLogger("coach_mcp.tools")
 briefing_log = logging.getLogger("coach_mcp.briefing")
+history_log = logging.getLogger("coach_mcp.history")
 
 INSTRUCTIONS = (
     "Coach memory of the athlete: goals, constraints (injuries, limitations, availability, equipment), "
@@ -45,7 +47,10 @@ INSTRUCTIONS = (
     "as superseded. "
     "get_daily_briefing returns the morning verdict (green / yellow / red) with its numbers, missing data, "
     "today's planned sessions and alerts, computed the same way as the morning push from the current Garmin "
-    "data; still read fresh Garmin data before planning."
+    "data; still read fresh Garmin data before planning. "
+    "get_trends returns the stored daily Garmin history (collected nightly) aggregated by day, week or month: "
+    "use it for anything older than 28 days. get_weekly_report compares one ISO week with the previous four: "
+    "use it for weekly reviews. Strength history from Hevy is not stored yet."
 )
 
 GoalStatus = Literal["active", "achieved", "abandoned"]
@@ -97,8 +102,9 @@ def build_server(
     *,
     garmin: GarminSource,
     scheduler: BriefingScheduler | None,
+    history: HistoryJob | None = None,
 ) -> MCPServer:
-    state = {"scheduler": "on" if scheduler is not None else "off"}
+    state = {"scheduler": "on" if scheduler is not None else "off", "history": "on" if history is not None else "off"}
 
     def on_scheduler_done(done: asyncio.Task[None]) -> None:
         if done.cancelled():  # the normal shutdown
@@ -107,16 +113,29 @@ def build_server(
         exc = done.exception()  # also marks the exception as retrieved
         briefing_log.error("briefing status=stopped kind=%s", exception_kind(exc) if exc is not None else "returned")
 
+    def on_history_done(done: asyncio.Task[None]) -> None:
+        if done.cancelled():  # the normal shutdown
+            return
+        state["history"] = "stopped"
+        exc = done.exception()  # also marks the exception as retrieved
+        history_log.error("history status=stopped kind=%s", exception_kind(exc) if exc is not None else "returned")
+
     @contextlib.asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
-        task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
-        if task is not None:
-            task.add_done_callback(on_scheduler_done)
+        tasks: list[asyncio.Task[None]] = []
+        if scheduler is not None:
+            tasks.append(asyncio.create_task(scheduler.run()))
+            tasks[-1].add_done_callback(on_scheduler_done)
+        if history is not None:
+            tasks.append(asyncio.create_task(history.run()))
+            tasks[-1].add_done_callback(on_history_done)
         try:
             yield None
         finally:
-            if task is not None and not task.done():
+            running = [task for task in tasks if not task.done()]  # a task that already ended is not awaited
+            for task in running:
                 task.cancel()
+            for task in running:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
@@ -246,6 +265,44 @@ def build_server(
         login). Reads Garmin through garmin-mcp; changes nothing."""
         return (await compose_briefing(store, garmin, today())).payload
 
+    @tool("get_trends", _read("Trends"))
+    async def get_trends(
+        metrics: Annotated[
+            list[trends.TrendMetric], Field(min_length=1, max_length=8, description="Metric names, 1-8.")
+        ],
+        start_date: Annotated[str | None, Field(description="YYYY-MM-DD; default end_date - 89 days.")] = None,
+        end_date: Annotated[str | None, Field(description="YYYY-MM-DD, not after today; default yesterday.")] = None,
+        period: Annotated[
+            Literal["day", "week", "month"],
+            Field(description="day (max 92 days), week or month (max 731 days)."),
+        ] = "week",
+    ) -> Any:
+        """Stored daily history from Garmin (one row per day, collected nightly by coach-mcp, so it reaches
+        further back than get_hrv_trend (28 days) and get_body_battery (31 days)): chosen metrics over a date
+        range, aggregated by day, ISO week or month, with n, mean, min and max per period (and the total for
+        activity metrics) and the change from the first to the last period. Daily metrics: readiness, HRV,
+        sleep, resting HR, Body Battery, stress, acute and chronic load, load ratio, VO2max. Activity metrics
+        per sport (endurance = every sport except strength): duration, distance, training load and count.
+        Default: the 90 days ending yesterday; today and often yesterday are not stored yet. Strength (Hevy)
+        history is not stored."""
+        return trends.get_trends(
+            store, today(), metrics=metrics, start_date=start_date, end_date=end_date, period=period
+        )
+
+    @tool("get_weekly_report", _read("Weekly report"))
+    async def get_weekly_report(
+        week: Annotated[
+            str | None,
+            Field(description="Any date (YYYY-MM-DD) in the ISO week; default the last complete week."),
+        ] = None,
+    ) -> Any:
+        """One ISO week (default: the last complete one) against the average of the previous four: endurance
+        time, distance and training load by sport, Garmin load at the end of the week, sleep, HRV, resting
+        heart rate, plan adherence from the coach plan, new bests (VO2max, weekly distance and load) and flags
+        such as training load up more than 30 %. Sections without data are marked available: false; strength
+        is not available yet (read Hevy directly). Reads the stored history only."""
+        return trends.get_weekly_report(store, today(), week=week)
+
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Request) -> JSONResponse:
         try:
@@ -254,7 +311,13 @@ def build_server(
             log.warning("healthz: database check failed kind=%s", type(exc).__name__)
             return JSONResponse({"status": "error", "db": "error"}, status_code=503)
         return JSONResponse(
-            {"status": "ok", "db": "ok", "schema_version": version, "scheduler": state["scheduler"]}
+            {
+                "status": "ok",
+                "db": "ok",
+                "schema_version": version,
+                "scheduler": state["scheduler"],
+                "history": state["history"],
+            }
         )
 
     return server
@@ -269,6 +332,8 @@ def create_app(
     push: PushSender | None = None,
     now: Callable[[], datetime] | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
+    history_source: HistorySource | None = None,
+    history_sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     store = store or Store(settings.db_path)
@@ -284,13 +349,19 @@ def create_app(
         def today() -> date:
             return clock().astimezone(zone).date()
 
-    garmin = garmin or GarminReader(settings)
+    reader = GarminReader(settings)
+    garmin = garmin or reader
+    history = (
+        HistoryJob(settings, store, history_source or reader, now=now, sleep=history_sleep or asyncio.sleep)
+        if settings.history_enabled
+        else None
+    )
     scheduler = None
     if settings.push_enabled:
         scheduler = BriefingScheduler(
             settings, store, garmin, push or TelegramPush(settings), now=now, sleep=sleep or asyncio.sleep
         )
-    server = build_server(store, settings, today, garmin=garmin, scheduler=scheduler)
+    server = build_server(store, settings, today, garmin=garmin, scheduler=scheduler, history=history)
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=bool(settings.allowed_hosts),
         allowed_hosts=settings.allowed_hosts,
