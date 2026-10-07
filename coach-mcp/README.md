@@ -94,13 +94,20 @@ pokračuje. Každou další noc je to asi 16 volání.
 - Garmin odpoví 429 (omezení počtu volání): běh se zastaví a zkusí to za hodinu, pak za 2, 4 a nejvýš za 8 hodin.
 - Garmin není přihlášený nebo `garmin-mcp` neodpovídá: žádné volání, další pokus za hodinu (nejpozději
   v `COACH_HISTORY_TIME`).
-- Chyba jednoho dne se počítá a běh jde dál; den, který selže třikrát, zůstane prázdný.
+- Garmin Connect nefunguje (výpadek, server bez internetu): `garmin-mcp` vrací chybu u všech dnů. Po třech
+  chybách po sobě se server zeptá na den, který už jednou prošel; když selže i ten, běh skončí jako
+  `service_error`, výpadek dny nezapočítá a další pokus je za 1, 2, 4 a nejvýš 8 hodin.
+- Chyba, která se týká jen jednoho dne (Garmin jiné dny vrací), se tomu dni započítá; den, který takhle selže
+  třikrát, zůstane prázdný (`given_up` v logu). Den, který už data má, se po třech chybách přestane znovu načítat.
+- Na úplně prázdné historii server nemá den na porovnání a tři chyby po sobě bere jako výpadek; vyřeší se,
+  jakmile projde první den (nejpozději s dalším dnem).
 
 Z `garmin-mcp` může server volat jen čtyři čtecí nástroje (`get_recovery_snapshot`, `get_hrv_trend`,
 `list_scheduled_workouts`, `list_activities`); jeho zapisovací nástroje jsou pro kouče nedostupné. Log má jeden
-řádek na běh: `history status=… fetched=… failed=… pending=… ms=…` (bez dat a hodnot). `/healthz` hlásí pole
-`history`: `on`, `off` (`COACH_HISTORY_ENABLED=false`) nebo `stopped` (úloha nečekaně skončila). Silová data
-z Hevy se zatím neukládají.
+řádek na běh: `history status=… fetched=… failed=… pending=… given_up=… ms=…` (bez dat a hodnot). Při
+`COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek `history status=config_warning`.
+`/healthz` hlásí pole `history`: `on`, `off` (`COACH_HISTORY_ENABLED=false`) nebo `stopped` (úloha nečekaně
+skončila). Silová data z Hevy se zatím neukládají.
 
 ## Data
 
@@ -169,7 +176,7 @@ a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open databa
 | `COACH_BRIEFING_CUTOFF` | `09:30` | nejpozdější čas odeslání, i s chybějícími daty (pozdější než čas začátku) |
 | `COACH_BRIEFING_RETRY_MINUTES` | `15` | pauza mezi pokusy, když chybí spánek nebo HRV (1 až 180) |
 | `COACH_HISTORY_ENABLED` | `true` | noční historie z Garminu (`true` / `false`) |
-| `COACH_HISTORY_TIME` | `03:30` | kdy (`HH:MM`, `TZ`; ne uvnitř okna briefingu) |
+| `COACH_HISTORY_TIME` | `03:30` | kdy (`HH:MM`, `TZ`); čas uvnitř okna briefingu posune běh na cutoff |
 | `COACH_HISTORY_BACKFILL_DAYS` | `90` | kolik dní zpět načíst (1 až 366) |
 | `COACH_HISTORY_CALL_DELAY_SECONDS` | `15` | pauza mezi voláními `garmin-mcp` (1 až 600 s) |
 

@@ -303,13 +303,16 @@ osobních dat tím nevzniká.
 První běh je největší: minutu po nasazení se začne načítat 90 dní zpět, asi 470 volání Garmin Connect ve 103
 voláních `garmin-mcp` s pauzou 15 s, dohromady zhruba 30 minut; pak je to asi 16 volání za noc. Mezi
 `COACH_BRIEFING_TIME` a `COACH_BRIEFING_CUTOFF` se nic nevolá, aby si ráno briefing a historie nedělily limit
-Garminu; po cutoff běh pokračuje.
+Garminu; po cutoff běh pokračuje. Když `COACH_HISTORY_TIME` padne do tohoto okna, noční běh začne až
+v `COACH_BRIEFING_CUTOFF` (v logu jednou `history status=config_warning`).
 
 Vypnutí: `COACH_HISTORY_ENABLED=false` v `.env` a `docker compose up -d coach-mcp` (uložená data zůstanou,
 jen se nedoplňují). Ostatní volby `COACH_HISTORY_*` jsou v `.env.example`.
 
 V logu (`docker compose logs coach-mcp`) je jeden řádek na běh, `history status=done|partial|paused|
-rate_limited|auth|unreachable|no_credentials fetched=… failed=… pending=… ms=…`, nikdy data ani hodnoty.
+rate_limited|service_error|auth|unreachable|no_credentials fetched=… failed=… pending=… given_up=… ms=…`, nikdy
+data ani hodnoty. Při `COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek
+`history status=config_warning`.
 `healthcheck.sh` hlásí stav úlohy (`on` / `off` / `stopped`). Silová data z Hevy se do historie zatím neukládají.
 
 ### Obnova Garmin tokenů
@@ -417,7 +420,7 @@ startu znovu načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.
 | `coach-mcp` unhealthy, v logu `database schema version N is newer` | Běží starší image než data: nasaď znovu novější verzi; volume `coach-data` nemaž. |
 | `coach-mcp` se nespustí: `bind source path does not exist: …/secrets/telegram_bot_token` | Chybí soubor pro token bota (stačí prázdný) → `scripts/setup-secrets.sh` a `docker compose up -d coach-mcp`. |
 | `coach-mcp` se pořád restartuje, v logu `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | V `.env` je chat id, ale token chybí nebo je poškozený → `scripts/setup-secrets.sh telegram-token`, nebo chat id z `.env` smaž (briefing vypnutý). |
-| `get_trends` / `get_weekly_report` nemají data | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`). |
+| `get_trends` / `get_weekly_report` nemají data | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect nebo internet nefungoval, další pokus za 1 až 8 h, dny se nezapočítají; `given_up` > 0 = dny, které třikrát selhaly, i když Garmin jiné dny vracel). |
 | Ranní notifikace nepřišla | `docker compose logs coach-mcp`: `skipped` = služba startovala až po cutoff; `gave_up` = Telegram zprávu odmítl (token, chat id, bot zablokovaný nebo mu ještě nikdo nenapsal) nebo neodpovídal; žádný řádek `briefing` = briefing vypnutý (`healthcheck.sh` to vypíše). |
 | Hevy nástroje vrací 401 | Neplatný Hevy klíč nebo vypršelo Hevy PRO → `scripts/setup-secrets.sh hevy-key`. |
 | Garmin nástroje: „spusť scripts/garmin-login.sh“ | Tokeny chybí nebo expirovaly → `scripts/garmin-login.sh`. |
