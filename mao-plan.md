@@ -689,6 +689,19 @@ write to Hevy, a dashboard or any UI.
 - **Cycling power target.** `garmin-mcp/README.md` notes that a custom power
   range is sent as `power.zone` with two target values and still needs a
   visual check in Garmin Connect.
+- **PR 05 history job, non-blocking review findings.** Recorded 2026-10-07
+  (review round 2, owner's decision: ship PR 05); a follow-up candidate for
+  PR 09 or a later chapter. N5: a snapshot with one section in error is
+  stored as ok, so a transient error of one Garmin endpoint during the first
+  backfill leaves that metric NULL for every backfill day older than three
+  days for good (spec-accepted; a risk to PR 05 Done-when 8 on the test
+  host). N6: a flapping outage (a share of calls failing for several runs)
+  can still give up a few days, because every ok between errors confirms the
+  held errors. N7: an activities-only outage stops each run at the first
+  blocks, so the recovery backfill is delayed until activities work again
+  (nothing is lost). N8: two guard branches have no failing test, the
+  `isinstance(..., list)` check of the activities probe and `given_up`
+  counted for activities (`history.py`).
 - **Not planned yet.** Correlation analysis (sleep vs. performance) once
   PR 05 has collected at least eight weeks of data; sending the weekly
   report through the PR 04 push channel; an English README and an ingress
