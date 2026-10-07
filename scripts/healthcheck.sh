@@ -105,6 +105,15 @@ case "$sched" in
   *) report_warn "coach: stav ranního briefingu nezjištěn" ;;
 esac
 
+# 5d. nightly history (informational)
+hist="$(dc exec -T coach-mcp python -c "import json,urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)).get('history', '?'))" 2>/dev/null || echo '?')"
+case "$hist" in
+  on) report_ok "coach: noční historie zapnutá" ;;
+  off) report_ok "coach: noční historie vypnutá (COACH_HISTORY_ENABLED v .env)" ;;
+  stopped) report_fail "coach: noční historie skončila → docker compose logs coach-mcp a docker compose restart coach-mcp" ;;
+  *) report_warn "coach: stav noční historie nezjištěn" ;;
+esac
+
 # 6. Hevy API key
 if [[ -r "$SECRETS_DIR/hevy_api_key" ]]; then
   code="$(printf 'api-key: %s\n' "$(tr -d '\r\n' < "$SECRETS_DIR/hevy_api_key")" | curl -sS --max-time 15 \

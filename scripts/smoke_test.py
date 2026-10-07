@@ -151,6 +151,16 @@ def main() -> int:
         data = json.loads(coach.call("get_daily_briefing", {}))
         print(f"briefing: date {data['date']} | verdict {data['verdict']} | missing {', '.join(data['missing']) or '-'} | "
               f"garmin auth {data['garmin']['auth']} | calls {','.join(data['garmin']['calls'].values())}")
+        section("Kouč: historie (jen počty a dostupnost)")
+        data = json.loads(coach.call("get_trends", {"metrics": ["hrv_last_night_ms"], "period": "day"}))
+        print(f"get_trends: {data['start']} - {data['end']} | dní s daty {data['days_with_data']} | "
+              f"nocí s HRV {data['metrics']['hrv_last_night_ms']['summary']['n']}")
+        data = json.loads(coach.call("get_weekly_report", {}))
+        endurance = data["endurance"]
+        print(f"get_weekly_report: {data['week']['iso_week']} | aktivit {endurance.get('total', {}).get('count', 0)} | "
+              f"sporty {', '.join(endurance.get('by_sport', {})) or '-'} | "
+              + ", ".join(f"{key} {'ne' if data[key].get('available') is False else 'ano'}"
+                          for key in ("sleep", "hrv", "resting_hr", "adherence", "strength")))
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")
