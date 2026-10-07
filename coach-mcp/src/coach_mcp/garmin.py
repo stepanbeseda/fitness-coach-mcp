@@ -62,53 +62,6 @@ class GarminData:
 
 
 class GarminSource(Protocol):
-    async def auth_state(self) -> str | None:
-        """garmin-mcp's ``garmin_auth`` from /healthz ("ok", "missing", "error"); None when not reachable."""
-        async with httpx2.AsyncClient(timeout=httpx2.Timeout(30.0), transport=self._transport) as http:
-            return await self._auth(http)
-
-    async def history_call(self, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
-        """One history tool call -> (outcome, payload); the payload is a dict only for ``ok``.
-
-        Outcomes: ok, rate_limited, auth_error, error (the backend answered but not usably),
-        unreachable, no_credentials. Logs nothing: the history job logs one line per run.
-        """
-        if name not in HISTORY_TOOLS:
-            raise ValueError(f"tool {name!r} is not allowed")
-        token = self._token()
-        if token is None:
-            return "no_credentials", None
-        try:
-            async with httpx2.AsyncClient(
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=httpx2.Timeout(30.0, read=90.0),
-                transport=self._transport,
-            ) as http:
-                with anyio.fail_after(180):
-                    async with Client(
-                        streamable_http_client(self._settings.garmin_url, http_client=http),
-                        read_timeout_seconds=90,
-                    ) as client:
-                        result = await client.call_tool(name, args)
-        except Exception:  # never BaseException: a cancel (shutdown) must propagate
-            return "unreachable", None
-        text = "".join(c.text for c in result.content if isinstance(c, mcp.types.TextContent))
-        if result.is_error:
-            if RATE_LIMIT_HINT in text:
-                return "rate_limited", None
-            return ("auth_error" if GARMIN_LOGIN_HINT in text else "error"), None
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            return "error", None
-        if not isinstance(payload, dict):
-            return "error", None
-        # garmin-mcp turns a 429 of one library call into an error section while the tool itself succeeds.
-        for value in payload.values():
-            if isinstance(value, dict) and RATE_LIMIT_HINT in str(value.get("error", "")):
-                return "rate_limited", None
-        return "ok", payload
-
     async def fetch(self, day: date) -> GarminData: ...
 
 

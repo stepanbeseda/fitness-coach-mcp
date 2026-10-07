@@ -202,6 +202,15 @@ def test_activity_totals_non_numeric_values_count_zero():
     }
 
 
+def test_activity_totals_are_rounded_after_summing():
+    payload = activities_payload(
+        [activity("2026-10-05", "running", 10.04, 1.004, 1.04), activity("2026-10-05", "running", 10.04, 1.004, 1.04)]
+    )
+    assert activity_totals(payload, [date(2026, 10, 5)]) == {
+        date(2026, 10, 5): {"running": {"count": 2, "duration_min": 20.1, "distance_km": 2.01, "training_load": 2.1}}
+    }
+
+
 def all_errors() -> dict[str, Any]:
     return history_snapshot("x", **dict.fromkeys(HISTORY_SECTIONS, ERROR_SECTION))
 
@@ -463,6 +472,47 @@ async def test_rate_limit_stops_the_run_and_backs_off(store, caplog):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("middle", ["auth_missing", "backend_down", "item_error"])
+async def test_backoff_resets_after_any_run_that_is_not_rate_limited(store, middle):
+    mode = {"value": "limited"}
+
+    def recovery(day: date, index: int):
+        if mode["value"] == "limited":
+            return "rate_limited", None
+        return ("error", None) if mode["value"] == "error" else ("ok", history_snapshot(day.isoformat()))
+
+    source = FakeHistorySource(recovery=recovery)
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=2)
+    delay = await run_first(job, clock)
+    assert delay == 3600.0  # the backoff is now 7200 for the next limit
+    if middle == "auth_missing":
+        source.auth = "missing"
+    elif middle == "backend_down":
+        source.auth = None
+    else:
+        mode["value"] = "error"
+    delay = await next_run(job, clock, delay)
+    assert delay == 3600.0
+    source.auth, mode["value"] = "ok", "limited"
+    assert await next_run(job, clock, delay) == 3600.0  # not 7200: the interrupting run reset the backoff
+
+
+@pytest.mark.anyio
+async def test_blocks_do_not_span_a_gap_of_fetched_days(store):
+    for day in days(date(2026, 10, 1), date(2026, 10, 3)):  # already fetched today: not pending
+        store.upsert_history_recovery(day, {"readiness": 70}, TODAY)
+        store.upsert_history_activities({day: "{}"}, TODAY)
+    source = FakeHistorySource()
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=10)
+    await run_first(job, clock)
+    assert source.activity_ranges == [
+        (date(2026, 10, 4), date(2026, 10, 6)),
+        (date(2026, 9, 27), date(2026, 9, 30)),
+    ]
+    assert sorted(source.snapshot_days) == [*days(date(2026, 9, 27), date(2026, 9, 30)), *days(date(2026, 10, 4), date(2026, 10, 6))]
+
+
+@pytest.mark.anyio
 async def test_backoff_resets_after_a_done_run(store):
     mode = {"limited": True}
 
@@ -492,6 +542,17 @@ async def test_auth_problem_skips_the_run_without_calls(store, auth, caplog):
     assert source.calls == [] and source.auth_checks == 1
     assert rows_by_date(store) == {}
     assert "history status=auth fetched=0 failed=0 pending=3" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_auth_error_from_a_call_stops_the_run_without_a_failure(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    source = FakeHistorySource(recovery=lambda day, index: ("auth_error", None))
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3)
+    assert await run_first(job, clock) == 3600.0
+    assert len(source.snapshot_days) == 1  # the run stopped at the first snapshot
+    assert {r["recovery_failures"] for r in rows_by_date(store).values()} == {0}
+    assert "history status=auth fetched=1 failed=0" in caplog.text
 
 
 @pytest.mark.anyio
@@ -720,6 +781,16 @@ async def test_startup_runs_after_60_seconds_then_waits_for_history_time(store):
     delay = await job.tick()
     assert source.times[0] == local(TODAY, 14, 1)
     assert clock.now() + timedelta(seconds=delay) == local(date(2026, 10, 8), 3, 30)
+
+
+@pytest.mark.anyio
+async def test_today_is_the_local_date_just_after_midnight(store):
+    source = FakeHistorySource()
+    job, clock = make_job(store, source, local(date(2026, 10, 8), 0, 29), history_backfill_days=1)
+    await run_first(job, clock)  # 00:30 local is still 10-07 in UTC
+    assert source.snapshot_days == [date(2026, 10, 7)]
+    (row,) = store.history_rows(None, date(2026, 10, 8))
+    assert row["date"] == "2026-10-07" and row["recovery_fetched_on"] == "2026-10-08"
 
 
 @pytest.mark.anyio

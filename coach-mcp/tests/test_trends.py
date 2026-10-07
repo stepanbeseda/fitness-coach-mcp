@@ -132,6 +132,7 @@ def test_trends_total_metrics_sum_activities_and_zero_on_fetched_empty_days(stor
     assert values["endurance_count"] == [("01", 2), ("02", 0), ("04", 1)]
     assert values["cycling_distance_km"] == [("01", 20.0), ("02", 0.0), ("04", 0.0)]
     assert values["walking_count"] == [("01", 0), ("02", 0), ("04", 0)]
+    assert out["days_with_data"] == 4  # three days with activities fetched, one with recovery only
     assert out["metrics"]["endurance_duration_min"]["summary"]["n"] == 3  # the never-fetched day is not a zero
     assert out["metrics"]["endurance_duration_min"]["summary"]["mean"] == pytest.approx(40.0)
 
@@ -236,12 +237,14 @@ def test_trends_invalid_activities_json_is_skipped(store):
     for day, text in ((d("2026-10-02"), "not json"), (d("2026-10-03"), "[1, 2]"), (d("2026-10-04"), '"x"')):
         store.upsert_history_activities({day: text}, TODAY)
     store.upsert_history_activities({d("2026-10-05"): '{"running": 7}'}, TODAY)  # a sport entry of the wrong type
+    store.upsert_history_activities({d("2026-10-06"): '{"running": {"duration_min": true}}'}, TODAY)  # not a number
     out = get_trends(
-        store, metrics=["running_duration_min"], start_date="2026-10-01", end_date="2026-10-05", period="day"
+        store, metrics=["running_duration_min"], start_date="2026-10-01", end_date="2026-10-06", period="day"
     )
     assert [(b["period"][-2:], b["value"]) for b in out["metrics"]["running_duration_min"]["buckets"]] == [
         ("01", 30.0),
         ("05", 0.0),
+        ("06", 0.0),
     ]
 
 
@@ -373,6 +376,75 @@ def test_weekly_report_every_section_from_seeded_db(store):
         {"flag": "sleep_down", "week": 6.5, "baseline": 7.5, "change": -1.0, "change_pct": -13.3},
         {"flag": "hrv_down", "week": 55.7, "baseline": 60.0, "change": -4.3, "change_pct": -7.1},
     ]  # resting HR is +4 bpm: below its threshold of 5
+
+
+def test_weekly_report_lists_a_sport_that_only_the_baseline_has(store):
+    for monday in BASELINES:
+        for n in range(7):
+            seed_activities(store, monday + timedelta(days=n), {"swimming": sport(1, 40, 1.5, 20)} if n == 2 else {})
+    seed_week(store, W40, run=(50, 8.0, 60))
+    by_sport = report(store)["endurance"]["by_sport"]
+    assert set(by_sport) == {"running", "swimming"}  # hiking, walking, cycling and other have neither
+    assert by_sport["swimming"] == {
+        "count": 0, "duration_min": 0.0, "distance_km": 0.0, "training_load": 0.0,
+        "baseline_duration_min": 40.0, "baseline_training_load": 20.0,
+    }
+    assert by_sport["running"]["baseline_duration_min"] == 0.0 and by_sport["running"]["count"] == 1
+
+
+def test_weekly_baseline_of_zero_gives_no_percentage_and_no_flag(store):
+    for monday in BASELINES:
+        seed_week(store, monday)  # complete weeks with nothing recorded
+    seed_week(store, W40, run=(60, 10.0, 100))
+    out = report(store)
+    assert out["endurance"]["total"]["training_load"] == {
+        "week": 100.0, "baseline": 0.0, "baseline_weeks": 4, "change": 100.0, "change_pct": None,
+    }
+    assert out["flags"] == []  # a rise from nothing is not "more than 30 %"
+    assert [b["metric"] for b in out["new_bests"]] == [
+        "running_distance_km", "endurance_duration_min", "endurance_training_load",
+    ]
+
+
+def test_sleep_days_count_the_nights_with_a_duration(store):
+    seed_daily(store, W40, days=7, sleep_score=75)
+    seed_daily(store, W40, days=4, sleep_duration_h=7.0)
+    out = report(store)["sleep"]
+    assert out["days"] == 4
+    assert out["duration_h"]["week"] == 7.0 and out["score"]["week"] == 75.0
+    seed_day(store, W36, sleep_score=70)  # a baseline week with a score only
+    assert report(store)["sleep"]["score"]["baseline_weeks"] == 1
+    assert report(store)["sleep"]["duration_h"]["baseline_weeks"] == 0
+
+
+def test_a_week_with_only_a_score_has_no_duration_stat(store):
+    seed_daily(store, W40, days=3, sleep_score=75)
+    out = report(store)["sleep"]
+    assert out["days"] == 0 and out["duration_h"] is None
+    assert out["score"]["week"] == 75.0
+
+
+def test_new_bests_weeks_compared_counts_the_earlier_complete_weeks(store):
+    first = W36 - timedelta(days=14)  # two more weeks before W36
+    for monday in (first, first + timedelta(days=7), *BASELINES):
+        seed_week(store, monday, run=(60, 10.0, 100), days=6 if monday == W38 else 7)
+    seed_week(store, W40, run=(70, 12.0, 120))
+    bests = {b["metric"]: b for b in report(store)["new_bests"]}
+    assert bests["running_distance_km"]["weeks_compared"] == 5  # six earlier weeks, W38 is incomplete
+    assert bests["running_distance_km"]["previous_best"] == 10.0
+
+
+def test_garmin_strength_and_other_sports_are_kept_apart(store):
+    for n in range(7):
+        totals = {"other": sport(1, 30, 0, 10)} if n == 1 else {}
+        seed_activities(store, W40 + timedelta(days=n), totals)
+    out = report(store)["endurance"]
+    assert "garmin_strength" not in out  # "other" is endurance, only strength_training is Garmin strength
+    assert out["total"]["count"] == 1 and set(out["by_sport"]) == {"other"}
+    seed_activities(store, W40 + timedelta(days=2), {"strength": sport(1, 45, 0, 30)})
+    out = report(store)["endurance"]
+    assert out["garmin_strength"] == {"count": 1, "duration_min": 45.0, "training_load": 30.0}
+    assert out["total"]["count"] == 1  # strength is not endurance
 
 
 def test_weekly_report_marks_sections_without_data(store):
