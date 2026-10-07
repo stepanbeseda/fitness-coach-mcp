@@ -78,9 +78,55 @@ CREATE TABLE alert_state (
   fired_on     TEXT
 );
 """,
+    """
+CREATE TABLE history_days (
+  date                  TEXT PRIMARY KEY,
+  recovery_fetched_on   TEXT,
+  recovery_failures     INTEGER NOT NULL DEFAULT 0 CHECK (recovery_failures >= 0),
+  activities_fetched_on TEXT,
+  activities_failures   INTEGER NOT NULL DEFAULT 0 CHECK (activities_failures >= 0),
+  readiness             REAL,
+  hrv_last_night_ms     REAL,
+  hrv_weekly_avg_ms     REAL,
+  hrv_status            TEXT CHECK (hrv_status IS NULL OR length(hrv_status) <= 40),
+  sleep_duration_h      REAL,
+  sleep_score           REAL,
+  resting_hr            REAL,
+  body_battery_high     REAL,
+  body_battery_low      REAL,
+  stress_avg            REAL,
+  acute_load            REAL,
+  chronic_load          REAL,
+  acwr_ratio            REAL,
+  vo2max_running        REAL,
+  vo2max_cycling        REAL,
+  activities            TEXT,
+  updated_at            TEXT NOT NULL
+);
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
+
+# Daily values of history_days that the recovery snapshot fills (the activity part has its own JSON column).
+HISTORY_COLUMNS: tuple[str, ...] = (
+    "readiness",
+    "hrv_last_night_ms",
+    "hrv_weekly_avg_ms",
+    "hrv_status",
+    "sleep_duration_h",
+    "sleep_score",
+    "resting_hr",
+    "body_battery_high",
+    "body_battery_low",
+    "stress_avg",
+    "acute_load",
+    "chronic_load",
+    "acwr_ratio",
+    "vo2max_running",
+    "vo2max_cycling",
+)
+HISTORY_PARTS = ("recovery", "activities")
 
 GOAL_FIELDS = frozenset({"title", "target", "target_date", "target_result", "status"})
 CONSTRAINT_FIELDS = frozenset({"kind", "title", "details", "status"})
@@ -324,6 +370,57 @@ class Store:
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value, evaluated_on = excluded.evaluated_on, "
                     "fired_on = COALESCE(excluded.fired_on, alert_state.fired_on)",
                     (key, int(holds), day.isoformat(), day.isoformat() if new else None),
+                )
+
+    # ------------------------------------------------------------- history
+
+    def history_rows(self, start: date | None, end: date) -> list[dict[str, Any]]:
+        """All columns of the days up to ``end`` (and from ``start`` when given), oldest first."""
+        sql, params = "SELECT * FROM history_days WHERE date <= ?", [end.isoformat()]
+        if start is not None:
+            sql += " AND date >= ?"
+            params.append(start.isoformat())
+        return self._all(sql + " ORDER BY date", tuple(params))
+
+    def upsert_history_recovery(self, day: date, values: Mapping[str, Any], fetched_on: date) -> None:
+        """Store the daily values of ``day``; columns not in ``values`` keep their stored value."""
+        _check_fields(values, frozenset(HISTORY_COLUMNS))
+        columns = [*values, "recovery_fetched_on", "recovery_failures", "updated_at"]
+        sets = [f"{c} = excluded.{c}" for c in columns]
+        with self._conn() as conn, conn:
+            conn.execute(
+                f"INSERT INTO history_days (date, {', '.join(columns)}) "
+                f"VALUES (?, {', '.join('?' for _ in columns)}) "
+                f"ON CONFLICT(date) DO UPDATE SET {', '.join(sets)}",
+                (day.isoformat(), *values.values(), fetched_on.isoformat(), 0, _now()),
+            )
+
+    def upsert_history_activities(self, totals: Mapping[date, str], fetched_on: date) -> None:
+        """Store the activity totals (JSON text) of every day in ``totals`` in one transaction."""
+        now = _now()
+        with self._conn() as conn, conn:
+            for day, text in totals.items():
+                conn.execute(
+                    "INSERT INTO history_days (date, activities, activities_fetched_on, activities_failures, "
+                    "updated_at) VALUES (?, ?, ?, 0, ?) "
+                    "ON CONFLICT(date) DO UPDATE SET activities = excluded.activities, "
+                    "activities_fetched_on = excluded.activities_fetched_on, activities_failures = 0, "
+                    "updated_at = excluded.updated_at",
+                    (day.isoformat(), text, fetched_on.isoformat(), now),
+                )
+
+    def record_history_failure(self, days: Sequence[date], part: str) -> None:
+        """Count one item-level error of ``part`` for each of ``days`` (reset by the next success)."""
+        if part not in HISTORY_PARTS:
+            raise ValueError(f"unknown history part: {part!r}")
+        column = f"{part}_failures"
+        now = _now()
+        with self._conn() as conn, conn:
+            for day in days:
+                conn.execute(
+                    f"INSERT INTO history_days (date, {column}, updated_at) VALUES (?, 1, ?) "
+                    f"ON CONFLICT(date) DO UPDATE SET {column} = {column} + 1, updated_at = excluded.updated_at",
+                    (day.isoformat(), now),
                 )
 
     # --------------------------------------------------------------- notes
