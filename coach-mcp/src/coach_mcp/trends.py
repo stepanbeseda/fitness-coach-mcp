@@ -44,17 +44,19 @@ TOTAL_GROUPS: dict[str, tuple[str, ...]] = {
     "endurance": ENDURANCE_SPORTS,
     **{sport: (sport,) for sport in SPORTS},
 }
-TOTAL_FIELDS: dict[str, tuple[str, int]] = {
-    "duration_min": ("min", 1),
-    "distance_km": ("km", 2),
-    "training_load": ("load", 1),
-    "count": ("activities", 0),
+# field -> (unit, value decimals, mean decimals). Values, min, max and total of a count are whole numbers, but
+# a mean, first, last and change of a count keep 2 decimals: 1 run in a week of 7 days is a mean of 0.14, not 0.
+TOTAL_FIELDS: dict[str, tuple[str, int, int]] = {
+    "duration_min": ("min", 1, 1),
+    "distance_km": ("km", 2, 2),
+    "training_load": ("load", 1, 1),
+    "count": ("activities", 0, 2),
 }
-# name -> (group, field, unit, decimals)
-TOTAL_METRICS: dict[str, tuple[str, str, str, int]] = {
-    f"{group}_{field}": (group, field, unit, decimals)
+# name -> (group, field, unit, value decimals, mean decimals)
+TOTAL_METRICS: dict[str, tuple[str, str, str, int, int]] = {
+    f"{group}_{field}": (group, field, unit, decimals, mean_decimals)
     for group in TOTAL_GROUPS
-    for field, (unit, decimals) in TOTAL_FIELDS.items()
+    for field, (unit, decimals, mean_decimals) in TOTAL_FIELDS.items()
 }
 METRIC_NAMES: tuple[str, ...] = (*DAILY_METRICS, *TOTAL_METRICS)
 TrendMetric = Literal[METRIC_NAMES]  # type: ignore[valid-type]
@@ -100,7 +102,7 @@ def _sport_sum(acts: dict[str, Any], sports: tuple[str, ...], field: str) -> flo
 def _daily(row: dict[str, Any], metric: str) -> float | None:
     if metric in DAILY_METRICS:
         return _number(row.get(metric))
-    group, field, _, _ = TOTAL_METRICS[metric]
+    group, field, *_ = TOTAL_METRICS[metric]
     acts = _activities(row)
     return None if acts is None else _sport_sum(acts, TOTAL_GROUPS[group], field)
 
@@ -157,9 +159,10 @@ def _trend(
 ) -> dict[str, Any]:
     if metric in DAILY_METRICS:
         unit, decimals = DAILY_METRICS[metric]
+        mean_decimals = decimals
         kind = "daily"
     else:
-        _, _, unit, decimals = TOTAL_METRICS[metric]
+        _, _, unit, decimals, mean_decimals = TOTAL_METRICS[metric]
         kind = "total"
     values: list[tuple[dt.date, float]] = []
     for day in sorted(by_day):
@@ -188,7 +191,7 @@ def _trend(
             "start": first.isoformat(),
             "end": last.isoformat(),
             "n": len(vals),
-            "mean": _round(mean, decimals),
+            "mean": _round(mean, mean_decimals),
             "min": _round(min(vals), decimals),
             "max": _round(max(vals), decimals),
         }
@@ -199,7 +202,7 @@ def _trend(
     every = [v for _, v in values]
     summary: dict[str, Any] = {
         "n": len(every),
-        "mean": _round(sum(every) / len(every), decimals),
+        "mean": _round(sum(every) / len(every), mean_decimals),
         "min": _round(min(every), decimals),
         "max": _round(max(every), decimals),
         "first": None,
@@ -210,9 +213,9 @@ def _trend(
     if len(means) >= 2:
         first_value, last_value = means[0], means[-1]
         change = last_value - first_value
-        summary["first"] = _round(first_value, decimals)
-        summary["last"] = _round(last_value, decimals)
-        summary["change"] = _round(change, decimals)
+        summary["first"] = _round(first_value, mean_decimals)
+        summary["last"] = _round(last_value, mean_decimals)
+        summary["change"] = _round(change, mean_decimals)
         summary["change_pct"] = round(change * 100 / first_value, 1) if first_value != 0 else None
     return {**out, "summary": summary, "buckets": buckets}
 

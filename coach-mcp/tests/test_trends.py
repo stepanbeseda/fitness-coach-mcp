@@ -717,3 +717,43 @@ def test_weekly_adherence_without_finished_baseline_sessions(store):
     out = report(store)["adherence"]
     assert out["planned"] == 1 and out["completion_rate"] is None
     assert out["baseline_completion_rate"] is None and out["baseline_weeks"] == 0
+
+
+def test_trends_count_metric_mean_has_two_decimals(store):
+    # W39 = 2026-09-21..09-27, W40 = 2026-09-28..10-04; every day has its activities fetched
+    runs = {d("2026-09-23"), d("2026-09-29"), d("2026-09-30"), d("2026-10-02")}  # 1 run in W39, 3 in W40
+    for day in span("2026-09-21", "2026-10-04"):
+        seed_activities(store, day, {"running": sport(1, 30, 5.0, 40)} if day in runs else {})
+    out = get_trends(
+        store, metrics=["running_count"], start_date="2026-09-21", end_date="2026-10-04", period="week"
+    )
+    metric = out["metrics"]["running_count"]
+    w39, w40 = metric["buckets"]
+    assert (w39["period"], w39["mean"], w39["total"], w39["min"], w39["max"]) == ("2026-W39", 0.14, 1, 0, 1)
+    assert (w40["period"], w40["mean"], w40["total"], w40["min"], w40["max"]) == ("2026-W40", 0.43, 3, 0, 1)
+    assert metric["summary"] == {
+        "n": 14, "mean": 0.29, "min": 0, "max": 1, "first": 0.14, "last": 0.43, "change": 0.29, "change_pct": 200.0,
+    }
+    # == cannot tell 0 from 0.0: the JSON types are asserted
+    for bucket in (w39, w40):
+        assert all(isinstance(bucket[k], int) for k in ("min", "max", "total"))
+        assert isinstance(bucket["mean"], float)
+    assert all(isinstance(metric["summary"][k], int) for k in ("min", "max"))
+    assert all(isinstance(metric["summary"][k], float) for k in ("mean", "first", "last", "change"))
+
+    daily = get_trends(
+        store, metrics=["running_count"], start_date="2026-09-21", end_date="2026-10-04", period="day"
+    )["metrics"]["running_count"]
+    assert len(daily["buckets"]) == 14
+    assert all(isinstance(b["value"], int) for b in daily["buckets"])
+    assert [b["value"] for b in daily["buckets"] if b["period"] in ("2026-09-23", "2026-09-24")] == [1, 0]
+
+
+def test_trends_days_with_data_excludes_failure_only_rows(store):
+    for day in span("2026-10-01", "2026-10-03"):
+        seed_day(store, day, readiness=70)
+    store.record_history_failure([d("2026-10-04")], "recovery")  # a row that only counts failures
+    store.record_history_failure([d("2026-10-05")], "activities")
+    out = get_trends(store, metrics=["readiness"], start_date="2026-10-01", end_date="2026-10-06", period="day")
+    assert out["days_with_data"] == 3
+    assert [b["period"] for b in out["metrics"]["readiness"]["buckets"]] == ["2026-10-01", "2026-10-02", "2026-10-03"]
