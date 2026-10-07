@@ -7,7 +7,8 @@
 #   scripts/setup-secrets.sh password        change the gateway login password
 #   scripts/setup-secrets.sh totp            enrol a new TOTP authenticator
 #   scripts/setup-secrets.sh backend-tokens  rotate the gateway <-> backend secrets (hevy, garmin, coach)
-#   scripts/setup-secrets.sh ntfy-token      set or clear the ntfy access token (morning briefing push)
+#   scripts/setup-secrets.sh telegram-token  set the Telegram bot token (morning briefing), show the chat id
+#   scripts/setup-secrets.sh telegram-chat-id  show the chat id of your chat with the bot again
 #   scripts/setup-secrets.sh fix-perms       re-apply ownership/permissions
 #
 # Secrets are typed with hidden input and written directly to files (mode 0640,
@@ -159,39 +160,96 @@ ensure_backend_tokens() {
   return 0
 }
 
-# Empty placeholder so docker compose can mount the secret while the push has no
-# token (an empty file means: publish without an Authorization header).
-ensure_ntfy_token() {
-  local file="$SECRETS_DIR/ntfy_token"
+# Bot tokens look like 123456789:AA... (digits, a colon, 30+ characters); coach-mcp checks the same shape.
+TELEGRAM_TOKEN_RE='^[0-9]{1,20}:[A-Za-z0-9_-]{30,64}$'
+
+# Empty placeholder so docker compose can mount the secret while the morning briefing is off
+# (coach-mcp sends nothing while COACH_TELEGRAM_CHAT_ID is empty).
+ensure_telegram_token() {
+  local file="$SECRETS_DIR/telegram_bot_token"
   if [[ ! -e "$file" ]]; then
     ensure_dir
     (umask 077 && : > "$file")
     set_perms "$file"
-    ok "Vytvořeno: secrets/ntfy_token (prázdný, push bez tokenu)"
+    ok "Vytvořeno: secrets/telegram_bot_token (prázdný, ranní briefing vypnutý)"
   fi
   return 0
 }
 
-cmd_ntfy_token() {
-  local token code
-  info "Access token z ntfy (účet → Access tokens, začíná tk_). Prázdný vstup = push bez tokenu."
-  token="$(read_hidden 'ntfy access token: ')"
-  if [[ -n "$token" ]]; then
-    [[ "$token" == tk_* ]] || die "Tohle nevypadá jako ntfy access token (tk_...). Nic jsem neuložil."
-    if [[ -n "${COACH_NTFY_URL:-}" ]]; then
-      code="$(printf 'Authorization: Bearer %s\n' "$token" | curl -sS --max-time 15 -o /dev/null \
-              -w '%{http_code}' -H @- "${COACH_NTFY_URL%/}/v1/account" || true)"
-      case "$code" in
-        200) ok "ntfy token ověřen." ;;
-        401|403) die "ntfy token odmítnut (HTTP $code). Nic jsem neuložil." ;;
-        *) warn "Token se nepodařilo ověřit (HTTP ${code:-?}); ukládám i tak." ;;
-      esac
-    else
-      warn "COACH_NTFY_URL v .env chybí, token neověřuji."
-    fi
+# Calls a Bot API method and prints the HTTP status (000 = no answer). The token reaches curl
+# through a config file on stdin, so it is never on a command line; the reply body goes to $3.
+telegram_api() {
+  printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$1" "$2" \
+    | curl -s --max-time 15 -o "$3" -w '%{http_code}' -K - || true
+}
+
+wait_enter() { IFS= read -r _ </dev/tty; }
+
+# Lists the private chats that recently wrote to the bot (getUpdates keeps them for 24 hours).
+show_telegram_chat_ids() {
+  local body code ids
+  body="$(mktemp)"
+  info "Pošli teď botovi v Telegramu libovolnou zprávu (třeba /start) a pak tady stiskni Enter."
+  wait_enter
+  code="$(telegram_api "$1" getUpdates "$body")"
+  ids=""
+  if [[ "$code" == 200 ]]; then
+    ids="$(python3 - "$body" <<'PY' || true
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        updates = json.load(fh).get("result") or []
+except (OSError, ValueError, AttributeError):
+    updates = []
+seen = {}
+for update in updates if isinstance(updates, list) else []:
+    for key in ("message", "edited_message", "my_chat_member"):
+        chat = (update.get(key) or {}).get("chat") or {} if isinstance(update, dict) else {}
+        if chat.get("type") == "private" and isinstance(chat.get("id"), int):
+            name = str(chat.get("first_name") or "")
+            # Anyone can write to the bot: keep only printable characters (no terminal escapes), at most 40.
+            seen.setdefault(chat["id"], "".join(c for c in name if c.isprintable())[:40])
+for chat_id, name in seen.items():
+    print(f"{chat_id} ({name})" if name else chat_id)
+PY
+)"
   fi
-  write_secret ntfy_token "$token"
+  rm -f "$body"
+  if [[ -z "$ids" ]]; then
+    warn "Žádný soukromý chat s botem jsem nenašel (HTTP $code). Napiš botovi a spusť scripts/setup-secrets.sh telegram-chat-id."
+    return 0
+  fi
+  ok "Soukromé chaty s botem (chat id a jméno):"
+  printf '%s\n' "$ids" | sed 's/^/  /'
+  info "Do .env přidej řádek COACH_TELEGRAM_CHAT_ID= s číslem svého chatu a spusť docker compose up -d coach-mcp."
+}
+
+cmd_telegram_token() {
+  local token code
+  info "Token bota od @BotFather v Telegramu (/newbot), tvar 123456789:AA..."
+  token="$(read_hidden 'Telegram bot token: ')"
+  [[ "$token" =~ $TELEGRAM_TOKEN_RE ]] \
+    || die "Tohle nevypadá jako token Telegram bota (číslo, dvojtečka, znaky). Nic jsem neuložil."
+  code="$(telegram_api "$token" getMe /dev/null)"
+  case "$code" in
+    200) ok "Token bota ověřen." ;;
+    401|404) die "Telegram token odmítl (HTTP $code). Nic jsem neuložil." ;;
+    *) warn "Token se nepodařilo ověřit (HTTP $code); ukládám i tak." ;;
+  esac
+  write_secret telegram_bot_token "$token"
+  show_telegram_chat_ids "$token"
   recreate coach-mcp
+}
+
+cmd_telegram_chat_id() {
+  local token
+  has_secret telegram_bot_token || die "Nejdřív ulož token bota: scripts/setup-secrets.sh telegram-token"
+  token="$(tr -d '\r\n' < "$SECRETS_DIR/telegram_bot_token")"
+  [[ "$token" =~ $TELEGRAM_TOKEN_RE ]] \
+    || die "Soubor secrets/telegram_bot_token nemá tvar tokenu bota. Spusť scripts/setup-secrets.sh telegram-token."
+  show_telegram_chat_ids "$token"
 }
 
 cmd_fix_perms() {
@@ -207,13 +265,13 @@ cmd_all() {
   require_env
   ensure_dir
   ensure_backend_tokens
-  ensure_ntfy_token
+  ensure_telegram_token
   has_secret ts_authkey || cmd_ts_authkey
   has_secret hevy_api_key || cmd_hevy_key
   has_secret gateway_password_hash || cmd_password
   has_secret gateway_totp_secret || cmd_totp
   cmd_fix_perms
-  ok "Všechny secrets jsou připravené. Rotace: scripts/setup-secrets.sh <hevy-key|password|totp|backend-tokens|ntfy-token>"
+  ok "Všechny secrets jsou připravené. Rotace: scripts/setup-secrets.sh <hevy-key|password|totp|backend-tokens|telegram-token>"
 }
 
 require_docker
@@ -224,7 +282,8 @@ case "${1:-all}" in
   password) cmd_password ;;
   totp) cmd_totp ;;
   backend-tokens) cmd_backend_tokens ;;
-  ntfy-token) cmd_ntfy_token ;;
+  telegram-token) cmd_telegram_token ;;
+  telegram-chat-id) cmd_telegram_chat_id ;;
   fix-perms) cmd_fix_perms ;;
-  *) sed -n '2,14p' "$0"; exit 2 ;;
+  *) sed -n '2,16p' "$0"; exit 2 ;;
 esac

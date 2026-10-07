@@ -65,6 +65,30 @@ agents read it before working; general lessons are in
   every case the old code handled (including the failure paths) and keeps each one as a test next to the new
   case. (PR 04, review 2, N10)
 
+- **A prescribed code block contains the word the acceptance grep forbids.** The spec's comment above `_CIRCLE`
+  said "the circles ntfy showed", so the criterion "`grep -rni ntfy` finds only the rollback note" could not pass
+  after pasting it. When a criterion is a grep, run that exact grep over the spec's own code blocks and prose
+  (`grep -n -i <word> <spec>`) and reword every hit that is destined for the repo. (PR 08, spec check F1)
+- **A brief where one criterion forbids what another requires.** Done-when item 4 ("no ntfy anywhere") clashed
+  with item 7 (the rollback note must name ntfy) and was caught only in the spec phase. Before the brief is
+  confirmed, read every "none / no / only" criterion against every criterion that creates the thing, and write
+  the exception into the forbidding one ("finds only the README rollback note of item 7"). (PR 08, orchestrator
+  decision after the brief)
+- **A "logger stays quiet" test that asserts the effective level passes vacuously under pytest.** Pytest installs
+  root handlers, so `basicConfig(level="DEBUG")` is a no-op, the root stays at WARNING and every unconfigured
+  logger already has effective level WARNING: the prescribed `getEffectiveLevel() >= WARNING` stayed green with
+  `"httpx2"` removed from `configure_logging`. Reset the logger with `setLevel(logging.NOTSET)` first and assert
+  its own `.level`, and run the mutation that removes the logger from the list. (PR 08, spec check F2; PR 04
+  F4 is about finding the logger names, this is about the assertion)
+- **A worker step in a live procedure reads `.env` or `secrets/*`.** `grep -c '^X=' .env` prints only a count but
+  still opens the file, and `project.md` forbids it; the same holds for `stat`/`ls` on `secrets/*` unless the
+  orchestrator's pre-approval is stated in the step. Live steps put such commands in a "user command" list
+  (the user pastes the count) and name the approval for metadata-only reads. (PR 08, spec check F4)
+- **An append recipe run twice duplicates its line.** `printf '\nX=%s\n' "$V" >> .env` followed by
+  `grep -c '^X='` prints `2` the second time, and the spec said nothing about it. Every live recipe that appends
+  states what a second run leaves behind and what the user does then (remove the duplicate line). (PR 08,
+  review 1, N7)
+
 ## Operational lessons
 
 - **`docker compose build` with stdout redirected needs an explicit progress mode.** A newer

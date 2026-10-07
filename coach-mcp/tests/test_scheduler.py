@@ -17,7 +17,7 @@ from coach_mcp.__main__ import configure_logging, main
 from coach_mcp.briefing import ALERT_KEYS, EVENT_ALERTS
 from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminReader
-from coach_mcp.push import NtfyPush
+from coach_mcp.push import TelegramPush
 from coach_mcp.scheduler import BriefingScheduler, compose_briefing, send_briefing_command
 from coach_mcp.store import Store
 from garmin_payloads import (
@@ -28,6 +28,7 @@ from garmin_payloads import (
     trend,
 )
 
+BOT_TOKEN = "123456789:SECRETtokenSECRETtokenSECRETtoken12"  # 35 characters after the colon
 PRAGUE = ZoneInfo("Europe/Prague")
 D = date(2026, 10, 7)
 
@@ -40,8 +41,7 @@ def make_settings(db_path: Path, **overrides: Any) -> Settings:
     fields: dict[str, Any] = {
         "db_path": db_path,
         "timezone": "Europe/Prague",
-        "ntfy_url": "https://ntfy.example",
-        "ntfy_topic": "t1",
+        "telegram_chat_id": "123456789",
     }
     fields.update(overrides)
     return Settings(**fields)
@@ -136,7 +136,7 @@ async def test_retries_while_sleep_or_hrv_missing_then_sends_when_synced(db_path
     assert garmin.calls == 3
     (sent_at, msg), = push.sent
     assert utc(sent_at) == local(D, 7, 0).astimezone(UTC)
-    assert "Chybí" not in msg.message and msg.message.startswith("Verdikt: zelená")
+    assert "Chybí" not in msg.body and msg.body.startswith("Verdikt: zelená")
 
 
 @pytest.mark.anyio
@@ -157,7 +157,7 @@ async def test_other_missing_data_does_not_wait(db_path):
     push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
     assert garmin.calls == 1
     assert utc(push.sent[0][0]) == local(D, 6, 30).astimezone(UTC)
-    assert "Chybí: Body Battery" in push.sent[0][1].message
+    assert "Chybí: Body Battery" in push.sent[0][1].body
 
 
 @pytest.mark.anyio
@@ -167,7 +167,7 @@ async def test_sends_at_cutoff_with_missing_data(db_path):
     assert garmin.calls == 13  # 06:30, 06:45, ..., 09:15 waiting, 09:30 final
     (sent_at, msg), = push.sent
     assert utc(sent_at) == local(D, 9, 30).astimezone(UTC)
-    assert "Chybí: HRV" in msg.message
+    assert "Chybí: HRV" in msg.body
     assert Store(db_path).briefing_sent(D)
 
 
@@ -178,7 +178,7 @@ async def test_auth_problem_sends_without_waiting(db_path):
     assert garmin.calls == 1
     (sent_at, msg), = push.sent
     assert utc(sent_at) == local(D, 6, 30).astimezone(UTC)
-    assert "Garmin není přihlášený: na serveru spusť scripts/garmin-login.sh." in msg.message
+    assert "Garmin není přihlášený: na serveru spusť scripts/garmin-login.sh." in msg.body
 
 
 @pytest.mark.anyio
@@ -322,14 +322,16 @@ async def test_failing_push_server_does_not_crash(db_path, tmp_path):
             raise httpx2.ConnectError("down")
         return httpx2.Response(answer)
 
-    settings = make_settings(db_path, ntfy_token_file=tmp_path / "none")
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN + "\n", encoding="utf-8")
+    settings = make_settings(db_path, telegram_token_file=token_file)
     clock = FakeClock(local(D, 0), stop_when=lambda: len(times) >= 3 and Store(db_path).briefing_sent(D))
     clock_ref["clock"] = clock
     scheduler = BriefingScheduler(
         settings,
         Store(db_path),
         FakeGarmin(garmin_data()),
-        NtfyPush(settings, transport=httpx2.MockTransport(handler)),
+        TelegramPush(settings, transport=httpx2.MockTransport(handler)),
         now=clock.now,
         sleep=clock.sleep,
     )
@@ -434,7 +436,7 @@ async def test_alert_fires_once_then_not_again(db_path, key):
         push, _ = await run_scheduler(
             db_path, local(day, from_hour), garmin, until=local(day, to_hour), store=Store(db_path)
         )
-        return [msg.message for _, msg in push.sent]
+        return [msg.body for _, msg in push.sent]
 
     text = ALERT_TEXT[key]
     d1 = D
@@ -476,7 +478,7 @@ async def test_missed_workout_reports_each_newly_missed_session(db_path):
         push, _ = await run_scheduler(
             db_path, local(day, from_hour), FakeGarmin(data), until=local(day, to_hour), store=Store(db_path)
         )
-        return [msg.message for _, msg in push.sent]
+        return [msg.body for _, msg in push.sent]
 
     d1, d2, d3 = D, D + timedelta(days=1), D + timedelta(days=2)
     text = "Včera naplánovaný trénink nebyl splněn"
@@ -502,7 +504,7 @@ async def test_missing_baseline_sends_at_the_briefing_time(db_path):
     assert garmin.calls == 1
     (sent_at, msg), = push.sent
     assert utc(sent_at) == local(D, 6, 30).astimezone(UTC)
-    assert "Chybí: HRV baseline (Garmin ji počítá až po zhruba 3 týdnech" in msg.message
+    assert "Chybí: HRV baseline (Garmin ji počítá až po zhruba 3 týdnech" in msg.body
 
 
 @pytest.mark.anyio
@@ -574,7 +576,7 @@ async def test_send_briefing_command_pushes_without_writing_state(db_path, capsy
         today=lambda: D,
     )
     assert rc == 0
-    assert len(push.sent) == 1 and "Klidová tepovka" in push.sent[0][1].message
+    assert len(push.sent) == 1 and "Klidová tepovka" in push.sent[0][1].body
     out = capsys.readouterr()
     assert out.out == "briefing status=sent verdict=green missing=- new_alerts=1\n"
     with sqlite3.connect(db_path) as conn:
@@ -621,16 +623,23 @@ async def test_send_briefing_command_without_push_config_exits_2(db_path, capsys
     assert rc == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "push is not configured: set COACH_NTFY_URL and COACH_NTFY_TOPIC\n"
+    assert captured.err == "push is not configured: set COACH_TELEGRAM_CHAT_ID\n"
     assert garmin.calls == 0
+
+
+@pytest.mark.anyio
+async def test_send_briefing_command_with_unusable_token_reports_permanent(db_path, tmp_path, capsys):
+    settings = make_settings(db_path, telegram_token_file=tmp_path / "missing")
+    rc = await send_briefing_command(settings, store=Store(db_path), garmin=FakeGarmin(garmin_data()), today=lambda: D)
+    assert rc == 1
+    assert capsys.readouterr().out.startswith("briefing status=permanent verdict=green")
 
 
 def test_main_dispatch_usage(capsys, monkeypatch, restore_logging):
     assert main(["bogus"]) == 2
     assert capsys.readouterr().err == "usage: python -m coach_mcp [send-briefing]\n"
     assert main(["send-briefing", "extra"]) == 2
-    monkeypatch.delenv("COACH_NTFY_URL", raising=False)
-    monkeypatch.delenv("COACH_NTFY_TOPIC", raising=False)
+    monkeypatch.delenv("COACH_TELEGRAM_CHAT_ID", raising=False)
     capsys.readouterr()
     assert main(["send-briefing"]) == 2
     assert "push is not configured" in capsys.readouterr().err
@@ -640,17 +649,17 @@ def test_main_dispatch_usage(capsys, monkeypatch, restore_logging):
 
 
 @pytest.mark.anyio
-async def test_logs_never_contain_message_topic_token_or_values(db_path, tmp_path, caplog, restore_logging):
+async def test_logs_never_contain_text_chat_id_token_or_values(db_path, tmp_path, caplog, restore_logging):
     configure_logging("DEBUG")
     caplog.set_level(logging.DEBUG)
-    ntfy_token = tmp_path / "ntfy_token"
-    ntfy_token.write_text("tk_SECRETTOKEN0123456789\n", encoding="utf-8")
+    telegram_token = tmp_path / "telegram_bot_token"
+    telegram_token.write_text(BOT_TOKEN + "\n", encoding="utf-8")
     garmin_token = tmp_path / "garmin_token"
     garmin_token.write_text("garmin-backend-token-0123456789abcdef\n", encoding="utf-8")
     settings = make_settings(
         db_path,
-        ntfy_topic="secret-topic-XYZ",
-        ntfy_token_file=ntfy_token,
+        telegram_chat_id="918273645",
+        telegram_token_file=telegram_token,
         garmin_token_file=garmin_token,
     )
     store = Store(db_path)
@@ -670,7 +679,7 @@ async def test_logs_never_contain_message_topic_token_or_values(db_path, tmp_pat
         settings,
         store,
         GarminReader(settings, transport=httpx2.ASGITransport(app=app)),
-        NtfyPush(settings, transport=httpx2.MockTransport(handler)),
+        TelegramPush(settings, transport=httpx2.MockTransport(handler)),
         now=clock.now,
         sleep=clock.sleep,
     )
@@ -684,13 +693,15 @@ async def test_logs_never_contain_message_topic_token_or_values(db_path, tmp_pat
     assert "push status=transient code=500" in text
     assert "garmin status=partial" in text
     for secret in (
-        "secret-topic-XYZ",
-        "tk_SECRETTOKEN",
+        "SECRETtoken",
+        "918273645",
+        "api.telegram.org",
+        "/bot",
+        "sendMessage",
         "PRIVATE-SESSION-TEXT",
         "SECRET-ERROR-TEXT",
         "Readiness",
         "ranní briefing",
-        "ntfy.example",
         "garmin-backend-token",
     ):
         assert secret not in text, secret

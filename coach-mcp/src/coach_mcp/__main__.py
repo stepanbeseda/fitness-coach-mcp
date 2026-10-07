@@ -20,7 +20,8 @@ def configure_logging(level: str) -> None:
     # Library chatter (session lifecycle, HTTP client lines) is noise here; the
     # tool wrapper logs one line per call. The MCP SDK logs the text of every
     # ToolError at INFO and those texts can echo caller input, so keep it at
-    # WARNING or above.
+    # WARNING or above. httpx2 logs every request URL at INFO, and the Telegram
+    # bot token is part of that URL.
     for name in ("mcp", "httpx", "httpx2", "httpcore", "httpcore2", "sse_starlette"):
         logging.getLogger(name).setLevel(logging.WARNING)
     # The SDK *client* (used to read garmin-mcp) logs every client message with

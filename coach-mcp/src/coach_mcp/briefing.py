@@ -48,6 +48,9 @@ MAX_MESSAGE_BYTES = 4000
 
 _RANK = {"green": 0, "yellow": 1, "red": 2}
 _LEVEL_CS = {"green": "zelená", "yellow": "žlutá", "red": "červená"}
+# Coloured circle per verdict (large green / yellow / red circle) and the warning sign for new alerts.
+_CIRCLE = {"green": "\U0001f7e2", "yellow": "\U0001f7e1", "red": "\U0001f534"}
+_WARNING = "\u26a0\ufe0f"
 _NAME_CS = {"readiness": "readiness", "hrv": "HRV", "sleep": "spánek", "body_battery": "Body Battery"}
 _TYPE_CS = {
     "running": "běh",
@@ -390,12 +393,14 @@ def _alert_text(key: str, data: GarminData, day: date, nights_below: int | None)
     return "Garmin není přihlášený: na serveru spusť scripts/garmin-login.sh."
 
 
-def _guard_bytes(text: str) -> str:
-    """ntfy turns messages over 4096 bytes into attachments."""
+def _guard_bytes(text: str, limit: int) -> str:
+    """Cut ``text`` to ``limit`` UTF-8 bytes. Telegram accepts at most 4096 characters per message, and a
+    UTF-8 byte count is never smaller than the character count (UTF-16 units included), so a byte limit
+    below 4096 always fits."""
     raw = text.encode()
-    if len(raw) <= MAX_MESSAGE_BYTES:
+    if len(raw) <= limit:
         return text
-    return raw[: MAX_MESSAGE_BYTES - 3].decode(errors="ignore") + "…"
+    return raw[: limit - 3].decode(errors="ignore") + "…"
 
 
 def render(
@@ -465,12 +470,11 @@ def render(
         lines.extend(f"- {_alert_text(key, data, day, nights_below)}" for key in new_alerts)
 
     alerting = bool(new_alerts)
-    return PushMessage(
-        title=f"{_LEVEL_CS[verdict].upper()} · ranní briefing {day.day}. {day.month}.",
-        message=_guard_bytes("\n".join(lines)),
-        priority=4 if verdict == "red" or alerting else 3,
-        tags=(f"{verdict}_circle", *(("warning",) if alerting else ())),
-    )
+    warning = f" {_WARNING}" if alerting else ""
+    title = f"{_CIRCLE[verdict]}{warning} {_LEVEL_CS[verdict].upper()} · ranní briefing {day.day}. {day.month}."
+    # Title, blank line and body together must fit MAX_MESSAGE_BYTES.
+    body = _guard_bytes("\n".join(lines), MAX_MESSAGE_BYTES - len(title.encode()) - 2)
+    return PushMessage(title=title, body=body)
 
 
 def build_briefing(
@@ -509,12 +513,7 @@ def build_briefing(
             "auth": "no_credentials" if data.credentials_missing else data.auth or "unreachable",
             "calls": dict(data.calls),
         },
-        "push": {
-            "title": message.title,
-            "message": message.message,
-            "priority": message.priority,
-            "tags": list(message.tags),
-        },
+        "push": {"text": message.text},
     }
     # Wait only for what can still arrive during the morning: last night's sleep and HRV value (the
     # HRV baseline does not appear within hours, so a missing baseline never waits).

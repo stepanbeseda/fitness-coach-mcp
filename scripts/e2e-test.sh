@@ -14,7 +14,7 @@ export SECRETS_DIR="$TMP_SECRETS"
 export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://fitness-mcp.example.ts.net}"
 export OWNER_TAILSCALE_LOGIN="e2e-owner@test"
 # The morning briefing push stays off in the e2e stack, whatever the caller's .env says.
-export COACH_NTFY_URL="" COACH_NTFY_TOPIC=""
+export COACH_TELEGRAM_CHAT_ID=""
 E2E_PASSWORD="e2e-$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
 compose=(docker compose -p "$PROJECT" -f docker-compose.yml -f compose.test.yml)
 
@@ -41,7 +41,7 @@ put gateway_totp_secret "$(python3 -c 'import base64, os; print(base64.b32encode
 put hevy_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put garmin_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put coach_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-put ntfy_token ""
+put telegram_bot_token ""
 put hevy_api_key "00000000-0000-0000-0000-000000000000"
 put ts_authkey "tskey-auth-unused-in-e2e"
 

@@ -19,7 +19,7 @@ from . import tools
 from .briefing import Briefing, build_briefing
 from .config import Settings
 from .garmin import GarminReader, GarminSource, exception_kind
-from .push import NtfyPush, PushSender
+from .push import PushSender, TelegramPush
 from .store import Store
 
 log = logging.getLogger("coach_mcp.briefing")
@@ -154,7 +154,7 @@ async def send_briefing_command(
 ) -> int:
     """Compose today's briefing and push it now; writes no state. Exit codes: 0 sent, 1 failed, 2 not configured."""
     if not settings.push_enabled:
-        print("push is not configured: set COACH_NTFY_URL and COACH_NTFY_TOPIC", file=sys.stderr)
+        print("push is not configured: set COACH_TELEGRAM_CHAT_ID", file=sys.stderr)
         return 2
     if today is None:
         zone = ZoneInfo(settings.timezone)
@@ -166,7 +166,7 @@ async def send_briefing_command(
         briefing = await compose_briefing(
             store or Store(settings.db_path), garmin or GarminReader(settings), today()
         )
-        outcome = await (push or NtfyPush(settings)).send(briefing.message)
+        outcome = await (push or TelegramPush(settings)).send(briefing.message)
     except Exception as exc:
         log.error("briefing status=crashed kind=%s", exception_kind(exc))
         return 1

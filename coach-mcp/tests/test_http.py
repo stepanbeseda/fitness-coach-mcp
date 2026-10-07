@@ -237,7 +237,7 @@ GARMIN_TOKEN = "garmin-backend-token-0123456789abcdef"
 
 
 def push_settings(settings: Settings, **overrides) -> Settings:
-    fields = {**settings.__dict__, "ntfy_url": "https://ntfy.example", "ntfy_topic": "t1"}
+    fields = {**settings.__dict__, "telegram_chat_id": "123456789"}
     fields.update(overrides)
     return Settings(**fields)
 
@@ -288,8 +288,8 @@ async def test_daily_briefing_over_http(settings, store):
         ("garmin_auth", False, False),
     ]
     assert briefing["garmin_today"] == ["Lehký běh 40 min"]
-    assert briefing["push"]["title"] == "ŽLUTÁ · ranní briefing 7. 10."
-    assert briefing["push"]["priority"] == 4 and briefing["push"]["tags"] == ["yellow_circle", "warning"]
+    assert list(briefing["push"]) == ["text"]
+    assert briefing["push"]["text"].split("\n")[0] == "\U0001f7e1 \u26a0\ufe0f ŽLUTÁ · ranní briefing 7. 10."
     assert garmin.days == [TODAY]
 
 
@@ -339,7 +339,7 @@ async def test_scheduler_on_sends_from_lifespan(settings, store, caplog):
     # a normal shutdown is a cancellation, not a "stopped" scheduler, and the callback raised nothing
     assert "briefing status=stopped" not in caplog.text and "Exception in callback" not in caplog.text
     assert garmin.days == [TODAY]
-    assert push.sent[0][1].title == "ZELENÁ · ranní briefing 7. 10."
+    assert push.sent[0][1].title == "\U0001f7e2 ZELENÁ · ranní briefing 7. 10."
     assert store.briefing_sent(TODAY)
 
 
@@ -416,15 +416,10 @@ async def test_push_and_tool_report_the_same_briefing(settings, store):
         await wait_for(lambda: len(push.sent) == 1 and store.briefing_sent(TODAY))
         tool = payload(await call_tool(client, "get_daily_briefing", {}))
     (_, sent), = push.sent
-    assert tool["push"] == {
-        "title": sent.title,
-        "message": sent.message,
-        "priority": sent.priority,
-        "tags": list(sent.tags),
-    }
+    assert tool["push"] == {"text": sent.text}
     assert tool["verdict"] == "yellow"
     assert [a["key"] for a in tool["alerts"] if a["new"]] == ["resting_hr_elevated", "acwr_out_of_range", "missed_workout"]
     for text in ("Klidová tepovka 58 bpm", "Poměr akutní a chronické zátěže 1,62", "Intervaly 6×800 m"):
-        assert text in sent.message
+        assert text in sent.text
     # the alert state the push wrote keeps the already announced alerts "new" for the day
     assert store.alert_states()["acwr_out_of_range"]["fired_on"] == "2026-10-07"

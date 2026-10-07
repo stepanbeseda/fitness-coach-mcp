@@ -165,8 +165,7 @@ services:
     image: fitness-coach-mcp/coach-mcp:0.1.0
     environment:
       HOME: /tmp
-      COACH_NTFY_URL: ${COACH_NTFY_URL:-}
-      COACH_NTFY_TOPIC: ${COACH_NTFY_TOPIC:-}
+      COACH_TELEGRAM_CHAT_ID: ${COACH_TELEGRAM_CHAT_ID:-}
       COACH_BRIEFING_TIME: ${COACH_BRIEFING_TIME:-}
       COACH_BRIEFING_CUTOFF: ${COACH_BRIEFING_CUTOFF:-}
       COACH_BRIEFING_RETRY_MINUTES: ${COACH_BRIEFING_RETRY_MINUTES:-}
@@ -177,7 +176,7 @@ services:
     secrets:
       - coach_backend_token
       - garmin_backend_token
-      - ntfy_token
+      - telegram_bot_token
     networks:
       - mcp
     mem_limit: 256m
@@ -214,5 +213,5 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/garmin_backend_token
   coach_backend_token:
     file: ${SECRETS_DIR:-./secrets}/coach_backend_token
-  ntfy_token:
-    file: ${SECRETS_DIR:-./secrets}/ntfy_token
+  telegram_bot_token:
+    file: ${SECRETS_DIR:-./secrets}/telegram_bot_token
