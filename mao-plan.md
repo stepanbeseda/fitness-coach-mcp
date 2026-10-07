@@ -76,7 +76,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 05 | History store, trends and weekly report | 03 | planned |
 | 06 | Weather and calendar | 03 | planned |
 | 07 | Strength workouts on the watch | — | planned |
-| 08 | Daily briefing via Telegram | 04 | **in progress** (branch mao/pr08-briefing-telegram) |
+| 08 | Daily briefing via Telegram | 04 | done |
 
 ## 4. PR briefs
 
@@ -609,6 +609,35 @@ receiving the briefing, and the weekly report (PR 05).
    `COACH_NTFY_*` lines from `.env`.
 
 **Requested:** 2026-10-06, by the owner, from the chat after PR 04 ("Send the daily briefing to Telegram instead of ntfy"); questions and answers round 1.
+
+**Delivered:** 2026-10-07, PR #9 (`mao/pr08-briefing-telegram`), merged into
+`main` as `c81bfb7`. `TelegramPush` replaces `NtfyPush` in
+`coach-mcp/src/coach_mcp/push.py`: it calls the Bot API `sendMessage`, re-reads
+the token on every send, reads no response body, and keeps the outcome mapping
+unchanged. New configuration `COACH_TELEGRAM_CHAT_ID` and
+`COACH_TELEGRAM_TOKEN_FILE` with start-up validation, and the Docker secret
+`telegram_bot_token`. `PushMessage` carries a title and a body, the title is
+the emoji verdict, a 4000-byte guard covers the whole text, and
+`get_daily_briefing` returns `push.text`. `scripts/setup-secrets.sh` gained
+`telegram-token`, `telegram-chat-id` and an empty placeholder (the token never
+appears on a command line; 16-case stub harness). Compose, the e2e test (push
+off), `scripts/healthcheck.sh` (section 5c), `README.md` (Telegram setup,
+privacy note, rollback note), `coach-mcp/README.md` and `.env.example` updated;
+ntfy removed everywhere except the README rollback note; the clause in section
+1 and the superseded note in section 5 updated; no new dependency and no
+schema change. Criteria 1–7 verified offline (`coach-mcp` test build: 309
+passed; `scripts/e2e-test.sh` green, 8 coach tools; `grep -rni ntfy` finds only
+the rollback note). Criterion 8 verified 2026-10-07 on the test host after the
+owner deployed `coach-mcp` (`coach-data` was backed up first): the manual
+`send-briefing` reached the owner's Telegram chat, first with the data-gap
+lines before the watch had synced, then with today's full values, confirmed by
+the owner; the `COACH_NTFY_*` lines and the empty `secrets/ntfy_token` were
+removed from the live host. Design decisions taken with the owner: replace
+ntfy entirely, send the full message, plain text with sound, and a live deploy
+with the clean-up inside the run. Non-blocking follow-ups: a Telegram HTTP 200
+with `ok:false` counts as sent; real 400, 403 and 429 replies are unverified;
+the scheduled path over Telegram first runs on 2026-10-08. Lessons recorded in
+`.claude/mao/lessons.md`.
 
 ## 5. Open items
 
