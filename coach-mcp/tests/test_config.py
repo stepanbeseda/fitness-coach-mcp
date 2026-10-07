@@ -237,14 +237,9 @@ def test_invalid_history_values_are_rejected(variable, value):
         Settings.from_env({variable: value})
 
 
-def test_history_time_inside_briefing_window_is_rejected():
-    for bad in ("06:30", "07:00", "09:29"):
-        with pytest.raises(ValueError, match="COACH_HISTORY_TIME must not fall inside the briefing window"):
-            Settings.from_env({"COACH_HISTORY_TIME": bad})
-    for good in ("09:30", "06:29"):
+def test_history_time_inside_briefing_window_is_accepted():
+    # The job pauses a run due inside the window and starts it at the cutoff, so nothing needs refusing.
+    for good in ("06:30", "07:00", "09:29", "09:30", "06:29"):
         assert Settings.from_env({"COACH_HISTORY_TIME": good}).history_time == dt.time.fromisoformat(good)
-    # The window follows the configured briefing times.
     env = {"COACH_BRIEFING_TIME": "05:00", "COACH_BRIEFING_CUTOFF": "06:00"}
-    assert Settings.from_env({**env, "COACH_HISTORY_TIME": "06:30"}).history_time == dt.time(6, 30)
-    with pytest.raises(ValueError, match="inside the briefing window"):
-        Settings.from_env({**env, "COACH_HISTORY_TIME": "05:00"})
+    assert Settings.from_env({**env, "COACH_HISTORY_TIME": "05:00"}).history_time == dt.time(5, 0)

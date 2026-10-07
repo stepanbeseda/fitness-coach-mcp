@@ -162,11 +162,6 @@ class Settings:
         if raw_history not in ("true", "false"):
             raise ValueError("COACH_HISTORY_ENABLED must be true or false")
         history_time = _clock_time("COACH_HISTORY_TIME", _opt(env, "COACH_HISTORY_TIME", "03:30"))
-        if briefing_time <= history_time < briefing_cutoff:
-            raise ValueError(
-                "COACH_HISTORY_TIME must not fall inside the briefing window "
-                "(COACH_BRIEFING_TIME to COACH_BRIEFING_CUTOFF)"
-            )
         backfill_days = _int_in(env, "COACH_HISTORY_BACKFILL_DAYS", "90", 1, 366)
         call_delay = _int_in(env, "COACH_HISTORY_CALL_DELAY_SECONDS", "15", 1, 600)
 
