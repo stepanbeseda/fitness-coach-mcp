@@ -230,7 +230,12 @@ def test_check_coach(tmp_path, db_path):
 
 
 def test_snapshot_memory_peak(tmp_path):
-    """Guard against extra copies of the database: peak RSS grows by < 2.5 x the database size."""
+    """Guard against extra copies of the database: peak RSS grows by < 3.5 x the database size.
+
+CPython's ``serialize()`` itself holds three copies for a moment (the ``:memory:`` pages, SQLite's
+buffer and the ``bytes`` object); measured 3.2 x. One more copy anywhere in the production path
+(``bytes(data)``, a ``data[:18] + ... + data[20:]`` header fix, a second ``deserialize``) goes above 4 x.
+"""
     script = textwrap.dedent(
         """
         import resource, sqlite3, sys
@@ -272,7 +277,7 @@ def test_snapshot_memory_peak(tmp_path):
     size, growth, written = (int(x) for x in result.stdout.split())
     assert size > 8 * 1024 * 1024
     assert written == size
-    assert growth < 2.5 * size, f"peak grew by {growth} bytes for a {size} byte database"
+    assert growth < 3.5 * size, f"peak grew by {growth} bytes for a {size} byte database"
 
 
 # ------------------------------------------------------------------ the command
