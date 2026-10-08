@@ -222,6 +222,8 @@ async def test_reconcile_step_stores_suggestions_for_the_last_seven_days(store, 
     strength = add_session(store, "2026-10-06", type_="strength")
     mobility = add_session(store, "2026-10-06", type_="mobility")
     future = add_session(store, "2026-10-07")
+    # Today's totals exist in the store (a stray row): the window still ends yesterday.
+    seed_activities(store, TODAY, {"running": sport(1, 30, 5)}, fetched_on=TODAY)
     payload = activities_payload(
         [
             activity("2026-09-29", "running", 40, 8),
