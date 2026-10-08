@@ -195,6 +195,11 @@ def exercise_history(client: httpx.Client, token: str) -> None:
     strength = data.get("strength") if isinstance(data, dict) else None
     check(ok and isinstance(strength, dict) and strength.get("available") is False,
           "coach get_weekly_report marks sections without data")
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_strength_progress", "arguments": {}},
+                  msg_id=11)
+    ok, data = tool_result(body)
+    check(ok and isinstance(data, dict) and data.get("available") is False and data.get("exercises") == [],
+          "coach get_strength_progress answers from the empty history")
 
 
 def main() -> int:

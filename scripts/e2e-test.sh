@@ -74,6 +74,7 @@ info "coach-mcp -> garmin-mcp (read-only token)..."
   || { "${compose[@]}" logs --tail 30 garmin-mcp coach-mcp; die "Kontroly read-only tokenu v coach-mcp selhaly (výpis výše)."; }
 
 status=0
+"${compose[@]}" exec -T coach-mcp python - < scripts/e2e_hevy_client.py || status=1
 "${compose[@]}" exec -T -e E2E_PASSWORD="$E2E_PASSWORD" gateway python - < scripts/e2e_flow.py || status=1
 COMPOSE_PROJECT_NAME="$PROJECT" COMPOSE_FILE="docker-compose.yml:compose.test.yml" scripts/e2e_backup.sh || status=1
 

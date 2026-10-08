@@ -186,6 +186,7 @@ services:
       - coach_backend_token
       - garmin_readonly_token
       - telegram_bot_token
+      - hevy_backend_token
     networks:
       - mcp
     mem_limit: 256m

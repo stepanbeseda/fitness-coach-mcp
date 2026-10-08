@@ -161,6 +161,11 @@ def main() -> int:
               f"sporty {', '.join(endurance.get('by_sport', {})) or '-'} | "
               + ", ".join(f"{key} {'ne' if data[key].get('available') is False else 'ano'}"
                           for key in ("sleep", "hrv", "resting_hr", "adherence", "strength")))
+        data = json.loads(coach.call("get_strength_progress", {}))
+        covered = data["coverage"] or {}
+        print(f"get_strength_progress: {data['start']} - {data['end']} | "
+              f"dostupné {'ano' if data['available'] else 'ne'} | cviků {len(data['exercises'])} | "
+              f"pokrytí {covered.get('from', '-')} - {covered.get('through', '-')}")
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")
