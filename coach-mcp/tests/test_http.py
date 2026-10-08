@@ -585,6 +585,19 @@ async def test_correlations_over_http(app, store):
         ):
             invalid = await call_tool(client, "get_correlations", bad, id_=n)
             assert invalid["isError"] is True, bad
+        lagged = await call_tool(
+            client,
+            "get_correlations",
+            {**arguments, "start_date": "2026-09-02", "lag_days": 1},
+            id_=9,
+        )
+        assert lagged["isError"] is False
+        out = payload(lagged)
+        assert (out["start"], out["end"], out["lag_days"]) == ("2026-09-02", "2026-09-30", 1)
+        assert out["pairs"] == [
+            {"a": "hrv_last_night_ms", "b": "resting_hr", "n_pairs": 12, "available": False,
+             "reason": "too_few_pairs"}
+        ]
         same = await call_tool(client, "get_correlations", {"metrics": ["readiness", "readiness"]}, id_=8)
         assert same["isError"] is True and "at least two different metrics" in same["content"][0]["text"]
 

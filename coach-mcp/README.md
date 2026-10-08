@@ -7,9 +7,9 @@ se k němu dostanou jen přes gateway (`/coach/mcp`), která posílá interní b
 (`/run/secrets/coach_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed). Sám volá
 jen `garmin-mcp` (čtyři čtecí nástroje, read-only token `garmin_readonly_token`), `hevy-mcp` (dva čtecí nástroje,
 interní token `hevy_backend_token`) a volitelně Telegram Bot API (ranní briefing). Každou noc si z Garminu ukládá
-denní historii a z Hevy silové tréninky pro trendy, týdenní přehled, korelace a progres síly a podle historie navrhne stav
-minulých plánovaných tréninků. Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená a nahrazené
-tréninky zůstanou jako `superseded`.
+denní historii a z Hevy silové tréninky pro trendy, týdenní přehled, korelace a progres síly a podle historie
+navrhne stav minulých plánovaných tréninků. Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená
+a nahrazené tréninky zůstanou jako `superseded`.
 
 ## Nástroje
 

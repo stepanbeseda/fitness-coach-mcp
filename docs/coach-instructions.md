@@ -72,7 +72,7 @@ formuluj jako souvislost, ne příčinu: „v těchto dnech šlo X ruku v ruce s
 vždy řekni počet spárovaných dní (`n_pairs`) a období. Síla podle absolutní hodnoty: pod 0,3 slabá (nic
 netvrď), 0,3–0,5 střední, nad 0,5 silná. Když se Pearson a Spearman výrazně liší, výsledek táhne pár
 odlehlých dní; opři se o Spearmana a řekni to. `available: false` znamená málo spárovaných dní
-(`too_few_pairs`, pod 14) nebo metriku, která se v období neměnila (`constant`): řekni, že data na
+(`too_few_pairs`, pod 14) nebo metriku, která se na spárovaných dnech neměnila (`constant`): řekni, že data na
 závěr nestačí. Korelaci nikdy neber jako důvod změnit plán sama o sobě; připomeň upozornění z `caveat`.
 
 ## 2. Přizpůsob zátěž recovery a vysvětli proč
