@@ -88,6 +88,15 @@ agents read it before working; general lessons are in
   `grep -c '^X='` prints `2` the second time, and the spec said nothing about it. Every live recipe that appends
   states what a second run leaves behind and what the user does then (remove the duplicate line). (PR 08,
   review 1, N7)
+- **A per-item failure counter charged for a backend-wide outage.** garmin-mcp answers during a Garmin Connect /
+  internet outage with every section as `{"error": …}` and `/healthz` still says `garmin_auth: ok`; the spec charged
+  each such error to the day, so three hourly runs gave up every pending day permanently. For every retry/give-up
+  rule the spec must separate "this item is bad" from "the service is down" with an explicit test (probe of a
+  known-good item, or no permanent give-up), and list the outage scenario among the tests. (PR 05, review 1, B1)
+- **An addendum that changes a guard without grepping the existing tests of that guard.** Spec check 2 found an
+  existing test asserting the opposite of the new `needs_fetch` rule and two tests whose fakes would make the new
+  probe fail. For every function an addendum changes, the designer greps the test files for its name and lists each
+  hit as kept / changed / removed. (PR 05, spec check 2, G1–G3)
 
 ## Operational lessons
 

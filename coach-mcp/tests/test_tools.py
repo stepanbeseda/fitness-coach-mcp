@@ -300,6 +300,20 @@ def test_get_plan_completion_rate_is_null_without_done_or_skipped(store):
     assert result["adherence"]["planned"] == 1 and result["adherence"]["overdue_planned"] == 0
 
 
+def test_adherence_overdue_means_planned_before_today(store):
+    seed(store, "2026-10-06", status="planned")  # yesterday: overdue
+    seed(store, "2026-10-07", status="planned")  # today: still to do
+    seed(store, "2026-10-05", status="done")
+    rows = store.sessions_between(date(2026, 10, 5), date(2026, 10, 8))
+    assert tools.adherence(rows, TODAY) == {
+        "planned": 2, "done": 1, "skipped": 0, "moved": 0, "overdue_planned": 1, "completion_rate": 1.0,
+    }
+    assert tools.adherence(rows, date(2026, 10, 8))["overdue_planned"] == 2
+    assert tools.adherence([], TODAY) == {
+        "planned": 0, "done": 0, "skipped": 0, "moved": 0, "overdue_planned": 0, "completion_rate": None,
+    }
+
+
 def test_get_plan_defaults_to_this_iso_week(store):
     seed(store, "2026-10-12")
     result = tools.get_plan(store, TODAY)

@@ -177,6 +177,18 @@ def _session_out(store: Store, row: dict[str, Any]) -> dict[str, Any]:
 # -------------------------------------------------------------------- tools
 
 
+def adherence(rows: list[dict[str, Any]], today: dt.date) -> dict[str, Any]:
+    """Counts per status, overdue planned sessions and the completion rate of ``rows``."""
+    # Counts are per status, so superseded rows (listed only on request) never enter them.
+    count = {s: sum(1 for r in rows if r["status"] == s) for s in ("planned", "done", "skipped", "moved")}
+    finished = count["done"] + count["skipped"]
+    return {
+        **count,
+        "overdue_planned": sum(1 for r in rows if r["status"] == "planned" and r["date"] < today.isoformat()),
+        "completion_rate": round(count["done"] / finished, 2) if finished else None,
+    }
+
+
 def get_coach_context(store: Store, today: dt.date) -> dict[str, Any]:
     start, end, _ = week_of(today)
     return {
@@ -205,19 +217,11 @@ def get_plan(
         raise ToolError(f"date range too long (max {MAX_RANGE_DAYS} days)")
 
     rows = store.sessions_between(start, end, include_superseded=include_superseded)
-    # Counts are per status, so superseded rows (listed only on request) never enter them.
-    count = {s: sum(1 for r in rows if r["status"] == s) for s in ("planned", "done", "skipped", "moved")}
-    finished = count["done"] + count["skipped"]
-    adherence = {
-        **count,
-        "overdue_planned": sum(1 for r in rows if r["status"] == "planned" and r["date"] < today.isoformat()),
-        "completion_rate": round(count["done"] / finished, 2) if finished else None,
-    }
     return {
         "start": start.isoformat(),
         "end": end.isoformat(),
         "sessions": sessions_out(store, rows),
-        "adherence": adherence,
+        "adherence": adherence(rows, today),
     }
 
 

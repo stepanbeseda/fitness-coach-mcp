@@ -5,7 +5,7 @@ import pytest
 
 from coach_mcp import store as store_module
 from coach_mcp.briefing import ALERT_KEYS
-from coach_mcp.store import MIGRATIONS, SCHEMA_VERSION, SchemaTooNewError, Store
+from coach_mcp.store import HISTORY_COLUMNS, MIGRATIONS, SCHEMA_VERSION, SchemaTooNewError, Store
 
 
 def _tables(path) -> set[str]:
@@ -27,8 +27,16 @@ def _user_version(path) -> int:
 def test_empty_file_gets_schema_and_version(db_path):
     assert not db_path.exists()
     s = Store(db_path)
-    assert {"goals", "athlete_constraints", "sessions", "notes", "briefing_runs", "alert_state"} <= _tables(db_path)
-    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == 2
+    assert {
+        "goals",
+        "athlete_constraints",
+        "sessions",
+        "notes",
+        "briefing_runs",
+        "alert_state",
+        "history_days",
+    } <= _tables(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == 3
     assert s.check() == SCHEMA_VERSION
 
 
@@ -150,7 +158,7 @@ def test_migration_2_upgrades_a_version_1_file_with_data(db_path, monkeypatch):
         assert _user_version(db_path) == 1
         assert "briefing_runs" not in _tables(db_path)
     new = Store(db_path)
-    assert _user_version(db_path) == 2
+    assert _user_version(db_path) == SCHEMA_VERSION
     goal = new.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Keep me"
     session = new.get_session(session_id)
@@ -196,9 +204,12 @@ DOWNGRADE_SQL = "BEGIN IMMEDIATE; DROP TABLE alert_state; DROP TABLE briefing_ru
 
 
 def test_downgrade_sql_returns_to_a_version_1_file(db_path, monkeypatch):
-    new = Store(db_path)
-    goal_id = new.insert_goal({"title": "Keep me"})
-    new.record_briefing_sent(date(2026, 10, 7), "green", {"garmin_auth": (False, False)})
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:2])
+        new = Store(db_path)
+        goal_id = new.insert_goal({"title": "Keep me"})
+        new.record_briefing_sent(date(2026, 10, 7), "green", {"garmin_auth": (False, False)})
+        assert _user_version(db_path) == 2
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(DOWNGRADE_SQL)
@@ -210,3 +221,165 @@ def test_downgrade_sql_returns_to_a_version_1_file(db_path, monkeypatch):
     old = Store(db_path)
     goal = old.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Keep me"
+
+
+def test_migration_3_upgrades_a_version_2_file_with_data(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:2])
+        old = Store(db_path)
+        goal_id = old.insert_goal({"title": "Keep me"})
+        (session_id,) = old.replace_planned(
+            date(2026, 10, 5),
+            date(2026, 10, 11),
+            date(2026, 10, 5),
+            [{"date": date(2026, 10, 7), "type": "running", "description": "Easy run"}],
+        )[1]
+        note_id = old.insert_note(date(2026, 10, 7), "A note", session_id)
+        old.record_briefing_sent(date(2026, 10, 7), "yellow", {"hrv_below_baseline": (True, True)})
+        assert _user_version(db_path) == 2
+        assert "history_days" not in _tables(db_path)
+    new = Store(db_path)
+    assert _user_version(db_path) == 3 == SCHEMA_VERSION
+    goal = new.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    session = new.get_session(session_id)
+    assert session is not None and session["description"] == "Easy run"
+    note = new.get_note(note_id)
+    assert note is not None and note["text"] == "A note"
+    assert new.briefing_sent(date(2026, 10, 7)) is True
+    assert new.alert_states()["hrv_below_baseline"]["value"] == 1
+    assert "history_days" in _tables(db_path)
+    assert new.history_rows(None, date(2030, 1, 1)) == []
+
+
+def test_migration_3_upgrades_a_version_1_file_with_data(db_path, monkeypatch):
+    """A file written by the PR 03 schema (no briefing tables yet) goes through migrations 2 and 3."""
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:1])
+        old = Store(db_path)
+        goal_id = old.insert_goal({"title": "Keep me"})
+        (session_id,) = old.replace_planned(
+            date(2026, 10, 5),
+            date(2026, 10, 11),
+            date(2026, 10, 5),
+            [{"date": date(2026, 10, 7), "type": "running", "description": "Easy run"}],
+        )[1]
+        note_id = old.insert_note(date(2026, 10, 7), "A note", session_id)
+        assert _user_version(db_path) == 1
+        assert not {"briefing_runs", "alert_state", "history_days"} & _tables(db_path)
+    new = Store(db_path)
+    assert _user_version(db_path) == 3 == SCHEMA_VERSION
+    assert {"briefing_runs", "alert_state", "history_days"} <= _tables(db_path)
+    goal = new.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    session = new.get_session(session_id)
+    assert session is not None and session["description"] == "Easy run"
+    note = new.get_note(note_id)
+    assert note is not None and note["text"] == "A note"
+    assert new.alert_states() == {}
+    assert new.history_rows(None, date(2030, 1, 1)) == []
+
+
+# Keep in sync with the 3 -> 2 downgrade command in coach-mcp/README.md.
+DOWNGRADE_3_SQL = "BEGIN IMMEDIATE; DROP TABLE history_days; PRAGMA user_version = 2; COMMIT;"
+
+
+def test_downgrade_3_sql_returns_to_a_version_2_file(db_path, monkeypatch):
+    new = Store(db_path)
+    goal_id = new.insert_goal({"title": "Keep me"})
+    new.upsert_history_recovery(date(2026, 10, 6), {"readiness": 70}, date(2026, 10, 7))
+    assert len(new.history_rows(None, date(2026, 10, 7))) == 1
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_3_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == 2
+    assert "history_days" not in _tables(db_path)
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:2])
+    old = Store(db_path)
+    goal = old.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+
+
+D1, D2, D3 = date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7)
+
+
+def test_history_upsert_overwrites_only_given_columns(store):
+    store.upsert_history_recovery(D1, {"readiness": 70, "hrv_last_night_ms": 55.5, "hrv_status": "BALANCED"}, D2)
+    store.upsert_history_activities({D1: '{"running":{"count":1}}'}, D2)
+    (row,) = store.history_rows(None, D3)
+    assert row["date"] == "2026-10-05"
+    assert (row["readiness"], row["hrv_last_night_ms"], row["hrv_status"]) == (70, 55.5, "BALANCED")
+    assert row["recovery_fetched_on"] == "2026-10-06" and row["activities_fetched_on"] == "2026-10-06"
+    assert row["activities"] == '{"running":{"count":1}}'
+    assert row["sleep_score"] is None
+
+    # A later fetch that carries one column and an explicit None: the other columns keep their value.
+    store.upsert_history_recovery(D1, {"hrv_last_night_ms": None, "sleep_score": 80}, D3)
+    (row,) = store.history_rows(None, D3)
+    assert row["hrv_last_night_ms"] is None  # an explicit None overwrites
+    assert row["sleep_score"] == 80
+    assert (row["readiness"], row["hrv_status"]) == (70, "BALANCED")  # untouched
+    assert row["recovery_fetched_on"] == "2026-10-07"
+    # The activity part was not touched by a recovery upsert.
+    assert row["activities"] == '{"running":{"count":1}}' and row["activities_fetched_on"] == "2026-10-06"
+
+    # And an activities upsert leaves the recovery columns alone.
+    store.upsert_history_activities({D1: "{}"}, D3)
+    (row,) = store.history_rows(None, D3)
+    assert row["activities"] == "{}" and row["activities_fetched_on"] == "2026-10-07"
+    assert row["readiness"] == 70 and row["recovery_fetched_on"] == "2026-10-07"
+
+
+def test_history_failures_count_and_reset_on_success(store):
+    store.record_history_failure([D1, D2], "recovery")
+    store.record_history_failure([D1], "recovery")
+    store.record_history_failure([D1], "activities")
+    rows = {r["date"]: r for r in store.history_rows(None, D3)}
+    assert (rows["2026-10-05"]["recovery_failures"], rows["2026-10-05"]["activities_failures"]) == (2, 1)
+    assert (rows["2026-10-06"]["recovery_failures"], rows["2026-10-06"]["activities_failures"]) == (1, 0)
+    assert rows["2026-10-05"]["recovery_fetched_on"] is None  # a failure is not a fetch
+
+    store.upsert_history_recovery(D1, {"readiness": 60}, D3)
+    row = store.history_rows(D1, D1)[0]
+    assert row["recovery_failures"] == 0 and row["activities_failures"] == 1  # only the fetched part resets
+    store.upsert_history_activities({D1: "{}"}, D3)
+    assert store.history_rows(D1, D1)[0]["activities_failures"] == 0
+    assert store.history_rows(D2, D2)[0]["recovery_failures"] == 1
+
+
+def test_history_unknown_column_or_part_is_rejected(store):
+    with pytest.raises(ValueError, match="unknown column"):
+        store.upsert_history_recovery(D1, {"readiness": 1, "evil = 1; --": 2}, D2)
+    with pytest.raises(ValueError, match="unknown column"):
+        store.upsert_history_recovery(D1, {"activities": "{}"}, D2)  # not a recovery column
+    with pytest.raises(ValueError, match="history part"):
+        store.record_history_failure([D1], "recovery_failures = 0; --")
+    assert store.history_rows(None, D3) == []
+
+
+def test_history_rows_range_and_order(store):
+    for day in (D3, D1, D2):
+        store.upsert_history_recovery(day, {"readiness": day.day}, D3)
+    assert [r["date"] for r in store.history_rows(None, D3)] == ["2026-10-05", "2026-10-06", "2026-10-07"]
+    assert [r["date"] for r in store.history_rows(D2, D3)] == ["2026-10-06", "2026-10-07"]
+    assert [r["date"] for r in store.history_rows(D1, D2)] == ["2026-10-05", "2026-10-06"]
+    assert [r["date"] for r in store.history_rows(None, D1)] == ["2026-10-05"]
+    assert store.history_rows(date(2026, 10, 8), date(2026, 10, 9)) == []
+    assert set(HISTORY_COLUMNS) <= set(store.history_rows(None, D1)[0])
+
+
+def test_history_status_check_in_schema(store, db_path):
+    conn = sqlite3.connect(db_path)
+    try:
+        for sql in (
+            f"INSERT INTO history_days (date, hrv_status, updated_at) VALUES ('2026-10-05', '{'x' * 41}', 'a')",
+            "INSERT INTO history_days (date, recovery_failures, updated_at) VALUES ('2026-10-05', -1, 'a')",
+            "INSERT INTO history_days (date, activities_failures, updated_at) VALUES ('2026-10-05', -1, 'a')",
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(sql)
+        conn.execute(f"INSERT INTO history_days (date, hrv_status, updated_at) VALUES ('2026-10-05', '{'x' * 40}', 'a')")
+    finally:
+        conn.close()

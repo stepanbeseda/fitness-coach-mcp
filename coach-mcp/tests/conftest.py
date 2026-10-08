@@ -39,7 +39,8 @@ def bearer_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def settings(db_path: Path, bearer_file: Path) -> Settings:
-    return Settings(db_path=db_path, bearer_token_file=bearer_file, timezone="Europe/Prague")
+    # The shared app must not start the nightly history job (tests that need it build their own settings).
+    return Settings(db_path=db_path, bearer_token_file=bearer_file, timezone="Europe/Prague", history_enabled=False)
 
 
 @pytest.fixture

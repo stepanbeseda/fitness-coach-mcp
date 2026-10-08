@@ -19,7 +19,17 @@ from coach_mcp.auth import BearerAuthMiddleware
 from coach_mcp.garmin import GarminData
 from coach_mcp.push import PushMessage
 
-from garmin_payloads import GREEN_SCHEDULED, GREEN_SNAPSHOT, GREEN_TREND
+from garmin_payloads import (
+    GREEN_SCHEDULED,
+    GREEN_SNAPSHOT,
+    GREEN_TREND,
+    activities_payload,
+    history_snapshot,
+)
+
+
+class RawText(str):
+    """A fake garmin-mcp answer sent as is (not JSON encoded), for the non-JSON case."""
 
 
 class StopLoop(BaseException):
@@ -64,6 +74,59 @@ class FakeGarmin:
         return result
 
 
+HistoryOutcome = tuple[str, dict[str, Any] | None]
+
+
+class FakeHistorySource:
+    """A ``HistorySource``: ``recovery(day, index)`` and ``activities(start, end, index)`` return ``(outcome, payload)``.
+
+    ``index`` counts every history call so far (0 for the first). Defaults: a full snapshot of the day and an
+    empty activity list. ``calls`` records ``(name, args)``, ``times`` the clock reading of each call.
+    """
+
+    def __init__(
+        self,
+        *,
+        auth: str | None = "ok",
+        recovery: Callable[[date, int], HistoryOutcome] | None = None,
+        activities: Callable[[date, date, int], HistoryOutcome] | None = None,
+        clock: FakeClock | None = None,
+    ) -> None:
+        self.auth = auth
+        self._recovery = recovery or (lambda day, index: ("ok", history_snapshot(day.isoformat())))
+        self._activities = activities or (lambda start, end, index: ("ok", activities_payload([])))
+        self.clock = clock
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.times: list[datetime | None] = []
+        self.auth_checks = 0
+
+    async def auth_state(self) -> str | None:
+        self.auth_checks += 1
+        return self.auth
+
+    async def history_call(self, name: str, args: dict[str, Any]) -> HistoryOutcome:
+        if name not in ("get_recovery_snapshot", "list_activities"):
+            raise ValueError(f"tool {name!r} is not allowed")
+        index = len(self.calls)
+        self.calls.append((name, dict(args)))
+        self.times.append(self.clock.now() if self.clock else None)
+        if name == "get_recovery_snapshot":
+            return self._recovery(date.fromisoformat(args["date"]), index)
+        return self._activities(date.fromisoformat(args["start_date"]), date.fromisoformat(args["end_date"]), index)
+
+    @property
+    def snapshot_days(self) -> list[date]:
+        return [date.fromisoformat(a["date"]) for n, a in self.calls if n == "get_recovery_snapshot"]
+
+    @property
+    def activity_ranges(self) -> list[tuple[date, date]]:
+        return [
+            (date.fromisoformat(a["start_date"]), date.fromisoformat(a["end_date"]))
+            for n, a in self.calls
+            if n == "list_activities"
+        ]
+
+
 class FakePush:
     def __init__(self, outcomes: list[str] | None = None, clock: FakeClock | None = None) -> None:
         self._outcomes = list(outcomes or ["sent"])
@@ -89,6 +152,8 @@ def fake_garmin_app(
     auth: str = "ok",
     errors: dict[str, str] | None = None,
     hang: frozenset[str] = frozenset(),
+    snapshot: Any = GREEN_SNAPSHOT,
+    activities: Any = None,
 ) -> tuple[BearerAuthMiddleware, list[tuple[str, dict[str, Any]]]]:
     """A garmin-mcp look-alike (Streamable HTTP + /healthz behind the bearer check) and its call log."""
     errors = errors or {}
@@ -103,10 +168,10 @@ def fake_garmin_app(
             raise ToolError("hang ended without cancellation")
         if name in errors:
             raise ToolError(errors[name])
-        return json.dumps(payload)
+        return payload if isinstance(payload, RawText) else json.dumps(payload)
 
     async def get_recovery_snapshot(date: str | None = None) -> str:
-        return await respond("get_recovery_snapshot", {"date": date}, GREEN_SNAPSHOT)
+        return await respond("get_recovery_snapshot", {"date": date}, snapshot)
 
     async def get_hrv_trend(days: int = 7, end_date: str | None = None) -> str:
         return await respond("get_hrv_trend", {"days": days, "end_date": end_date}, GREEN_TREND)
@@ -116,10 +181,27 @@ def fake_garmin_app(
             "list_scheduled_workouts", {"start_date": start_date, "end_date": end_date}, GREEN_SCHEDULED
         )
 
+    async def list_activities(
+        days: int | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        activity_type: str | None = None,
+        limit: int | None = None,
+    ) -> str:
+        # All defaults are None: the call log then holds exactly the arguments the client sent.
+        arguments = {
+            "days": days,
+            "start_date": start_date,
+            "end_date": end_date,
+            "activity_type": activity_type,
+            "limit": limit,
+        }
+        return await respond("list_activities", arguments, activities or activities_payload([]))
+
     async def create_workout() -> str:
         return await respond("create_workout", {}, {"created": True})
 
-    for fn in (get_recovery_snapshot, get_hrv_trend, list_scheduled_workouts, create_workout):
+    for fn in (get_recovery_snapshot, get_hrv_trend, list_scheduled_workouts, list_activities, create_workout):
         server.add_tool(fn, name=fn.__name__, description=fn.__name__, structured_output=False)
 
     @server.custom_route("/healthz", methods=["GET"])
