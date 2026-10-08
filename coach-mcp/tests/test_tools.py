@@ -61,6 +61,7 @@ def test_context_has_four_sections_on_empty_store(store):
         assert ctx[key] == []
     assert ctx["today"] == "2026-10-07"
     assert ctx["week"] == {"start": "2026-10-05", "end": "2026-10-11", "iso_week": "2026-W41"}
+    assert ctx["to_confirm"] == []
 
 
 def test_context_lists_active_goals_with_days_remaining(store):
@@ -104,6 +105,90 @@ def test_context_returns_latest_ten_notes_newest_first(store):
     assert ids[0] not in [n["id"] for n in notes] and ids[1] not in [n["id"] for n in notes]
     dates = [n["date"] for n in notes]
     assert dates == sorted(dates, reverse=True)
+
+
+# ------------------------------------------------------------- suggestions
+
+EVIDENCE = '{"count":1,"distance_km":9.5,"duration_min":45.0,"source":"garmin","sport":"running"}'
+
+
+def suggest_row(store, sid, result="matched", final=False, evidence=EVIDENCE, day=TODAY):
+    if result == "no_activity":
+        evidence = None
+    store.upsert_suggestions([(sid, result, final, evidence)], day)
+
+
+def test_get_plan_shows_the_suggestion_of_planned_sessions(store):
+    mon = seed(store, "2026-10-05")
+    tue = seed(store, "2026-10-06")
+    wed = seed(store, "2026-10-07")
+    suggest_row(store, mon)
+    suggest_row(store, tue, "no_activity", True)
+    before = tools.get_plan(store, TODAY)["adherence"]
+    sessions = {s["id"]: s for s in tools.get_plan(store, TODAY)["sessions"]}
+    assert sessions[mon]["suggestion"] == {
+        "result": "matched",
+        "final": False,
+        "evidence": {"count": 1, "distance_km": 9.5, "duration_min": 45.0, "source": "garmin", "sport": "running"},
+        "evaluated_on": "2026-10-07",
+    }
+    assert sessions[tue]["suggestion"] == {"result": "no_activity", "final": True, "evaluated_on": "2026-10-07"}
+    assert "suggestion" not in sessions[wed]
+    assert list(sessions[mon])[-1] == "suggestion"
+    assert before == {
+        "planned": 3,
+        "done": 0,
+        "skipped": 0,
+        "moved": 0,
+        "overdue_planned": 2,
+        "completion_rate": None,
+    }
+
+
+@pytest.mark.parametrize("mark", ["done", "skipped", "moved"])
+def test_marked_session_keeps_its_status_and_drops_the_suggestion(store, mark):
+    sid = seed(store, "2026-10-06")
+    suggest_row(store, sid)
+    assert "suggestion" in tools.get_plan(store, TODAY)["sessions"][0]
+    kwargs = {"new_date": "2026-10-08"} if mark == "moved" else {}
+    result = tools.update_session(store, TODAY, session_id=sid, status=mark, **kwargs)
+    assert result["session"]["status"] == mark and "suggestion" not in result["session"]
+    if mark == "moved":
+        assert "suggestion" not in result["moved_copy"]  # the planned copy has no row
+    plan = {s["id"]: s for s in tools.get_plan(store, TODAY)["sessions"]}
+    assert plan[sid]["status"] == mark and "suggestion" not in plan[sid]
+    if mark == "moved":
+        assert all("suggestion" not in s for s in plan.values())
+    assert sid in store.suggestions_for([sid])  # the row stays in the table
+    if mark != "moved":
+        back = tools.update_session(store, TODAY, session_id=sid, status="planned")
+        assert back["session"]["suggestion"]["result"] == "matched"
+
+
+def test_context_sessions_carry_the_suggestion_and_to_confirm(store):
+    outside = seed(store, "2026-09-29")
+    old = seed(store, "2026-09-30")
+    tue = seed(store, "2026-10-06")
+    tue_done = seed(store, "2026-10-06", status="done")
+    today_session = seed(store, "2026-10-07")
+    no_row = seed(store, "2026-10-05")
+    for sid in (outside, old, tue, tue_done, today_session):
+        suggest_row(store, sid)
+    ctx = tools.get_coach_context(store, TODAY)
+    sessions = {s["id"]: s for s in ctx["sessions"]}
+    assert set(sessions) == {no_row, tue, tue_done, today_session}
+    assert "suggestion" in sessions[tue] and "suggestion" in sessions[today_session]
+    assert "suggestion" not in sessions[no_row] and "suggestion" not in sessions[tue_done]
+    assert [s["id"] for s in ctx["to_confirm"]] == [old, tue]
+    assert all(s["suggestion"]["result"] == "matched" for s in ctx["to_confirm"])
+
+
+def test_context_to_confirm_covers_last_week_on_monday(store):
+    sat = seed(store, "2026-10-10")
+    suggest_row(store, sat, "no_activity", True, day=date(2026, 10, 11))
+    ctx = tools.get_coach_context(store, date(2026, 10, 12))
+    assert ctx["sessions"] == []
+    assert [s["id"] for s in ctx["to_confirm"]] == [sat]
 
 
 # ---------------------------------------------------------------- save_plan
