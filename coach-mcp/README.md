@@ -126,8 +126,11 @@ skončila). Silová data z Hevy se zatím neukládají.
   stres, zátěž, VO2max) a součty aktivit po sportech; kdy a s kolika chybami se den naposledy načetl.
 
 Verze schématu je v `PRAGMA user_version`, migrace jsou jen dopředné (seřazený seznam SQL skriptů, každý
-v jedné transakci). Starší image odmítne otevřít novější databázi, aby ji nepoškodil. Zálohy a obnova:
-hlavní `README.md` (sekce Zálohy); volume `coach-data` je jediná kopie těchto dat.
+v jedné transakci). Starší image odmítne otevřít novější databázi, aby ji nepoškodil. Zálohy za běhu
+(`python -m coach_mcp backup`, volá ho `scripts/backup.sh`) a obnova (`python -m coach_mcp restore`): hlavní
+`README.md` (sekce Zálohy); volume `coach-data` je jediná kopie těchto dat.
+
+Před přechodem na starší verzi spusť `scripts/backup.sh`.
 
 **Návrat na verzi bez historie** (schéma 3 → 2). Starší image databázi se schématem 3 odmítne
 (`database schema version 3 is newer`). Před nasazením starší verze proto smaž jen tabulku historie; cíle,
