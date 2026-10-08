@@ -5,7 +5,7 @@ vybavení), tréninkový plán po dnech se stavem a deník poznámek. Data jsou 
 `coach-data`. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp` v privátní Docker síti; MCP klienti
 se k němu dostanou jen přes gateway (`/coach/mcp`), která posílá interní bearer token
 (`/run/secrets/coach_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed). Sám volá
-jen `garmin-mcp` (čtyři čtecí nástroje, interní token `garmin_backend_token`) a volitelně Telegram Bot API
+jen `garmin-mcp` (čtyři čtecí nástroje, read-only token `garmin_readonly_token`) a volitelně Telegram Bot API
 (ranní briefing). Každou noc si z Garminu ukládá denní historii pro trendy a týdenní přehled.
 Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená a nahrazené tréninky zůstanou
 jako `superseded`.
@@ -103,8 +103,9 @@ pokračuje. Každou další noc je to asi 16 volání.
   jakmile projde první den (nejpozději s dalším dnem).
 
 Z `garmin-mcp` může server volat jen čtyři čtecí nástroje (`get_recovery_snapshot`, `get_hrv_trend`,
-`list_scheduled_workouts`, `list_activities`); jeho zapisovací nástroje jsou pro kouče nedostupné. Log má jeden
-řádek na běh: `history status=… fetched=… failed=… pending=… given_up=… ms=…` (bez dat a hodnot). Při
+`list_scheduled_workouts`, `list_activities`). Jeho zapisovací nástroje kód kouče nevolá a `garmin-mcp` je
+s read-only tokenem kouče odmítne dřív, než se spustí. Log má jeden řádek na běh:
+`history status=… fetched=… failed=… pending=… given_up=… ms=…` (bez dat a hodnot). Při
 `COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek `history status=config_warning`.
 `/healthz` hlásí pole `history`: `on`, `off` (`COACH_HISTORY_ENABLED=false`) nebo `stopped` (úloha nečekaně
 skončila). Silová data z Hevy se zatím neukládají.
@@ -174,7 +175,7 @@ a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open databa
 | `COACH_TELEGRAM_CHAT_ID` | *(prázdné)* | chat id tvého chatu s botem (celé číslo, skupina záporné); zapíná ranní briefing; nikdy se neloguje |
 | `COACH_TELEGRAM_TOKEN_FILE` | `/run/secrets/telegram_bot_token` | token bota od @BotFather; s nastaveným chat id musí mít tvar tokenu, jinak se služba nespustí |
 | `COACH_GARMIN_MCP_URL` | `http://garmin-mcp:8000/mcp` | adresa `garmin-mcp` (končí `/mcp`) |
-| `COACH_GARMIN_TOKEN_FILE` | `/run/secrets/garmin_backend_token` | interní token pro `garmin-mcp` (min. 16 znaků) |
+| `COACH_GARMIN_TOKEN_FILE` | `/run/secrets/garmin_readonly_token` | read-only token pro `garmin-mcp` (min. 16 znaků); zapisovací nástroje s ním `garmin-mcp` odmítne |
 | `COACH_BRIEFING_TIME` | `06:30` | kdy plánovač začne (`HH:MM`, časové pásmo `TZ`) |
 | `COACH_BRIEFING_CUTOFF` | `09:30` | nejpozdější čas odeslání, i s chybějícími daty (pozdější než čas začátku) |
 | `COACH_BRIEFING_RETRY_MINUTES` | `15` | pauza mezi pokusy, když chybí spánek nebo HRV (1 až 180) |
