@@ -30,6 +30,8 @@ def test_from_env_defaults():
     assert s.history_time == dt.time(3, 30)
     assert s.history_backfill_days == 90
     assert s.history_call_delay_seconds == 15
+    assert s.home_latitude is None
+    assert s.home_longitude is None
     assert s.push_enabled is False
     assert s == Settings()
 
@@ -95,7 +97,8 @@ def test_configure_logging_keeps_sdk_quiet(restore_logging):
         logging.getLogger(name).setLevel(logging.NOTSET)
     configure_logging("DEBUG")
     assert logging.getLogger("mcp").level >= logging.WARNING
-    # httpx2 logs every request URL at INFO and the Telegram bot token is part of that URL. The logger's own
+    # httpx2 logs every request URL at INFO; the Telegram bot token and the weather request's coordinates are part
+    # of that URL. The logger's own
     # level is asserted: the effective level would be WARNING anyway while the root stays at WARNING under pytest.
     for name in ("httpx2", "httpcore2"):
         assert logging.getLogger(name).level >= logging.WARNING, name
@@ -148,12 +151,57 @@ def test_blank_briefing_values_fall_back_to_defaults():
         "COACH_HISTORY_CALL_DELAY_SECONDS",
         "COACH_HEVY_MCP_URL",
         "COACH_HEVY_TOKEN_FILE",
+        "COACH_HOME_LATITUDE",
+        "COACH_HOME_LONGITUDE",
     )
     defaults = Settings()
     assert defaults.hevy_url == "http://hevy-mcp:3000/mcp"
     assert defaults.hevy_token_file == Path("/run/secrets/hevy_backend_token")
     assert Settings.from_env(dict.fromkeys(names, "")) == defaults
     assert Settings.from_env(dict.fromkeys(names, "  ")) == defaults
+
+
+def test_home_location_is_rounded():
+    def home(lat, lon):
+        s = Settings.from_env({"COACH_HOME_LATITUDE": lat, "COACH_HOME_LONGITUDE": lon})
+        return s.home_latitude, s.home_longitude
+
+    assert home("50.0873", "14.4209") == (50.09, 14.42)
+    assert home("-33.8688", "151.2093") == (-33.87, 151.21)
+    assert home(" 51.48 ", "-0.001") == (51.48, 0.0)
+    lon = home("0", "-0.001")[1]
+    assert str(lon) == "0.0"  # never -0.0
+
+
+_SET_TOGETHER = "COACH_HOME_LATITUDE and COACH_HOME_LONGITUDE must be set together"
+_NUMBER = r"COACH_HOME_(LATITUDE|LONGITUDE) must be a number in decimal degrees, e\.g\. 51\.48"
+
+
+@pytest.mark.parametrize(
+    ("env", "match", "secret"),
+    [
+        ({"COACH_HOME_LATITUDE": "50.08"}, _SET_TOGETHER, "50.08"),
+        ({"COACH_HOME_LONGITUDE": "14.42"}, _SET_TOGETHER, "14.42"),
+        ({"COACH_HOME_LATITUDE": "abc", "COACH_HOME_LONGITUDE": "14.42"}, _NUMBER, "abc"),
+        ({"COACH_HOME_LATITUDE": "nan", "COACH_HOME_LONGITUDE": "14.42"}, _NUMBER, "nan"),
+        ({"COACH_HOME_LATITUDE": "50.08", "COACH_HOME_LONGITUDE": "inf"}, _NUMBER, "inf"),
+        ({"COACH_HOME_LATITUDE": "50,08", "COACH_HOME_LONGITUDE": "14.42"}, _NUMBER, "50,08"),
+        ({"COACH_HOME_LATITUDE": "91", "COACH_HOME_LONGITUDE": "14.42"}, "COACH_HOME_LATITUDE must be between -90 and 90", "91"),
+        ({"COACH_HOME_LATITUDE": "-90.5", "COACH_HOME_LONGITUDE": "14.42"}, "COACH_HOME_LATITUDE must be between -90 and 90", "90.5"),
+        ({"COACH_HOME_LATITUDE": "50.08", "COACH_HOME_LONGITUDE": "181"}, "COACH_HOME_LONGITUDE must be between -180 and 180", "181"),
+    ],
+)
+def test_home_location_rejects_invalid_values(env, match, secret):
+    with pytest.raises(ValueError, match=match) as exc:
+        Settings.from_env(env)
+    assert secret not in str(exc.value)
+
+
+def test_home_location_not_in_repr():
+    s = Settings.from_env({"COACH_HOME_LATITUDE": "50.0873", "COACH_HOME_LONGITUDE": "14.4209"})
+    assert (s.home_latitude, s.home_longitude) == (50.09, 14.42)
+    assert "50.09" not in repr(s) and "14.42" not in repr(s)
+    assert "50.09" not in str(s) and "14.42" not in str(s)
 
 
 def test_chat_id_not_in_repr(tmp_path):
