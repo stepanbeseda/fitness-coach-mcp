@@ -140,6 +140,8 @@ services:
     environment:
       HOME: /tmp
       GARMINTOKENS: /data/garmin
+      # The athlete's local time zone: what "today" means for dates (same value as coach-mcp).
+      TZ: ${ATHLETE_TZ:-Europe/Prague}
     volumes:
       - garmin-tokens:/data/garmin
     tmpfs:
@@ -165,6 +167,8 @@ services:
     image: fitness-coach-mcp/coach-mcp:0.1.0
     environment:
       HOME: /tmp
+      # The athlete's local time zone: what "today" means, and when the briefing and history jobs run.
+      TZ: ${ATHLETE_TZ:-Europe/Prague}
       COACH_TELEGRAM_CHAT_ID: ${COACH_TELEGRAM_CHAT_ID:-}
       COACH_BRIEFING_TIME: ${COACH_BRIEFING_TIME:-}
       COACH_BRIEFING_CUTOFF: ${COACH_BRIEFING_CUTOFF:-}

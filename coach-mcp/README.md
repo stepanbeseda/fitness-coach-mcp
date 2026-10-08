@@ -165,7 +165,7 @@ a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open databa
 | `COACH_MCP_BEARER_TOKEN_FILE` | `/run/secrets/coach_backend_token` | interní token od gateway (min. 16 znaků) |
 | `COACH_MCP_HOST` | `0.0.0.0` | adresa, na které server poslouchá |
 | `COACH_MCP_PORT` | `8000` | port (1 až 65535) |
-| `TZ` | `Europe/Prague` | co znamená „dnes“ |
+| `TZ` | `Europe/Prague` | co znamená „dnes“; v compose se nastavuje přes `ATHLETE_TZ` v `.env` |
 | `COACH_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` nebo `ERROR`; logy: jen název nástroje, výsledek, doba, nikdy argumenty ani uložené texty |
 | `COACH_MCP_ALLOWED_HOSTS` | *(prázdné)* | zapne kontrolu Host hlavičky (např. `coach-mcp:8000`) |
 | `COACH_TELEGRAM_CHAT_ID` | *(prázdné)* | chat id tvého chatu s botem (celé číslo, skupina záporné); zapíná ranní briefing; nikdy se neloguje |

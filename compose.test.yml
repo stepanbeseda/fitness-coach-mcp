@@ -1,11 +1,24 @@
 # Overlay used by scripts/e2e-test.sh: the real images and wiring, but the
 # Tailscale sidecar only holds the network namespace (no login), the private
 # network has no internet access and all secrets are throwaway test values.
+#
+# The e2e builds get their own image tags. With the live tags, a test build of
+# a branch would replace the image the live stack is recreated from, and the next
+# `docker compose up -d` in the live checkout would deploy (and migrate) it.
 services:
   ts:
+    image: fcm-e2e/tailscale:test
     entrypoint: ["sleep", "infinity"]
     healthcheck:
       disable: true
+  gateway:
+    image: fcm-e2e/gateway:test
+  hevy-mcp:
+    image: fcm-e2e/hevy-mcp:test
+  garmin-mcp:
+    image: fcm-e2e/garmin-mcp:test
+  coach-mcp:
+    image: fcm-e2e/coach-mcp:test
 
 networks:
   mcp:
