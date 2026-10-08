@@ -73,7 +73,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 02 | Body composition, hydration and nutrition | — | done |
 | 03 | Coach memory server | — | done |
 | 04 | Morning briefing and alerts | 03 | done |
-| 05 | History store, trends and weekly report | 03 | planned |
+| 05 | History store, trends and weekly report | 03 | done |
 | 06 | Weather and calendar | 03 | planned |
 | 07 | Strength workouts on the watch | — | planned |
 | 08 | Daily briefing via Telegram | 04 | **in progress** (branch mao/pr08-briefing-telegram) |
@@ -451,6 +451,36 @@ PR 04's channel in a later chapter), correlation analysis, exporting data.
    `get_weekly_report` shows last week's real Garmin training (Hevy: PR 09).
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 3).
+
+**Delivered:** 2026-10-08, PR #11 (`mao/pr05-history-trends`), squash-merged
+into `main` as `1bed894`. Scope after the 2026-10-07 split: schema migration
+3 (`history_days`); a nightly history job in `coach-mcp` as its own lifespan
+task (default 03:30 in `TZ`) with a paced backfill of
+`COACH_HISTORY_BACKFILL_DAYS` (90) days and `COACH_HISTORY_CALL_DELAY_SECONDS`
+(15) between `garmin-mcp` calls, a pause in the briefing window, a D+1..D+3
+re-fetch, the held-error / probe outage rule with a shared 1 h to 8 h backoff
+and the `COACH_HISTORY_ENABLED` switch; the `GarminReader` allowlist extended
+by `list_activities` only; the read tools `get_trends` and
+`get_weekly_report` (strength sections fixed to `available: false` until
+PR 09); the history state in `/healthz`; additions to `scripts/e2e_flow.py`,
+`scripts/healthcheck.sh` and the smoke test; `README.md`,
+`coach-mcp/README.md` (including the 3 to 2 downgrade recipe) and
+`docs/coach-instructions.md` updated. Criteria 1-4, 6 and 7 met offline
+(`coach-mcp` test build: 575 passed; the four-command check green).
+Criterion 5 moved to PR 09 with the Hevy side. Criterion 8 met on the live
+host 2026-10-08, deployed from the PR head before the merge: the first run
+logged `history status=done fetched=103 failed=0 given_up=0` after 26
+minutes (about 470 Garmin Connect requests), the smoke test was OK,
+`get_trends` returned 90 days with data (71 nights with HRV) and
+`get_weekly_report` for W40 showed real Garmin activities with sport names.
+Deviations accepted: count metrics keep two decimals for mean / first / last /
+change (review 1, N1); a `COACH_HISTORY_TIME` inside the briefing window is
+accepted with a one-time warning instead of refusing to start (N3); the check
+is the four commands of `project.md`. Review took two rounds; round 1 found a
+spec error (a per-day failure counter was charged for a backend-wide outage),
+fixed by a spec addendum. Open non-blocking findings N5-N8 are recorded in
+section 5 ("PR 05 history job"). The live checkout moves to `main` after this
+merge.
 
 ### PR 06 — Weather and calendar
 
