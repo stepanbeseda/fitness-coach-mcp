@@ -20,7 +20,7 @@ def test_from_env_defaults():
     assert s.telegram_chat_id == ""
     assert s.telegram_token_file == Path("/run/secrets/telegram_bot_token")
     assert s.garmin_url == "http://garmin-mcp:8000/mcp"
-    assert s.garmin_token_file == Path("/run/secrets/garmin_backend_token")
+    assert s.garmin_token_file == Path("/run/secrets/garmin_readonly_token")
     assert s.briefing_time == dt.time(6, 30)
     assert s.briefing_cutoff == dt.time(9, 30)
     assert s.briefing_retry_minutes == 15

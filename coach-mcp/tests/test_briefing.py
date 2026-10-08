@@ -606,7 +606,7 @@ def test_render_missing_reason():
     assert "(Garmin není přihlášený)" in reason(garmin_data(auth="missing", snapshot=None))
     # the coach has no garmin-mcp token: its own configuration problem, not a Garmin login
     no_token = garmin_data(auth=None, snapshot=None, hrv_trend=None, scheduled=None, credentials_missing=True)
-    assert "(chybí interní token pro garmin-mcp (secrets/garmin_backend_token))" in reason(no_token)
+    assert "(chybí interní token pro garmin-mcp (secrets/garmin_readonly_token))" in reason(no_token)
     assert build_briefing(DAY, no_token, [], {}).payload["garmin"]["auth"] == "no_credentials"
     assert alert_conditions(DAY, no_token, None)["garmin_auth"] is None
     # last night's HRV is there but Garmin has no baseline yet

@@ -27,7 +27,7 @@ NOT_LOGGED_IN = "Garmin is not logged in. On the server run scripts/garmin-login
 
 
 def reader_settings(tmp_path, token: str | None = TOKEN) -> Settings:
-    token_file = tmp_path / "garmin_backend_token"
+    token_file = tmp_path / "garmin_readonly_token"
     if token is not None:
         token_file.write_text(token + "\n", encoding="utf-8")
     return Settings(garmin_url="http://garmin-mcp:8000/mcp", garmin_token_file=token_file)

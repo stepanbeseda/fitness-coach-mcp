@@ -402,7 +402,7 @@ async def test_lifespan_exit_cancels_a_running_fetch(settings, store):
 
 @pytest.mark.anyio
 async def test_lifespan_exit_cancels_a_fetch_hanging_inside_the_sdk_client(settings, store, tmp_path):
-    token_file = tmp_path / "garmin_backend_token"
+    token_file = tmp_path / "garmin_readonly_token"
     token_file.write_text(GARMIN_TOKEN, encoding="utf-8")
     fake, calls = fake_garmin_app(GARMIN_TOKEN, hang=frozenset({"get_recovery_snapshot"}))
     config = push_settings(settings, garmin_token_file=token_file)

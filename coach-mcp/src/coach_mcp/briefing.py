@@ -338,7 +338,7 @@ def _missing_reason(data: GarminData, missing: Sequence[str]) -> str:
     if data.auth_problem:
         return "Garmin není přihlášený"
     if data.credentials_missing:
-        return "chybí interní token pro garmin-mcp (secrets/garmin_backend_token)"
+        return "chybí interní token pro garmin-mcp (secrets/garmin_readonly_token)"
     if data.auth is None:
         return "garmin-mcp neodpovídá"
     if data.snapshot is None:

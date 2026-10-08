@@ -1,5 +1,6 @@
 """Shared-secret bearer check between the gateway and this backend (fail closed)."""
-# Copy of garmin-mcp/src/garmin_coach_mcp/auth.py; keep both in sync.
+# Single-token copy of garmin-mcp/src/garmin_coach_mcp/auth.py (garmin-mcp also accepts a
+# read-only token for coach-mcp); keep the shared parts in sync.
 
 from __future__ import annotations
 

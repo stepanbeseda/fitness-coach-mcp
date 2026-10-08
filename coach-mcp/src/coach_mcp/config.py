@@ -99,7 +99,7 @@ class Settings:
     telegram_chat_id: str = field(default="", repr=False)  # personal: never in a repr or a log
     telegram_token_file: Path = Path("/run/secrets/telegram_bot_token")
     garmin_url: str = "http://garmin-mcp:8000/mcp"
-    garmin_token_file: Path = Path("/run/secrets/garmin_backend_token")
+    garmin_token_file: Path = Path("/run/secrets/garmin_readonly_token")
     briefing_time: dt.time = dt.time(6, 30)
     briefing_cutoff: dt.time = dt.time(9, 30)
     briefing_retry_minutes: int = 15
@@ -183,7 +183,7 @@ class Settings:
             telegram_chat_id=telegram_chat_id,
             telegram_token_file=telegram_token_file,
             garmin_url=garmin_url,
-            garmin_token_file=Path(_opt(env, "COACH_GARMIN_TOKEN_FILE", "/run/secrets/garmin_backend_token")),
+            garmin_token_file=Path(_opt(env, "COACH_GARMIN_TOKEN_FILE", "/run/secrets/garmin_readonly_token")),
             briefing_time=briefing_time,
             briefing_cutoff=briefing_cutoff,
             briefing_retry_minutes=retry,
