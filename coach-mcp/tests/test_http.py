@@ -17,8 +17,16 @@ from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminData, GarminReader
 from coach_mcp.server import create_app
 from coach_mcp.store import SCHEMA_VERSION, Store
-from garmin_payloads import GREEN_SNAPSHOT, YELLOW_SNAPSHOT, garmin_data, history_snapshot, yellow_data
-from history_helpers import seed_activities, seed_day, sport
+from garmin_payloads import (
+    GREEN_SNAPSHOT,
+    YELLOW_SNAPSHOT,
+    activities_payload,
+    activity,
+    garmin_data,
+    history_snapshot,
+    yellow_data,
+)
+from history_helpers import local, make_job, run_first, seed_activities, seed_day, sport
 
 EXPECTED_TOOLS = {
     "get_coach_context",
@@ -297,6 +305,7 @@ async def test_daily_briefing_over_http(settings, store):
         ("resting_hr_elevated", True, True),
         ("acwr_out_of_range", True, False),
         ("missed_workout", True, True),
+        ("missed_planned_session", False, False),
         ("garmin_auth", False, False),
     ]
     assert briefing["garmin_today"] == ["Lehký běh 40 min"]
@@ -489,6 +498,37 @@ def history_sleep_for(source: FakeHistorySource, clock: FakeClock):
         await asyncio.sleep(0)
 
     return sleep
+
+
+@pytest.mark.anyio
+async def test_reconcile_suggestions_reach_the_tools_over_http(app, store):
+    run_id, strength_id = store.replace_planned(
+        date(2026, 10, 5),
+        date(2026, 10, 11),
+        date(2026, 10, 5),
+        [
+            {"date": date(2026, 10, 5), "type": "running", "description": "Easy run"},
+            {"date": date(2026, 10, 6), "type": "strength", "description": "Legs"},
+        ],
+    )[1]
+    payload_ = activities_payload([activity("2026-10-05", "running", 45, 9.5)])
+    source = FakeHistorySource(activities=lambda start, end, index: ("ok", payload_))
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=3)
+    await run_first(job, clock)
+    async with running_client(app) as client:
+        plan = payload(await call_tool(client, "get_plan", {}))
+        by_id = {s["id"]: s for s in plan["sessions"]}
+        assert by_id[run_id]["suggestion"]["result"] == "matched"
+        assert by_id[run_id]["suggestion"]["evidence"]["sport"] == "running"
+        assert by_id[strength_id]["suggestion"]["result"] == "no_activity"
+        context = payload(await call_tool(client, "get_coach_context", {}))
+        assert sorted(s["id"] for s in context["to_confirm"]) == sorted([run_id, strength_id])
+        marked = await call_tool(client, "update_session", {"session_id": run_id, "status": "done"})
+        assert marked["isError"] is False
+        plan = payload(await call_tool(client, "get_plan", {}))
+        by_id = {s["id"]: s for s in plan["sessions"]}
+        assert by_id[run_id]["status"] == "done" and "suggestion" not in by_id[run_id]
+        assert "suggestion" in by_id[strength_id]
 
 
 @pytest.mark.anyio
