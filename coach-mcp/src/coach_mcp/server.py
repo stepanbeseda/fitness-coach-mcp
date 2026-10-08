@@ -22,10 +22,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from . import __version__, tools, trends
+from . import __version__, strength, tools, trends
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
 from .garmin import GarminReader, GarminSource, HistorySource, exception_kind
+from .hevy import HevyReader, StrengthSource
 from .history import HistoryJob
 from .push import PushSender, TelegramPush
 from .scheduler import BriefingScheduler, compose_briefing
@@ -50,7 +51,9 @@ INSTRUCTIONS = (
     "data; still read fresh Garmin data before planning. "
     "get_trends returns the stored daily Garmin history (collected nightly) aggregated by day, week or month: "
     "use it for anything older than 28 days. get_weekly_report compares one ISO week with the previous four: "
-    "use it for weekly reviews. Strength history from Hevy is not stored yet. "
+    "use it for weekly reviews (it includes strength volume and sets per muscle group from Hevy). "
+    "get_strength_progress returns the estimated 1RM (Epley) per exercise over time from the stored Hevy history "
+    "with a plateau flag: use it for strength progression; for the latest workout and exact sets call Hevy. "
     "Past planned sessions carry a suggestion from the stored Garmin activities (matched with the day's totals "
     "of that sport, or no_activity; final false while a late watch sync can still change it); "
     "get_coach_context lists those of the last 7 days in to_confirm. A suggestion never changes a status: "
@@ -291,8 +294,8 @@ def build_server(
         activity metrics) and the change from the first to the last period. Daily metrics: readiness, HRV,
         sleep, resting HR, Body Battery, stress, acute and chronic load, load ratio, VO2max. Activity metrics
         per sport (endurance = every sport except strength): duration, distance, training load and count.
-        Default: the 90 days ending yesterday; today and often yesterday are not stored yet. Strength (Hevy)
-        history is not stored."""
+        Default: the 90 days ending yesterday; today and often yesterday are not stored yet. Strength history
+        from Hevy: get_strength_progress and the strength section of get_weekly_report."""
         return trends.get_trends(
             store, today(), metrics=metrics, start_date=start_date, end_date=end_date, period=period
         )
@@ -305,11 +308,44 @@ def build_server(
         ] = None,
     ) -> Any:
         """One ISO week (default: the last complete one) against the average of the previous four: endurance
-        time, distance and training load by sport, Garmin load at the end of the week, sleep, HRV, resting
-        heart rate, plan adherence from the coach plan, new bests (VO2max, weekly distance and load) and flags
-        such as training load up more than 30 %. Sections without data are marked available: false; strength
-        is not available yet (read Hevy directly). Reads the stored history only."""
+        time, distance and training load by sport, Garmin load at the end of the week, strength volume and
+        working sets per muscle group from Hevy, sleep, HRV, resting heart rate, plan adherence from the
+        coach plan, new bests (VO2max, weekly distance and load, estimated 1RM per exercise) and flags such
+        as training load or strength volume up more than 30 %. Sections without data are marked available:
+        false. Reads the stored history only."""
         return trends.get_weekly_report(store, today(), week=week)
+
+    @tool("get_strength_progress", _read("Strength progress"))
+    async def get_strength_progress(
+        exercise: Annotated[
+            str | None,
+            Field(
+                max_length=100,
+                description="Hevy exercise_template_id or part of the exercise title; default every exercise.",
+            ),
+        ] = None,
+        start_date: Annotated[str | None, Field(description="YYYY-MM-DD; default end_date - 89 days.")] = None,
+        end_date: Annotated[str | None, Field(description="YYYY-MM-DD, not after today; default yesterday.")] = None,
+        plateau_weeks: Annotated[
+            int,
+            Field(ge=2, le=12, description="Weeks without beating the earlier best that count as a plateau (2-12)."),
+        ] = 4,
+        limit: Annotated[int, Field(ge=1, le=20, description="Max exercises, most trained first (1-20).")] = 10,
+    ) -> Any:
+        """Strength progression from the stored Hevy history (collected nightly by coach-mcp): per exercise the
+        estimated one-rep max by Epley (weight x (1 + reps / 30); a single counts as its weight; warm-up sets and
+        sets above 12 reps do not count) of the best set of every training day in the range, the best, first and
+        last value, and a plateau flag when the last plateau_weeks weeks (at least two sessions) did not beat the
+        best before them. Default: the 90 days ending yesterday. Returns numbers only; render charts yourself."""
+        return strength.get_strength_progress(
+            store,
+            today(),
+            exercise=exercise,
+            start_date=start_date,
+            end_date=end_date,
+            plateau_weeks=plateau_weeks,
+            limit=limit,
+        )
 
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Request) -> JSONResponse:
@@ -342,6 +378,7 @@ def create_app(
     sleep: Callable[[float], Awaitable[None]] | None = None,
     history_source: HistorySource | None = None,
     history_sleep: Callable[[float], Awaitable[None]] | None = None,
+    strength_source: StrengthSource | None = None,
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     store = store or Store(settings.db_path)
@@ -360,7 +397,14 @@ def create_app(
     reader = GarminReader(settings)
     garmin = garmin or reader
     history = (
-        HistoryJob(settings, store, history_source or reader, now=now, sleep=history_sleep or asyncio.sleep)
+        HistoryJob(
+            settings,
+            store,
+            history_source or reader,
+            now=now,
+            sleep=history_sleep or asyncio.sleep,
+            strength=strength_source or HevyReader(settings),
+        )
         if settings.history_enabled
         else None
     )

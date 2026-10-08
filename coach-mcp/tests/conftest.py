@@ -40,7 +40,14 @@ def bearer_file(tmp_path: Path) -> Path:
 @pytest.fixture
 def settings(db_path: Path, bearer_file: Path) -> Settings:
     # The shared app must not start the nightly history job (tests that need it build their own settings).
-    return Settings(db_path=db_path, bearer_token_file=bearer_file, timezone="Europe/Prague", history_enabled=False)
+    return Settings(
+        db_path=db_path,
+        bearer_token_file=bearer_file,
+        timezone="Europe/Prague",
+        history_enabled=False,
+        # An app that builds its own HevyReader must not find a real token file of the machine running the tests.
+        hevy_token_file=db_path.parent / "hevy_backend_token",
+    )
 
 
 @pytest.fixture

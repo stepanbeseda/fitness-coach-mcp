@@ -9,7 +9,16 @@ from zoneinfo import ZoneInfo
 import anyio
 import httpx2
 import pytest
-from fakes import FakeClock, FakeGarmin, FakeHistorySource, FakePush, StopLoop, fake_garmin_app, fake_garmin_running
+from fakes import (
+    FakeClock,
+    FakeGarmin,
+    FakeHistorySource,
+    FakePush,
+    FakeStrengthSource,
+    StopLoop,
+    fake_garmin_app,
+    fake_garmin_running,
+)
 
 from conftest import BACKEND_TOKEN, MCP_HEADERS, TODAY, auth_headers, call_tool, payload, running_client
 from coach_mcp.__main__ import configure_logging
@@ -26,7 +35,18 @@ from garmin_payloads import (
     history_snapshot,
     yellow_data,
 )
-from history_helpers import local, make_job, run_first, seed_activities, seed_day, sport
+from history_helpers import (
+    exercise,
+    local,
+    make_job,
+    run_first,
+    seed_activities,
+    seed_day,
+    seed_strength,
+    seed_sync,
+    seed_template,
+    sport,
+)
 
 EXPECTED_TOOLS = {
     "get_coach_context",
@@ -39,6 +59,7 @@ EXPECTED_TOOLS = {
     "get_daily_briefing",
     "get_trends",
     "get_weekly_report",
+    "get_strength_progress",
 }
 WRITE_TOOLS = {"set_goal", "set_constraint", "save_plan", "update_session", "add_note"}
 # Tools that reach an outside service (garmin-mcp); every other tool only touches the local store.
@@ -115,6 +136,7 @@ async def test_initialize_list_and_annotations(app):
         assert "get_daily_briefing" in init["instructions"]
         assert "get_trends" in init["instructions"]
         assert "get_weekly_report" in init["instructions"]
+        assert "get_strength_progress" in init["instructions"]
 
         r = await client.post("/mcp", headers=auth_headers(), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert r.status_code == 202
@@ -626,6 +648,70 @@ async def test_lifespan_exit_cancels_a_running_history_call(settings, store):
         # a swallowed cancellation would keep the shutdown waiting for the history task
         assert time.monotonic() - left_at < 2
     assert rows_of(store) == []
+
+
+@pytest.mark.anyio
+async def test_strength_progress_and_weekly_strength_over_http(app, store):
+    seed_template(store, "T1", "chest", title="Bench Press (Barbell)")
+    seed_template(store, "T2", "quadriceps", title="Squat (Barbell)")
+    for n, day in enumerate(("2026-09-16", "2026-09-23", "2026-09-30")):  # Wednesdays
+        seed_strength(store, f"B{n}", date.fromisoformat(day), [exercise("T1", 3, 1500.0, (100, 5, 100.0 + 5 * n))])
+    seed_strength(store, "S0", date(2026, 9, 30), [exercise("T2", 4, 3200.0, (160, 5, 186.7))])
+    seed_sync(store, date(2026, 9, 1), TODAY)
+    async with running_client(app) as client:
+        result = await call_tool(client, "get_strength_progress", {})
+        assert result["isError"] is False
+        progress = payload(result)
+        assert progress["available"] is True and progress["matched"] == 2
+        first, second = progress["exercises"]
+        assert (first["template_id"], first["sessions"], first["last_e1rm_kg"]) == ("T1", 3, 110.0)
+        assert (second["template_id"], second["muscle_group"]) == ("T2", "quadriceps")
+
+        narrowed = payload(await call_tool(client, "get_strength_progress", {"exercise": "squat", "plateau_weeks": 2, "limit": 1}, id_=3))
+        assert narrowed["plateau_weeks"] == 2 and [e["template_id"] for e in narrowed["exercises"]] == ["T2"]
+        for arguments in ({"plateau_weeks": 1}, {"plateau_weeks": 13}, {"limit": 0}, {"limit": 21}, {"exercise": "x" * 101}):
+            invalid = await call_tool(client, "get_strength_progress", arguments, id_=4)
+            assert invalid["isError"] is True, arguments
+        bad = await call_tool(client, "get_strength_progress", {"end_date": "2026-10-09"}, id_=5)
+        assert bad["isError"] is True and "end_date must not be after today" in bad["content"][0]["text"]
+
+        report = payload(await call_tool(client, "get_weekly_report", {}, id_=6))
+        assert report["strength"].get("available") is not False  # a section with data has no "available" key
+        assert report["strength"]["workouts"] == 2 and report["strength"]["days"] == 7
+        assert set(report["strength"]["by_muscle_group"]) == {"chest", "quadriceps"}
+
+
+def strength_sleep_for(strength: FakeStrengthSource, clock: FakeClock):
+    """Wakes up on the fake clock until the first Hevy call, then never."""
+
+    async def sleep(seconds: float) -> None:
+        if strength.calls:
+            await never_wake(seconds)
+        await clock.sleep(seconds)
+        await asyncio.sleep(0)
+
+    return sleep
+
+
+@pytest.mark.anyio
+async def test_create_app_runs_the_strength_part(settings, store):
+    clock = history_clock()
+    source = FakeHistorySource(clock=clock)
+    strength = FakeStrengthSource(clock=clock)
+    app = create_app(
+        history_settings(settings, history_backfill_days=1),
+        store,
+        today=lambda: TODAY,
+        now=clock.now,
+        history_source=source,
+        strength_source=strength,
+        history_sleep=strength_sleep_for(strength, clock),
+    )
+    async with running_client(app):
+        await wait_for(lambda: strength.calls)
+    assert [name for name, _ in strength.calls] == ["get-workout-events"]
+    assert strength.calls[0][1]["since"] == "2026-10-05T22:00:00Z"  # local midnight of the first backfill day (10-06)
+    assert source.calls  # the Garmin part ran first
 
 
 def rows_of(store):
