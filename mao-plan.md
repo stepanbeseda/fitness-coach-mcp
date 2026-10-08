@@ -51,9 +51,9 @@ chapter and a table row; existing chapters are never rewritten, only the
 
 - One PR = one chapter; documentation in the same PR.
 - Green check: `docker build --target test garmin-mcp`,
-  `docker build --target test gateway` and `scripts/e2e-test.sh` (a new
-  service adds its own `--target test` build to this list in the PR that
-  introduces it).
+  `docker build --target test gateway`, `docker build --target test
+  coach-mcp` (since PR 03) and `scripts/e2e-test.sh` (a new service adds its
+  own `--target test` build to this list in the PR that introduces it).
 - A test for every acceptance criterion that can be verified offline. Garmin
   tests use the fake client and canned payloads in
   `garmin-mcp/tests/conftest.py` and `garmin-mcp/tests/fixtures.py`; no test
@@ -78,6 +78,24 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 07 | Strength workouts on the watch | — | planned |
 | 08 | Daily briefing via Telegram | 04 | done |
 | 09 | Strength history and progress | 05 | planned |
+| 10 | Separate e2e image tags and a configurable time zone | — | **in review** (PR #13) |
+| 11 | Online and scheduled backups | 03 | planned |
+| 12 | Read-only Garmin token for the coach | 04 | planned |
+| 13 | Plan reconciliation | 05 | planned |
+| 14 | Goal progress and the Monday report | 05, 08 | planned |
+| 15 | Searchable coach memory | 03 | planned |
+| 16 | Correlations | 05 | planned |
+| 17 | Sync-aware briefing | 04 | planned |
+| 18 | History repair | 05 | planned |
+| 19 | More Garmin signals | — | planned |
+| 20 | Operations alerts via Telegram | 08 | planned |
+| 21 | Static checks in the test stage | — | planned |
+| 22 | Two-way Telegram | 08 | planned |
+
+Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
+10, 11, 12, 13, 14, 09, 07, 15, 16, 17, 18, then 19, 20, 21 and last 22 (the
+only chapter that accepts inbound messages). PR 12 goes before PR 09, so
+`coach-mcp` does not collect a second full-access backend token.
 
 ## 4. PR briefs
 
@@ -731,6 +749,394 @@ write to Hevy, a dashboard or any UI.
 
 **Requested:** 2026-10-07, by the owner, split from PR 05 (PR 05 questions and answers round 1).
 
+### PR 10 — Separate e2e image tags and a configurable time zone
+
+`scripts/e2e-test.sh` builds its images under the live tags
+(`fitness-coach-mcp/*:0.1.0`), so a test build of a branch replaces the image
+the live stack is recreated from, and the next `docker compose up -d` in the
+live checkout deploys and migrates it without a backup (section 5, open since
+PR 03; it happened before the PR 04 deploy). Give the e2e builds their own
+tags in the `compose.test.yml` overlay, so the live compose file does not
+change for it. Separately, the athlete's time zone is baked into the
+`garmin-mcp` and `coach-mcp` images as `TZ=Europe/Prague` and cannot be set
+from `.env`, although both service READMEs document `TZ`. Pass it from a new
+`.env` setting `ATHLETE_TZ` (default `Europe/Prague`) as `TZ` to both
+services; a dedicated name keeps a shell `TZ` (Compose prefers shell
+variables) and the scripts' own clock (`scripts/lib.sh` exports `.env`) out
+of it.
+
+Out of scope: validating the time zone in `garmin-mcp` at start-up
+(`coach-mcp` already refuses an unknown zone), image tags of the live stack,
+removing old test images.
+
+**Done when:**
+1. `compose.test.yml` gives all five services an `fcm-e2e/*:test` image and
+   `scripts/e2e-test.sh` uses no live tag; the image IDs of the five live
+   tags are the same before and after an e2e run.
+2. `docker compose config` resolves `TZ` to `Europe/Prague` without
+   `ATHLETE_TZ` and to its value when it is set, for both services.
+3. `.env.example`, `README.md` (installation step 3), `coach-mcp/README.md`
+   and `garmin-mcp/README.md` describe `ATHLETE_TZ`; the e2e open item in
+   section 5 and the matching lesson are updated.
+4. The four-command check is green.
+
+**Requested:** 2026-10-09, by the owner, from the project review (items U3
+and U4).
+
+### PR 11 — Online and scheduled backups
+
+`coach-data` is the only copy of goals, constraints, plan and notes, and the
+README recipe stops `coach-mcp` to tar the volume; nothing schedules it. Add
+a backup that runs while the stack is up: a container command (for example
+`python -m coach_mcp backup`) that takes a consistent copy of `coach.db`
+through SQLite's online backup API (available in the image: SQLite 3.46.1,
+`sqlite3.Connection.backup`), the same for the gateway database
+(`/data/gateway.sqlite3`, grants and refresh tokens), and the Garmin token
+file. A new `scripts/backup.sh` writes one timestamped archive (mode 0600)
+into a directory outside the repo given in `.env`, keeps the newest N
+archives and exits non-zero on any failure; `README.md` gets a cron line next
+to the healthcheck one and a restore recipe per archive part.
+
+Out of scope: off-site copies and encryption of the archive (the README says
+where to put it), backing up `ts-state` (a new auth key recreates the node),
+`secrets/` (re-created by `scripts/setup-secrets.sh`).
+
+**Done when:**
+1. The backup of a database that another connection is writing at the same
+   moment opens as a valid SQLite file with the expected rows (test on a temp
+   file).
+2. `scripts/backup.sh` against the e2e stack produces an archive with all
+   parts, keeps only the newest N, and fails with a clear message when a part
+   is missing; it never prints secret or health values.
+3. The restore recipe is run on scratch volumes, fresh and existing (lesson
+   from PR 03), and the result is recorded in the PR.
+4. `.env.example`, `README.md` (Zálohy) and `coach-mcp/README.md` are
+   updated; the old stop-and-tar recipe is replaced, not kept beside it.
+5. The four-command check is green.
+6. On the test host: one scheduled run produces an archive whose `coach.db`
+   has the live goal count.
+
+**Requested:** 2026-10-09, by the owner, from the project review (item U1).
+
+### PR 12 — Read-only Garmin token for the coach
+
+`coach-mcp` reads `garmin-mcp` with `garmin_backend_token`, the same token the
+gateway uses, so only the code allowlist in
+`coach-mcp/src/coach_mcp/garmin.py` keeps it from `create_workout`,
+`schedule_workout`, `unschedule_workout` and `log_weight` (follow-up of
+PR 04). Give `garmin-mcp` a second, read-only token: its bearer middleware
+learns which token was presented, and a `tools/call` of a tool that is not
+annotated read-only is refused for the read-only token before the tool runs.
+`scripts/setup-secrets.sh` generates the new secret
+(`garmin_readonly_token`), `docker-compose.yml` mounts it into `coach-mcp`
+instead of `garmin_backend_token`, and `COACH_GARMIN_TOKEN_FILE` points to it.
+`coach-mcp/src/coach_mcp/auth.py` is a copy of the `garmin-mcp` file; the PR
+decides whether the copy follows the change or stays as it is.
+
+Out of scope: a read-only role for `hevy-mcp` (an upstream image with one
+bearer token; see section 5), per-tool scopes in the gateway.
+
+**Done when:**
+1. With the read-only token every read tool works and every write tool is
+   refused with a clear error; with the gateway token every tool works; a
+   tool missing from the annotation map counts as a write (tests).
+2. `coach-mcp` no longer mounts `garmin_backend_token`; the briefing and the
+   history job work with the new token in the e2e stack.
+3. `scripts/setup-secrets.sh` creates the token for a new and an existing
+   installation (offline stub harness, lesson from PR 03).
+4. `README.md` (security model, secrets) and both service READMEs are
+   updated.
+5. The four-command check is green.
+6. On the test host, after the owner runs `setup-secrets.sh` and approves the
+   deploy: the morning briefing and the nightly history still run.
+
+**Requested:** 2026-10-09, by the owner, from the project review (item U2).
+
+### PR 13 — Plan reconciliation
+
+The coach sets session status by hand, and the missed-workout alert looks
+only at Garmin's calendar, never at the coach plan. Add a nightly step to the
+history job of `coach-mcp`: for every planned session of the last seven days
+it looks for a recorded activity of the same day and sport (from the stored
+activity totals, running / cycling / swimming / strength; mobility and other
+are never matched) and stores a suggestion: `matched` with the evidence
+(sport, duration, distance, and the activity id when the history keeps it) or
+`no_activity`. Section 1 says writes need the athlete's confirmation and
+PR 03 leaves the status to the coach, so the step changes no status:
+`get_plan`, `get_coach_context` and the briefing show the suggestion, and the
+coach confirms it with `update_session`. When PR 09 has landed, a Hevy
+workout of the day matches a strength session too.
+
+Out of scope: changing a status automatically, matching by workout id or
+time of day, sessions older than seven days.
+
+**Done when:**
+1. The matching is a pure function with tests for a match, no activity, a
+   different sport, two sessions on one day and a day whose activities were
+   never fetched (no suggestion).
+2. `get_plan` and `get_coach_context` return the suggestion per session; a
+   session the coach has already marked keeps its status and drops the
+   suggestion (tests).
+3. The briefing names yesterday's planned sessions without an activity, as an
+   event with the day as its key (lesson from PR 04), and the alert state
+   migration is tested.
+4. `coach-mcp/README.md` and `docs/coach-instructions.md` (check the
+   suggestions, then propose `update_session`) are updated.
+5. The four-command check is green.
+6. On the test host: last week's planned sessions show suggestions that
+   agree with Garmin Connect.
+
+**Requested:** 2026-10-09, by the owner, from the project review (feature 1).
+
+### PR 14 — Goal progress and the Monday report
+
+Goals are free text, so nothing measures whether the athlete is on track.
+Give `set_goal` two optional fields, a `metric` (race_5k, race_10k,
+race_half_marathon, race_marathon, vo2max_running) and a `target_value`
+(time as `H:MM:SS` or a number), with a schema migration. Store Garmin's race
+predictions per day in the history: a new read-only `garmin-mcp` tool returns
+them over a date range (the library's `get_race_predictions(startdate,
+enddate, _type)`), so the backfill takes one call per range and the night one
+call. A new read tool `get_goal_progress` returns, per active goal with a
+metric, the current value, the values 4 and 12 weeks ago, the trend per week,
+the value projected to the target date, the days remaining and an on-track
+flag. On Monday, after the morning briefing, the scheduler sends a second
+Telegram message in Czech with last week's `get_weekly_report` numbers and
+the goal progress (plain text, the same size guard, de-duplicated by ISO
+week; `COACH_WEEKLY_PUSH`, on while push is on), and a container command
+`send-weekly-report` sends it by hand.
+
+Out of scope: weight and body-composition goals, goals without a metric
+(they keep working as today), charts.
+
+**Done when:**
+1. The migration adds the goal fields and the prediction history with data
+   intact; `set_goal` validates metric and value (tests).
+2. `get_goal_progress` computes the numbers on a seeded history, including a
+   goal without enough data (`available: false`) (tests).
+3. The Monday message is sent once per ISO week, after the briefing, never
+   instead of it, and a failed send retries like the briefing (tests with a
+   fake clock and fake push).
+4. The new `garmin-mcp` tool is read-only, fail-soft and in the coach
+   allowlist; `garmin-mcp/tests/test_http.py` and the coach tool list are
+   updated.
+5. `README.md`, both service READMEs, `.env.example` and
+   `docs/coach-instructions.md` (set a metric with every race goal) are
+   updated; the privacy note covers the second message.
+6. The four-command check is green.
+7. On the test host: `get_goal_progress` for the owner's goal, and one Monday
+   message in the owner's chat.
+
+**Requested:** 2026-10-09, by the owner, from the project review (feature 2).
+
+### PR 15 — Searchable coach memory
+
+`get_coach_context` returns the active goals and constraints and the latest
+ten notes, so an older note or a closed goal cannot be found. Add read tools
+to `coach-mcp`: `search_notes` (full-text query, optional date range and
+session, newest first, limited) over an SQLite FTS5 index of the notes
+(FTS5 is available in the image), `list_goals` (every status) and
+`list_constraints` (active and resolved). A schema migration creates the
+index for the existing notes and keeps it current on insert (notes are never
+deleted).
+
+Out of scope: searching session descriptions, semantic search, editing
+notes.
+
+**Done when:**
+1. The migration indexes existing notes; a new note is found at once;
+   Czech diacritics match with and without accents (tests).
+2. A malformed full-text query gives a clear tool error, not an SQLite
+   error (test).
+3. `list_goals` and `list_constraints` return closed entries with their
+   status (tests).
+4. `coach-mcp/README.md` and `docs/coach-instructions.md` (search before
+   asking the athlete again) are updated.
+5. The four-command check is green.
+
+**Requested:** 2026-10-09, by the owner, from the project review (feature 5).
+
+### PR 16 — Correlations
+
+The history holds 90 days or more of daily values, enough to ask whether
+load, sleep and recovery move together. Add a read tool `get_correlations`
+to `coach-mcp`: two or more stored metrics (the `get_trends` catalogue), a
+date range and a lag of 0 to 3 days, returning Pearson and Spearman
+coefficients with the number of paired days, `available: false` below a
+minimum number of pairs, and a fixed caveat that a correlation is not a
+cause. Pure Python, no new dependency.
+
+Out of scope: p-values and confidence intervals, more than pairwise
+analysis, strength metrics before PR 09.
+
+**Done when:**
+1. The coefficients match reference values for seeded series, including a
+   lag, ties (Spearman) and a constant series (no coefficient) (tests).
+2. Days without one of the two values are skipped, never counted as zero
+   (test).
+3. `coach-mcp/README.md` and `docs/coach-instructions.md` (how to word a
+   correlation for the athlete) are updated; this chapter replaces the
+   "correlation analysis" item of section 5.
+4. The four-command check is green.
+
+**Requested:** 2026-10-09, by the owner, from the project review (feature 6).
+
+### PR 17 — Sync-aware briefing
+
+When last night's data is missing, the briefing guesses that the watch has
+not synced yet (`briefing.py`, "hodinky možná ještě nesynchronizovaly") and
+re-reads the full snapshot every retry; a morning without a sync can cost
+about 91 Garmin Connect calls (PR 04 follow-up). Add a read-only
+`garmin-mcp` tool `get_device_status` (the primary device and its last
+upload time, from the library's `get_device_last_used` and `get_devices`; the
+payload fields are confirmed on the owner's account first). The briefing
+names the last sync time when data is missing, and the scheduler checks the
+device status first on a retry and reads the snapshot again only when the
+upload time has changed.
+
+Out of scope: device settings, battery, alarms.
+
+**Done when:**
+1. `get_device_status` returns the shaped fields from canned payloads and is
+   fail-soft (tests); the real payload shape is recorded in the PR.
+2. A retry without a new upload makes one cheap call instead of the full
+   read; a new upload triggers the full read (tests with a fake backend).
+3. The missing-data line names the last sync time and falls back to today's
+   wording when the time is unknown (tests).
+4. Tool lists, both service READMEs and `docs/coach-instructions.md` are
+   updated.
+5. The four-command check is green.
+6. On the test host: a briefing before the morning sync names the last sync
+   time.
+
+**Requested:** 2026-10-09, by the owner, from the project review (feature 7).
+
+### PR 18 — History repair
+
+PR 05 review finding N5: `HistoryJob._fetch_snapshot` stores a day as fetched
+even when `recovery_values` skipped a section in error, so one transient
+error of a Garmin endpoint during the backfill leaves that metric NULL for
+good on every day older than three days. Record per day which sections were
+in error and let such a day be fetched again a limited number of times after
+the D+3 window, a few days per night, without charging an outage (the
+probe rule stays). Include the missing tests of N8. N6 and N7 stay open
+unless the fix closes them as a side effect.
+
+Out of scope: re-fetching days whose values are missing because the watch
+was not worn (no section error), the activity part.
+
+**Done when:**
+1. A day with a section in error is fetched again after D+3 until it
+   succeeds or reaches its limit; a complete day is not (tests).
+2. The outage scenario of the checklist (every call fails for N runs, then
+   recovers) gives up no day and charges nothing (test).
+3. The schema migration keeps existing rows; how rows stored before it are
+   treated is stated in the PR (tests).
+4. The N8 guard branches have failing tests when mutated.
+5. The four-command check is green.
+
+**Requested:** 2026-10-09, by the owner, from the project review (item U7).
+
+### PR 19 — More Garmin signals
+
+`garminconnect` 0.3.17 has calls the coach does not use yet. Add to
+`garmin-mcp`: a read tool `get_running_tolerance` (Garmin's weekly running
+load tolerance over a range, `get_running_tolerance`), and two fail-soft
+sections in `get_activity`: the exercise sets recorded on the watch for
+strength activities (`get_activity_exercise_sets`: exercise, reps, weight)
+and the weather of the activity (`get_activity_weather`). The payload shapes
+are captured from the owner's account first and stored as canned fixtures.
+
+Out of scope: writing exercise sets, creating Hevy workouts from watch
+sessions (a later chapter), per-activity training-load metrics (already in
+`list_activities`).
+
+**Done when:**
+1. Each new part is shaped from canned payloads and degrades to
+   `available: false` or `error` (tests); the library's own log lines for the
+   new calls are checked (lesson from PR 01).
+2. `FakeGarmin.responses` has a key for every new call; the tool list in
+   `garmin-mcp/tests/test_http.py` is updated.
+3. `garmin-mcp/README.md`, `README.md` and `docs/coach-instructions.md` (use
+   the tolerance when raising weekly running volume) are updated.
+4. The four-command check is green.
+5. On the test host: the tolerance and one strength activity with its sets
+   are returned.
+
+**Requested:** 2026-10-09, by the owner, from the project review (feature 8).
+
+### PR 20 — Operations alerts via Telegram
+
+`scripts/healthcheck.sh --quiet` reports problems only to whoever reads the
+cron mail. Let it send them to the owner's Telegram chat through the existing
+bot: `--notify` posts the problem lines (never health values, the token or
+the chat id on a command line) when the set of problems changes, and once
+when everything is healthy again. The `coach-mcp` scheduler or history job
+reaching `stopped` and a failed backup (PR 11) are reported the same way.
+
+Out of scope: a second bot or channel, alerts on health values, host
+monitoring.
+
+**Done when:**
+1. A changed problem set sends one message, an unchanged one sends nothing,
+   and the recovery message is sent once (offline stub harness).
+2. The token is never on a command line or in output; a missing token or
+   chat id makes `--notify` fail with a clear message without hiding the
+   problems themselves.
+3. `README.md` (Provoz, cron line) is updated.
+4. The four-command check is green.
+5. On the test host: a stopped `coach-mcp` produces one message and its
+   restart one recovery message.
+
+**Requested:** 2026-10-09, by the owner, from the project review (item U5).
+
+### PR 21 — Static checks in the test stage
+
+The Python code is fully typed, but nothing checks it. Add `ruff` and `mypy`
+to the `test` stage of `garmin-mcp`, `gateway` and `coach-mcp` (the check
+stays inside Docker; no CI), configured in each `pyproject.toml`, hash-locked
+as dev dependencies through `scripts/lock-deps.sh`, and fix what they find.
+
+Out of scope: formatting the whole tree, CI.
+
+**Done when:**
+1. Each test build fails on an introduced lint error and on an introduced
+   type error (mutation), and passes on the tree.
+2. The new dependencies are hash-locked with a reason in the spec.
+3. The fixes change no behaviour: the existing tests pass unchanged.
+4. The four-command check is green.
+
+**Requested:** 2026-10-09, by the owner, from the project review (item U6).
+
+### PR 22 — Two-way Telegram
+
+The briefing reaches the owner's phone, but answering it means opening
+Claude. Let `coach-mcp` read the owner's replies to the bot: long polling of
+`getUpdates` (outbound HTTPS only, so no port is published), accepting
+messages only from the configured chat id. Commands, deterministic and
+without an LLM: `/dnes` (today's briefing), `/plan` (this week),
+`/done <id>`, `/skip <id>` and free text, which becomes a note for today. The
+athlete's own command counts as the confirmation that section 1 requires.
+This reverses "any interaction with the bot beyond receiving the briefing"
+in the PR 08 chapter.
+
+Out of scope: an LLM in the bot, group chats, moving or creating sessions
+from Telegram, media messages.
+
+**Done when:**
+1. Messages from any other chat or sender are ignored and never logged with
+   their text; the update offset survives a restart (tests with a fake
+   transport).
+2. Each command has a test for success and for a bad argument; replies are
+   plain Czech text.
+3. Logs carry outcome words only; the README privacy note covers inbound
+   messages.
+4. The four-command check is green.
+5. On the test host: `/plan` and a free-text note work from the owner's
+   phone, and the note is returned by `get_coach_context`.
+
+**Requested:** 2026-10-09, by the owner, from the project review (feature 3).
+
 ## 5. Open items
 
 - **PR 04 push channel.** Decided 2026-10-06 (PR 04): ntfy on the public
@@ -743,10 +1149,22 @@ write to Hevy, a dashboard or any UI.
   called on the owner's account; they may return nothing.
 - **e2e test shares image tags with the live stack.** `scripts/e2e-test.sh`
   builds images under the same tags as the live project (open since PR 03).
-  Resolved 2026-10-09: `compose.test.yml` gives the e2e builds their own
-  `fcm-e2e/*:test` tags, so the live tags are never retagged by the test.
+  Resolved by PR 10 (2026-10-09): `compose.test.yml` gives the e2e builds
+  their own `fcm-e2e/*:test` tags, so the test never retags the live ones.
 - **PR 07 strength payload and exercise catalogue.** Unverified; the chapter
-  starts with a spike.
+  starts with a spike. Update 2026-10-09: the catalogue is not a risk any
+  more. `garminconnect` 0.3.17 in the image ships `garminconnect.exercises`
+  (1 527 exercises in 47 categories, with `find` and `resolve`), the
+  `StrengthWorkout` model and `create_strength_set(category, sets, reps,
+  rest_seconds, weight_kg)`; the bundled catalogue of the chapter can be this
+  one. Whether Garmin accepts the uploaded payload and keeps the exercise
+  names is still unverified, so the spike stays.
+- **The coach's backend tokens have full access.** `coach-mcp` reads
+  `garmin-mcp` with the gateway's own token (PR 12 adds a read-only one).
+  PR 09 mounts `hevy_backend_token` the same way, and `hevy-mcp` is an
+  upstream image with one bearer token, so a read-only Hevy role would need
+  a filtering proxy; until then only the code allowlist protects Hevy
+  writes.
 - **Cycling power target.** `garmin-mcp/README.md` notes that a custom power
   range is sent as `power.zone` with two target values and still needs a
   visual check in Garmin Connect.
@@ -763,7 +1181,9 @@ write to Hevy, a dashboard or any UI.
   (nothing is lost). N8: two guard branches have no failing test, the
   `isinstance(..., list)` check of the activities probe and `given_up`
   counted for activities (`history.py`).
-- **Not planned yet.** Correlation analysis (sleep vs. performance) once
-  PR 05 has collected at least eight weeks of data; sending the weekly
-  report through the PR 04 push channel; an English README and an ingress
-  option without Tailscale for other users of the repo.
+- **Not planned yet.** An English README and an ingress option without
+  Tailscale for other users of the repo; a shared package for the bearer
+  middleware if a third Python service appears (`auth.py` is copied between
+  `garmin-mcp` and `coach-mcp`); creating a Hevy workout from a strength
+  session recorded on the watch (after PR 19). Correlation analysis is
+  PR 16 and the weekly report push is part of PR 14 since 2026-10-09.
