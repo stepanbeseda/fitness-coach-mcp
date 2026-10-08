@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
+import re
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from fakes import FakeHistorySource, StopLoop
@@ -18,6 +21,7 @@ from garmin_payloads import (
 from history_helpers import local, make_job, next_run, run_first, run_job, seed_activities, seed_day
 
 from coach_mcp import history
+from coach_mcp.config import Settings
 from coach_mcp.history import (
     activity_totals,
     needs_fetch,
@@ -1287,3 +1291,590 @@ async def test_config_warning_only_for_a_time_inside_the_window(store, caplog, h
     )
     lines = [r.getMessage() for r in history_lines(caplog) if "config_warning" in r.getMessage()]
     assert lines == (["history status=config_warning reason=time_in_briefing_window"] if warns else [])
+
+
+# ------------------------------------------------------- strength (Hevy) part
+
+from fakes import FakeStrengthSource  # noqa: E402
+from hevy_payloads import day_workout, deleted, events_page, hevy_template, updated  # noqa: E402
+from history_helpers import seed_strength  # noqa: E402
+
+from coach_mcp import strength as strength_module  # noqa: E402
+from coach_mcp.history import combined_outcome  # noqa: E402
+from coach_mcp.store import Store  # noqa: E402
+
+FIRST_DAY = "2026-09-27"  # TODAY - 10 days: the first day of a backfill of 10 days
+FIRST_SINCE = "2026-09-26T22:00:00Z"  # its local midnight (CEST) as UTC
+
+
+def pages_of(*pages: list[dict[str, Any]], count: bool = True):
+    """An ``events`` function answering page n with ``pages[n - 1]`` (empty past the end)."""
+
+    def events(page: int, since: str, index: int):
+        batch = pages[page - 1] if page <= len(pages) else []
+        return "ok", events_page(batch, page, len(pages) if count else None)
+
+    return events
+
+
+def wo(id: str, day: str = "2026-10-05", template_id: str = "T1", **kwargs: Any) -> dict[str, Any]:
+    return updated(day_workout(id, day, template_id, **kwargs))
+
+
+def strength_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "coach_mcp.history" and "part=strength" in r.getMessage()]
+
+
+def garmin_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "coach_mcp.history" and "part=strength" not in r.getMessage()]
+
+
+def stored_workouts(store) -> list[dict[str, Any]]:
+    """The live workouts without the wall-clock column."""
+    return [{k: v for k, v in r.items() if k != "updated_at"} for r in store.strength_workout_rows(None, date(2030, 1, 1))]
+
+
+def all_workouts(db_path) -> dict[str, tuple]:
+    conn = sqlite3.connect(db_path)
+    try:
+        return {r[0]: r[1:] for r in conn.execute("SELECT workout_id, date, deleted, hevy_updated_at, exercises FROM strength_workouts")}
+    finally:
+        conn.close()
+
+
+def sync_without_clock(store) -> dict[str, Any] | None:
+    return store.hevy_sync_state()
+
+
+@pytest.mark.anyio
+async def test_strength_first_run_lists_the_backfill_range(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    first_page = [wo(f"W{n:02d}", day=f"2026-09-{28 + n % 3}", template_id=f"T{n % 3 + 1}") for n in range(10)]
+    second_page = [wo(f"W{n:02d}", template_id=f"T{n % 3 + 1}") for n in range(10, 13)]
+    strength = FakeStrengthSource(events=pages_of(first_page, second_page))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=10)
+    await run_first(job, clock)
+
+    assert strength.calls[0] == ("get-workout-events", {"page": 1, "page_size": 10, "since": FIRST_SINCE})
+    assert strength.calls[1] == ("get-workout-events", {"page": 2, "page_size": 10, "since": FIRST_SINCE})
+    assert strength.pages == [1, 2]
+    assert len(store.strength_workout_rows(None, TODAY)) == 13
+    assert strength.template_ids == ["T1", "T2", "T3"]  # once each, in id order, after the listing
+    assert [name for name, _ in strength.calls] == ["get-workout-events"] * 2 + ["get-exercise-template"] * 3
+    state = store.hevy_sync_state()
+    assert (state["covered_from"], state["synced_on"]) == (FIRST_DAY, "2026-10-07")
+    # the sync point is the instant the listing started, i.e. before the pause that precedes its first call
+    assert datetime.fromisoformat(state["synced_at"]) == strength.times[0] - timedelta(seconds=15)
+    lines = strength_lines(caplog)
+    assert len(lines) == 1 and lines[0].startswith("history status=done part=strength workouts=13 deleted=0 templates=3 failed=0 ms=")
+    assert {t["found"] for t in store.hevy_templates().values()} == {1}
+
+
+@pytest.mark.anyio
+async def test_strength_calls_are_paced_like_garmin_calls(store):
+    garmin = FakeHistorySource()
+    strength = FakeStrengthSource(events=pages_of([wo("W1"), wo("W2", template_id="T2")]))
+    job, clock = make_job(
+        store, garmin, AFTER_WINDOW, strength=strength, history_backfill_days=3, history_call_delay_seconds=20
+    )
+    await run_first(job, clock)
+    assert garmin.times and len(strength.calls) == 3
+    merged = sorted([*garmin.times, *strength.times])
+    assert [b - a for a, b in zip(merged, merged[1:], strict=False)] == [timedelta(seconds=20)] * (len(merged) - 1)
+    assert max(garmin.times) < min(strength.times)  # Garmin first, then Hevy, with the same delay in between
+
+
+@pytest.mark.anyio
+async def test_strength_runs_once_a_day(store):
+    garmin = FakeHistorySource(auth="missing")  # the Garmin part fails, so the run is retried an hour later
+    strength = FakeStrengthSource(events=pages_of([wo("W1")]))
+    job, clock = make_job(store, garmin, AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    assert delay == 3600.0 and len(strength.calls) == 2  # the Hevy part ran although Garmin did not
+    garmin.auth = "ok"
+    delay = await next_run(job, clock, delay)  # the same day: nothing to list, no template to fetch
+    assert len(strength.calls) == 2
+    assert clock.now() + timedelta(seconds=delay) == local(date(2026, 10, 8), 3, 30)
+    synced_at = datetime.fromisoformat(store.hevy_sync_state()["synced_at"])
+    await next_run(job, clock, delay)  # the next day: one listing page since the overlap, no template call
+    assert [name for name, _ in strength.calls[2:]] == ["get-workout-events"]
+    assert strength.calls[2][1]["since"] == strength_module.since_text(synced_at - timedelta(days=3))
+    assert store.hevy_sync_state()["synced_on"] == "2026-10-08"
+
+
+@pytest.mark.anyio
+async def test_strength_rereading_events_is_idempotent(store):
+    strength = FakeStrengthSource(events=pages_of([wo("W1", "2026-10-05"), wo("W2", "2026-10-06", sets=4)]))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    before = stored_workouts(store)
+    assert [r["date"] for r in before] == ["2026-10-05", "2026-10-06"]
+    await next_run(job, clock, delay)  # the next day reads the same page again
+    assert strength.pages == [1, 1]
+    assert stored_workouts(store) == before
+
+
+def evolving(events: dict[str, list[dict[str, Any]]]):
+    """An ``events`` function whose single page is ``events["now"]``; a test changes it between runs."""
+    return lambda page, since, index: ("ok", events_page(events["now"], page, 1))
+
+
+@pytest.mark.anyio
+async def test_edited_workout_replaces_its_day(store):
+    events = {"now": [wo("W1", sets=3, updated_at="2026-10-05T11:00:00Z")]}
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=FakeStrengthSource(events=evolving(events)), history_backfill_days=3)
+    delay = await run_first(job, clock)
+    (row,) = stored_workouts(store)
+    assert json.loads(row["exercises"])[0]["sets"] == 3
+    events["now"] = [wo("W1", sets=5, weight_kg=110, updated_at="2026-10-06T08:00:00Z")]
+    await next_run(job, clock, delay)
+    (row,) = stored_workouts(store)
+    assert json.loads(row["exercises"])[0]["sets"] == 5 and json.loads(row["exercises"])[0]["volume_kg"] == 2750.0
+    assert row["date"] == "2026-10-05" and row["hevy_updated_at"] == "2026-10-06T08:00:00.000000Z"
+
+
+@pytest.mark.anyio
+async def test_moved_workout_changes_its_day(store):
+    events = {"now": [wo("W1", "2026-10-05", updated_at="2026-10-05T11:00:00Z")]}
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=FakeStrengthSource(events=evolving(events)), history_backfill_days=3)
+    delay = await run_first(job, clock)
+    assert [r["date"] for r in stored_workouts(store)] == ["2026-10-05"]
+    events["now"] = [wo("W1", "2026-10-06", updated_at="2026-10-06T08:00:00Z")]
+    await next_run(job, clock, delay)
+    assert [r["date"] for r in stored_workouts(store)] == ["2026-10-06"]  # one row, not two
+    assert store.strength_workout_rows(date(2026, 10, 5), date(2026, 10, 5)) == []
+
+
+@pytest.mark.anyio
+async def test_older_update_does_not_overwrite_a_newer_one(store):
+    events = {"now": [wo("W1", sets=5, updated_at="2026-10-06T08:00:00Z")]}
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=FakeStrengthSource(events=evolving(events)), history_backfill_days=3)
+    delay = await run_first(job, clock)
+    events["now"] = [wo("W1", sets=3, updated_at="2026-10-05T11:00:00Z")]  # a stale copy of the same workout
+    await next_run(job, clock, delay)
+    (row,) = stored_workouts(store)
+    assert json.loads(row["exercises"])[0]["sets"] == 5
+
+
+@pytest.mark.anyio
+async def test_deleted_workout_leaves_its_day_and_stays_deleted(store, db_path):
+    events = {"now": [wo("W1", "2026-10-05"), wo("W2", "2026-10-05", template_id="T2")]}
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=FakeStrengthSource(events=evolving(events)), history_backfill_days=3)
+    delay = await run_first(job, clock)
+    assert [r["workout_id"] for r in store.strength_workout_rows(None, TODAY)] == ["W1", "W2"]
+    events["now"] = [deleted("W1")]
+    delay = await next_run(job, clock, delay)
+    assert [r["workout_id"] for r in store.strength_workout_rows(None, TODAY)] == ["W2"]
+    assert store.strength_template_ids() == {"T2"}
+    events["now"] = [wo("W1", "2026-10-05", updated_at="2030-01-01T00:00:00Z")]  # an old "updated" read again later
+    await next_run(job, clock, delay)
+    assert [r["workout_id"] for r in store.strength_workout_rows(None, TODAY)] == ["W2"]
+    assert all_workouts(db_path)["W1"][1] == 1  # the tombstone is still there
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("outcome", "status"),
+    [("unreachable", "unreachable"), ("no_credentials", "no_credentials"), ("rate_limited", "rate_limited"), ("auth_error", "auth")],
+)
+async def test_strength_failure_does_not_touch_the_garmin_part(tmp_path, caplog, outcome, status):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+
+    async def run(strength: FakeStrengthSource, name: str):
+        caplog.clear()
+        db = Store(tmp_path / name)
+        job, clock = make_job(db, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+        first = await run_first(job, clock)
+        garmin = [re.sub(r" ms=\d+", "", line) for line in garmin_lines(caplog)]
+        rows = [{k: v for k, v in r.items() if k != "updated_at"} for r in db.history_rows(None, date(2030, 1, 1))]
+        line = strength_lines(caplog)[0]
+        second = await next_run(job, clock, first)
+        return db, rows, garmin, line, first, second
+
+    good_db, good_rows, good_garmin, good_line, good_first, _ = await run(FakeStrengthSource(), "good.db")
+    assert "history status=done part=strength" in good_line and good_first > 3600
+    bad_db, bad_rows, bad_garmin, bad_line, bad_first, bad_second = await run(
+        FakeStrengthSource(events=lambda page, since, index: (outcome, None)), "bad.db"
+    )
+    assert bad_rows == good_rows and bad_garmin == good_garmin  # the Garmin part is exactly as without a Hevy problem
+    assert bad_line.startswith(f"history status={status} part=strength workouts=0 deleted=0 templates=0 failed=0 ms=")
+    assert bad_db.hevy_sync_state() is None
+    assert bad_first == 3600.0
+    assert bad_second == (7200.0 if outcome == "rate_limited" else 3600.0)  # the shared backoff doubles
+    assert good_db.hevy_sync_state() is not None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["rate_limited", "unreachable"])
+async def test_strength_warning_levels(store, caplog, outcome):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    strength = FakeStrengthSource(events=lambda page, since, index: (outcome, None))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=1)
+    await run_first(job, clock)
+    levels = {r.getMessage().split(" ")[1]: r.levelno for r in caplog.records if r.name == "coach_mcp.history"}
+    assert levels == {"status=done": logging.INFO, f"status={outcome}": logging.WARNING}
+
+
+@pytest.mark.anyio
+async def test_garmin_stop_does_not_stop_the_strength_part(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    garmin = FakeHistorySource(auth="missing")
+    strength = FakeStrengthSource(events=pages_of([wo("W1")]))
+    job, clock = make_job(store, garmin, AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    assert garmin.calls == [] and delay == 3600.0  # Garmin: auth problem, the run outcome is "auth"
+    assert garmin_lines(caplog)[0].startswith("history status=auth fetched=0")
+    assert strength_lines(caplog)[0].startswith("history status=done part=strength workouts=1")
+    assert len(store.strength_workout_rows(None, TODAY)) == 1 and store.hevy_sync_state() is not None
+
+
+def full_page(page: int) -> list[dict[str, Any]]:
+    return [wo(f"P{page}-{n}") for n in range(strength_module.EVENTS_PAGE_SIZE)]
+
+
+def listing_case(name: str):
+    if name == "empty page claiming more":
+        return lambda page, since, index: ("ok", events_page(full_page(1) if page == 1 else [], page, 3))
+    if name == "page echo mismatch":
+        return lambda page, since, index: ("ok", events_page(full_page(page), 2, 3))
+    if name == "page cap":
+        return lambda page, since, index: ("ok", events_page(full_page(page), page))  # always a full page, no count
+    if name == "error on page 2":
+        return lambda page, since, index: ("ok", events_page(full_page(1), 1, 3)) if page == 1 else ("error", None)
+    raise AssertionError(name)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("name", "stored"),
+    [("empty page claiming more", 10), ("page echo mismatch", 0), ("page cap", 20), ("error on page 2", 10)],
+)
+async def test_strength_listing_failures(store, caplog, monkeypatch, name, stored):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    monkeypatch.setattr(strength_module, "MAX_EVENT_PAGES", 2)
+    strength = FakeStrengthSource(events=listing_case(name))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    assert delay == 3600.0 and clock.now() + timedelta(seconds=delay) < local(date(2026, 10, 8), 3, 30)  # the shared backoff
+    assert len(store.strength_workout_rows(None, TODAY)) == stored  # events of the pages before the failure stay
+    assert store.hevy_sync_state() is None  # the sync point did not advance
+    assert strength.template_ids == []  # no template call after a failed listing
+    (line,) = strength_lines(caplog)
+    assert line.startswith("history status=service_error part=strength") and " failed=1 " in line
+    calls = len(strength.calls)
+    await next_run(job, clock, delay)  # nothing was given up: the next run lists from page 1 again
+    assert strength.pages[calls:][:1] == [1] and len(strength.calls) > calls
+
+
+@pytest.mark.anyio
+async def test_strength_listing_ends_at_the_empty_page_past_the_end(store):
+    def events(page: int, since: str, index: int):
+        return "ok", events_page(full_page(1) if page == 1 else [], page)  # no page_count: hevy-mcp's empty last page
+
+    strength = FakeStrengthSource(events=events)
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    await run_first(job, clock)
+    assert strength.pages == [1, 2]
+    assert len(store.strength_workout_rows(None, TODAY)) == 10 and store.hevy_sync_state() is not None
+
+
+def template_down(down: dict[str, bool], broken: set[str] | None = None):
+    def template(tid: str, index: int):
+        if down["on"] or tid in (broken or set()):
+            return "error", None
+        return "ok", {"exercise_template": hevy_template(tid, f"T {tid}", "chest")}
+
+    return template
+
+
+@pytest.mark.anyio
+async def test_template_outage_stops_after_three_and_gives_nothing_up(store):
+    for n in range(1, 6):
+        seed_strength(store, f"W{n}", date(2026, 10, 5), [{"template_id": f"T{n}", "title": None, "sets": 1, "volume_kg": 0.0, "best": None}])
+    down = {"on": True}
+    strength = FakeStrengthSource(template=template_down(down))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    runs = 1
+    while clock.now().astimezone(PRAGUE_ZONE).date() < TODAY + timedelta(days=3) and runs < 40:
+        before = len(strength.template_ids)
+        delay = await next_run(job, clock, delay)
+        runs += 1
+        assert len(strength.template_ids) - before <= 3  # the outage bound: three wasted calls per run
+    assert runs > 3 and len(strength.template_ids) > 5  # it kept trying on the later days
+    rows = store.hevy_templates()
+    assert set(rows) == {f"T{n}" for n in range(1, 6)}
+    assert {r["found"] for r in rows.values()} == {None}  # nothing was ever marked found 0 or 1
+    assert all(r["attempted_on"] is not None for r in rows.values())
+    down["on"] = False  # the fourth day: Hevy is back
+    for _ in range(4):
+        delay = await next_run(job, clock, delay)
+    assert {r["found"] for r in store.hevy_templates().values()} == {1}
+
+
+PRAGUE_ZONE = ZoneInfo("Europe/Prague")
+
+
+@pytest.mark.anyio
+async def test_a_broken_template_does_not_block_the_others(store):
+    events = {"now": [wo(f"W{n}", template_id=f"T{n}") for n in range(1, 5)]}
+    strength = FakeStrengthSource(events=evolving(events), template=template_down({"on": False}, broken={"T2"}))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    assert strength.template_ids == ["T1", "T2", "T3", "T4"]  # the broken one did not stop the rest
+    assert delay == 3600.0  # partial: try again in an hour
+    rows = store.hevy_templates()
+    assert (rows["T1"]["found"], rows["T2"]["found"], rows["T3"]["found"], rows["T4"]["found"]) == (1, None, 1, 1)
+    assert rows["T2"]["attempted_on"] == "2026-10-07"
+    delay = await next_run(job, clock, delay)  # the same day: T2 was tried today, nothing else is open
+    assert len(strength.template_ids) == 4
+    events["now"] = [wo("W5", template_id="T5")]
+    await next_run(job, clock, delay)  # the next day: the new template first, the one that failed yesterday last
+    assert strength.template_ids[4:] == ["T5", "T2"]
+
+
+@pytest.mark.anyio
+async def test_template_null_is_cached_as_not_found(store):
+    strength = FakeStrengthSource(events=pages_of([wo("W1")]), template=lambda tid, index: ("ok", {"exercise_template": None}))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    row = store.hevy_templates()["T1"]
+    assert (row["found"], row["title"], row["primary_muscle_group"], row["attempted_on"]) == (0, None, None, "2026-10-07")
+    await next_run(job, clock, delay)
+    assert strength.template_ids == ["T1"]  # not requested again
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "answer",
+    [("error", None), ("ok", {}), ("ok", {"exercise_template": "a string"}), ("ok", {"exercise_template": ["x"]}), ("ok", {"other": 1})],
+)
+async def test_template_answers_that_are_not_a_template_or_null_are_failures(store, caplog, answer):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    strength = FakeStrengthSource(events=pages_of([wo("W1")]), template=lambda tid, index: answer)
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    assert await run_first(job, clock) == 3600.0
+    row = store.hevy_templates()["T1"]
+    assert row["found"] is None and row["attempted_on"] == "2026-10-07"
+    assert strength_lines(caplog)[0].startswith("history status=partial part=strength workouts=1 deleted=0 templates=0 failed=1")
+
+
+@pytest.mark.anyio
+async def test_template_fields_are_validated(store):
+    def template(tid: str, index: int):
+        return "ok", {
+            "exercise_template": {
+                "id": tid,
+                "title": "  " + "t" * 250,
+                "type": "x" * 41,
+                "primary_muscle_group": "",
+            }
+        }
+
+    strength = FakeStrengthSource(events=pages_of([wo("W1"), wo("W2", template_id="T2")]), template=template)
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    await run_first(job, clock)
+    for tid in ("T1", "T2"):
+        row = store.hevy_templates()[tid]
+        assert (row["found"], row["title"], row["type"], row["primary_muscle_group"]) == (1, "t" * 200, None, None)
+
+    def valid(tid: str, index: int):
+        return "ok", {"exercise_template": {"id": tid, "title": 5, "type": "x" * 40, "primary_muscle_group": "g" * 40}}
+
+    other = Store(store.path.parent / "other.db")
+    strength = FakeStrengthSource(events=pages_of([wo("W1")]), template=valid)
+    job, clock = make_job(other, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    await run_first(job, clock)
+    row = other.hevy_templates()["T1"]
+    assert (row["title"], row["type"], row["primary_muscle_group"]) == (None, "x" * 40, "g" * 40)
+
+
+@pytest.mark.anyio
+async def test_strength_resumes_after_a_restart_without_refetching_templates(store, tmp_path):
+    events = pages_of([wo(f"W{n}", template_id=f"T{n}") for n in range(1, 7)])
+
+    def limited(tid: str, index: int):
+        # call 0 is the listing; calls 1-3 resolve T1-T3, the fourth template call is rate limited
+        return ("rate_limited", None) if index >= 4 else ("ok", {"exercise_template": hevy_template(tid, f"T {tid}", "chest")})
+
+    first = FakeStrengthSource(events=events, template=limited)
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=first, history_backfill_days=3)
+    delay = await run_first(job, clock)
+    assert delay == 3600.0 and first.template_ids == ["T1", "T2", "T3", "T4"]
+    assert set(store.hevy_templates()) == {"T1", "T2", "T3"}
+    # the process restarts: a new job on the same store, Hevy works again
+    second = FakeStrengthSource(events=events)
+    again = HistoryJob_for(store, second, clock)
+    await again.tick()  # the 60 s start-up delay
+    await clock.sleep(60.0)
+    await again.tick()
+    assert second.pages == [] and second.template_ids == ["T4", "T5", "T6"]  # the listing was complete; T1-T3 are cached
+
+    # an uninterrupted run reaches the same stored state
+    clean_store = Store(tmp_path / "clean.db")
+    clean = FakeStrengthSource(events=events)
+    clean_job, clean_clock = make_job(clean_store, FakeHistorySource(), AFTER_WINDOW, strength=clean, history_backfill_days=3)
+    await run_first(clean_job, clean_clock)
+
+    def state(db: Store):
+        templates = {k: {c: v for c, v in r.items() if c != "updated_at"} for k, r in db.hevy_templates().items()}
+        return stored_workouts(db), templates, db.hevy_sync_state()
+
+    assert state(store) == state(clean_store)
+
+
+def HistoryJob_for(store, strength, clock):
+    from coach_mcp.config import Settings
+    from coach_mcp.history import HistoryJob
+
+    settings = Settings(timezone="Europe/Prague", history_backfill_days=3)
+    return HistoryJob(settings, store, FakeHistorySource(clock=clock), now=clock.now, sleep=clock.sleep, strength=strength)
+
+
+@pytest.mark.anyio
+async def test_strength_restart_during_the_listing_repeats_it(store):
+    cut = {"on": True}
+
+    def events(page: int, since: str, index: int):
+        if page == 2 and cut["on"]:
+            return "unreachable", None
+        return "ok", events_page(full_page(page) if page == 1 else [wo("LAST")], page, 2)
+
+    strength = FakeStrengthSource(events=events)
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    await run_first(job, clock)
+    assert strength.pages == [1, 2] and store.hevy_sync_state() is None and strength.template_ids == []
+    cut["on"] = False
+    second = FakeStrengthSource(events=events)
+    again = HistoryJob_for(store, second, clock)
+    await again.tick()
+    await clock.sleep(60.0)
+    await again.tick()
+    assert second.pages == [1, 2]  # an interrupted listing starts again from the first page
+    assert len(store.strength_workout_rows(None, TODAY)) == 11 and store.hevy_sync_state() is not None
+
+
+@pytest.mark.anyio
+async def test_longer_backfill_relists_from_the_new_first_day(store):
+    first = FakeStrengthSource(events=pages_of([wo("W1")]))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=first, history_backfill_days=10)
+    await run_first(job, clock)
+    assert first.calls[0][1]["since"] == FIRST_SINCE
+    assert store.hevy_sync_state()["covered_from"] == FIRST_DAY
+
+    longer = FakeStrengthSource(events=pages_of([wo("W1")]))
+    again = HistoryJob_for(store, longer, clock)
+    again._settings = Settings(timezone="Europe/Prague", history_backfill_days=20)
+    await again.tick()
+    await clock.sleep(60.0)
+    await again.tick()
+    # a full listing from the local midnight of the new first day, although the last listing was today
+    assert longer.calls[0] == ("get-workout-events", {"page": 1, "page_size": 10, "since": "2026-09-16T22:00:00Z"})
+    assert store.hevy_sync_state()["covered_from"] == "2026-09-17"
+
+    shorter = FakeStrengthSource(events=pages_of([wo("W1")]))
+    again = HistoryJob_for(store, shorter, clock)
+    again._settings = Settings(timezone="Europe/Prague", history_backfill_days=5)
+    await again.tick()
+    await clock.sleep(60.0)
+    await again.tick()
+    assert shorter.calls == []  # a shorter range needs nothing, and covered_from does not move
+    assert store.hevy_sync_state()["covered_from"] == "2026-09-17"
+
+
+@pytest.mark.anyio
+async def test_shorter_backfill_keeps_covered_from_on_the_next_listing(store):
+    first = FakeStrengthSource(events=pages_of([wo("W1")]))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=first, history_backfill_days=10)
+    delay = await run_first(job, clock)
+    shorter = HistoryJob_for(store, FakeStrengthSource(events=pages_of([wo("W1")])), clock)
+    shorter._settings = Settings(timezone="Europe/Prague", history_backfill_days=5)
+    shorter._due = clock.now()
+    await clock.sleep(delay)  # the next day
+    await shorter.tick()
+    state = store.hevy_sync_state()
+    assert state["synced_on"] == "2026-10-08" and state["covered_from"] == FIRST_DAY  # not moved to a later day
+
+
+@pytest.mark.anyio
+async def test_strength_pauses_in_the_briefing_window(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    strength = FakeStrengthSource(events=pages_of([wo("W1")]))
+    job, clock = make_job(store, FakeHistorySource(), local(TODAY, 6, 29, 30), strength=strength, history_backfill_days=3)
+    delay = await run_first(job, clock)  # starts at 06:30:30, inside the window
+    assert strength.calls == []
+    assert strength_lines(caplog)[0].startswith("history status=paused part=strength")
+    assert clock.now() + timedelta(seconds=delay) == local(TODAY, 9, 30)
+    await next_run(job, clock, delay)
+    assert strength.times[0] >= local(TODAY, 9, 30) and len(strength.calls) == 2
+
+
+@pytest.mark.anyio
+async def test_strength_pause_mid_listing(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    yesterday = date(2026, 10, 6)
+    seed_day(store, yesterday, fetched_on=TODAY, readiness=50)  # nothing for the Garmin part to do
+    seed_activities(store, yesterday, {}, fetched_on=TODAY)
+    strength = FakeStrengthSource(events=lambda page, since, index: ("ok", events_page(full_page(page), page)))
+    job, clock = make_job(store, FakeHistorySource(), local(TODAY, 6, 28, 50), strength=strength, history_backfill_days=1)
+    delay = await run_first(job, clock)  # 06:29:50: the first call is not paced, the pause before page 2 ends inside
+    assert strength.pages == [1]
+    assert strength_lines(caplog)[0].startswith("history status=paused part=strength workouts=10")
+    assert store.hevy_sync_state() is None and len(store.strength_workout_rows(None, TODAY)) == 10
+    assert clock.now() + timedelta(seconds=delay) == local(TODAY, 9, 30)
+
+
+@pytest.mark.anyio
+async def test_strength_crash_is_logged_after_the_garmin_line(store, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+
+    def broken(events, zone):
+        raise RuntimeError("SECRET-PARSE-TEXT")
+
+    monkeypatch.setattr(strength_module, "parse_events", broken)
+    yesterday = date(2026, 10, 6)
+    seed_day(store, yesterday, fetched_on=TODAY, readiness=50)  # nothing for the Garmin part to do: no pacing sleeps
+    seed_activities(store, yesterday, {}, fetched_on=TODAY)
+    strength = FakeStrengthSource(events=pages_of([wo("W1")]))
+    job, clock = await run_job(
+        store, FakeHistorySource(), AFTER_WINDOW, max_sleeps=3, strength=strength, settings_overrides={"history_backfill_days": 1}
+    )
+    assert clock.sleeps == [60.0, 3600.0, 3600.0]  # the crash is retried in an hour
+    lines = [r.getMessage() for r in caplog.records if r.name == "coach_mcp.history"]
+    assert lines[0].startswith("history status=done fetched=0") and lines[1] == "history status=crashed kind=RuntimeError"
+    assert not any("part=strength" in line for line in lines)
+    assert "SECRET-PARSE-TEXT" not in caplog.text
+
+
+_OUTCOMES = ["done", "partial", "paused", "rate_limited", "service_error", "auth", "unreachable", "no_credentials"]
+
+
+def test_combined_outcome_table():
+    assert combined_outcome("done", "done") == "done"
+    for strength_outcome in _OUTCOMES:
+        assert combined_outcome("done", strength_outcome) == strength_outcome
+    for garmin_outcome in _OUTCOMES[1:]:
+        assert combined_outcome(garmin_outcome, "done") == garmin_outcome
+        assert combined_outcome(garmin_outcome, "rate_limited") == garmin_outcome
+
+
+@pytest.mark.anyio
+async def test_without_a_strength_source_there_is_no_strength_line(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, history_backfill_days=1)
+    await run_first(job, clock)
+    assert len(garmin_lines(caplog)) == 1 and strength_lines(caplog) == []
+
+
+@pytest.mark.anyio
+async def test_strength_logs_carry_no_values_or_dates(store, caplog):
+    caplog.set_level(logging.DEBUG)
+    sentinel = day_workout("W-4242", "2026-10-05", "T-4242", weight_kg=4242, title="SENTINEL", updated_at="2026-10-05T11:00:00Z")
+    strength = FakeStrengthSource(events=pages_of([updated(sentinel)]), template=lambda tid, i: ("ok", {"exercise_template": hevy_template(tid, "SENTINEL", "chest")}))
+    job, clock = make_job(store, FakeHistorySource(), AFTER_WINDOW, strength=strength, history_backfill_days=3)
+    await run_first(job, clock)
+    lines = [r.getMessage() for r in caplog.records if r.name.startswith("coach_mcp")]
+    assert any("part=strength" in line for line in lines)
+    assert lines and all(line.startswith("history status=") for line in lines)
+    assert not any(bad in line for line in lines for bad in ("4242", "SENTINEL", "2026-", "chest"))
+    assert store.hevy_templates()["T-4242"]["title"] == "SENTINEL"  # the values were really handled

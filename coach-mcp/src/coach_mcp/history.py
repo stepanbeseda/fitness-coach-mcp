@@ -7,6 +7,9 @@ the store which days still need a call, so a restart resumes where the last run 
 sleep function are injected. Log lines carry outcome words, counters and exception class names only, never
 dates, values, payload text or arguments. After every run the job stores a suggestion (matched / no_activity)
 for the planned sessions of the last seven days (``reconcile``); it never changes a session status.
+
+With a strength source the same run then syncs Hevy workouts (``strength.py``): events since the last
+complete listing, exercise templates once; the Garmin part never depends on it.
 """
 
 from __future__ import annotations
@@ -21,8 +24,10 @@ from datetime import UTC, date, datetime, time as dt_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import strength
 from .config import Settings
 from .garmin import HistorySource, exception_kind
+from .hevy import StrengthSource
 from .reconcile import RECONCILE_DAYS, DayActivities, suggest
 from .store import Store
 
@@ -237,6 +242,12 @@ _WARNING_OUTCOMES = frozenset({"rate_limited", "service_error", "auth", "unreach
 PARTS = ("recovery", "activities")
 
 
+def combined_outcome(garmin: str, strength: str) -> str:
+    """The run's outcome for scheduling: the Garmin outcome rules (its backoff stays as in PR 05); only when the
+    Garmin part is done does the strength outcome decide the next run."""
+    return garmin if garmin != "done" else strength
+
+
 class _Run:
     """State of one collection run: counters plus the item errors that are not charged yet.
 
@@ -256,6 +267,14 @@ class _Run:
         self.known_good: dict[str, date | None] = {part: None for part in PARTS}
 
 
+class _StrengthRun:
+    def __init__(self) -> None:
+        self.workouts = 0  # updated events applied
+        self.deleted = 0  # delete events applied
+        self.templates = 0  # templates resolved (found or not found)
+        self.failed = 0  # failed listings and failed template calls
+
+
 class HistoryJob:
     def __init__(
         self,
@@ -265,10 +284,12 @@ class HistoryJob:
         *,
         now: Callable[[], datetime],
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        strength: StrengthSource | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._source = source
+        self._strength = strength
         self._now = now
         self._sleep = sleep
         self._zone = ZoneInfo(settings.timezone)
@@ -342,7 +363,10 @@ class HistoryJob:
     # ------------------------------------------------------------------ run
 
     async def run_once(self) -> str:
-        """One collection run plus the reconcile step; returns its outcome word (and logs exactly one line)."""
+        """One collection run plus the reconcile step; returns its outcome word.
+
+        Logs one line for the Garmin part and, with a strength source, one line for the Hevy part.
+        """
         started = time.monotonic()
         run = _Run()
         try:
@@ -368,6 +392,8 @@ class HistoryJob:
             (time.monotonic() - started) * 1000,
             step,
         )
+        if self._strength is not None:
+            outcome = combined_outcome(outcome, await self._run_strength(run))
         return outcome
 
     def _reconcile(self, today: date) -> tuple[int, int]:
@@ -450,13 +476,17 @@ class HistoryJob:
                 blocks.append([d])
         return blocks
 
-    async def _call(self, name: str, args: dict[str, Any], run: _Run) -> tuple[str, dict[str, Any] | None]:
-        """One paced backend call -> ("ok", payload) or ("error", None); anything else stops the run."""
+    async def _pace(self, run: _Run) -> None:
+        """The configured delay before every backend call of the run but the first; the briefing window stops it."""
         if run.calls:
             await self._sleep(self._settings.history_call_delay_seconds)
             if self._in_briefing_window(self._now()):
                 raise _Stop("paused")
         run.calls += 1
+
+    async def _call(self, name: str, args: dict[str, Any], run: _Run) -> tuple[str, dict[str, Any] | None]:
+        """One paced backend call -> ("ok", payload) or ("error", None); anything else stops the run."""
+        await self._pace(run)
         outcome, payload = await self._source.history_call(name, args)
         if outcome in _STOP_OUTCOMES:
             raise _Stop(_STOP_OUTCOMES[outcome])
@@ -535,3 +565,121 @@ class HistoryJob:
         self._confirm("recovery", day, run)
         self._store.upsert_history_recovery(day, recovery_values(payload), today)
         run.fetched += 1
+
+    # ------------------------------------------------------------- strength
+
+    async def _run_strength(self, run: _Run) -> str:
+        """The Hevy part of the run: one log line, returns its outcome word."""
+        started = time.monotonic()
+        srun = _StrengthRun()
+        try:
+            outcome = await self._collect_strength(srun, run)
+        except _Stop as stop:
+            outcome = stop.outcome
+        log.log(
+            logging.WARNING if outcome in _WARNING_OUTCOMES else logging.INFO,
+            "history status=%s part=strength workouts=%d deleted=%d templates=%d failed=%d ms=%.0f",
+            outcome,
+            srun.workouts,
+            srun.deleted,
+            srun.templates,
+            srun.failed,
+            (time.monotonic() - started) * 1000,
+        )
+        return outcome
+
+    async def _strength_call(self, name: str, args: dict[str, Any], run: _Run) -> tuple[str, dict[str, Any] | None]:
+        """One paced Hevy call -> ("ok", payload) or ("error", None); anything else stops the part."""
+        assert self._strength is not None
+        await self._pace(run)
+        outcome, payload = await self._strength.history_call(name, args)
+        if outcome in _STOP_OUTCOMES:
+            raise _Stop(_STOP_OUTCOMES[outcome])
+        if outcome == "ok" and payload is not None:
+            return "ok", payload
+        return "error", None
+
+    async def _collect_strength(self, srun: _StrengthRun, run: _Run) -> str:
+        today = self._today(self._now())
+        first = today - timedelta(days=self._settings.history_backfill_days)
+        state = self._store.hevy_sync_state()
+        due = strength.listing_due(state, first, today)
+        todo = self._templates_to_fetch(today)
+        if not due and not todo:
+            return "done"  # no call, no window check
+        if self._in_briefing_window(self._now()):
+            return "paused"
+        if due:
+            since, full = strength.listing_since(state, first, self._zone)
+            started = self._now()
+            if not await self._list_events(strength.since_text(since), srun, run):
+                srun.failed += 1
+                return "service_error"  # the sync point is not advanced, nothing is given up
+            covered_from = first if full or state is None else date.fromisoformat(state["covered_from"])
+            self._store.record_hevy_sync(covered_from, started, self._today(started))
+            todo = self._templates_to_fetch(today)
+        return await self._fetch_templates(todo, today, srun, run)
+
+    async def _list_events(self, since: str, srun: _StrengthRun, run: _Run) -> bool:
+        """Read every events page since ``since`` and apply it; True only for a complete listing."""
+        page = 1
+        while True:
+            args = {"page": page, "page_size": strength.EVENTS_PAGE_SIZE, "since": since}
+            outcome, payload = await self._strength_call("get-workout-events", args, run)
+            if outcome != "ok" or payload is None:
+                return False
+            step = strength.page_step(payload, page)
+            if step == "failed":
+                return False
+            batch = strength.parse_events(payload["events"], self._zone)
+            self._store.apply_strength_events(batch.updates, batch.deletes)
+            srun.workouts += len(batch.updates)
+            srun.deleted += len(batch.deletes)
+            if step == "complete":
+                return True
+            if page >= strength.MAX_EVENT_PAGES:
+                return False
+            page += 1
+
+    def _templates_to_fetch(self, today: date) -> list[str]:
+        """Templates of stored workouts that are not resolved: never tried first, then the longest ago."""
+        known = self._store.hevy_templates()
+        todo: list[tuple[bool, str, str]] = []
+        for tid in self._store.strength_template_ids():
+            row = known.get(tid)
+            if row is None:
+                todo.append((False, "", tid))
+            elif row["found"] is None and row["attempted_on"] != today.isoformat():
+                todo.append((row["attempted_on"] is not None, row["attempted_on"] or "", tid))
+        return [tid for _, _, tid in sorted(todo)]
+
+    async def _fetch_templates(self, todo: list[str], today: date, srun: _StrengthRun, run: _Run) -> str:
+        errors = consecutive = 0
+        for tid in todo:
+            outcome, payload = await self._strength_call("get-exercise-template", {"exercise_template_id": tid}, run)
+            value = payload.get("exercise_template", ...) if outcome == "ok" and payload is not None else ...
+            if value is None:
+                self._store.upsert_hevy_template(
+                    tid, found=False, title=None, type_=None, group=None, attempted_on=today
+                )
+            elif isinstance(value, dict):
+                title, kind, group = value.get("title"), value.get("type"), value.get("primary_muscle_group")
+                self._store.upsert_hevy_template(
+                    tid,
+                    found=True,
+                    title=title.strip()[: strength.MAX_TITLE] if isinstance(title, str) and title.strip() else None,
+                    type_=kind if isinstance(kind, str) and len(kind) <= 40 else None,
+                    group=group if isinstance(group, str) and 1 <= len(group) <= 40 else None,
+                    attempted_on=today,
+                )
+            else:
+                self._store.record_hevy_template_failure(tid, today)
+                errors += 1
+                srun.failed += 1
+                consecutive += 1
+                if consecutive >= OUTAGE_ERRORS:
+                    return "service_error"
+                continue
+            srun.templates += 1
+            consecutive = 0
+        return "partial" if errors else "done"
