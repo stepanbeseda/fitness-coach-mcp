@@ -12,7 +12,8 @@ Self-hosted MCP servery pro osobního fitness kouče v Claude:
 - **Kouč (paměť)**: cíle, omezení (zranění, dostupné dny, vybavení), tréninkový plán po dnech se stavem
   a deník poznámek, aby si kouč pamatoval stav mezi konverzacemi (vlastní server `coach-mcp/` se SQLite).
   Volitelně ráno pošle briefing s verdiktem a upozorněními do tvého chatu s Telegram botem (viz Provoz).
-  Každou noc ukládá denní historii z Garminu pro trendy delší než 28 dní a týdenní přehled.
+  Každou noc ukládá denní historii z Garminu a silové tréninky z Hevy pro trendy delší než 28 dní,
+  týdenní přehled a progres síly (odhad 1RM).
 
 Všechny tři běží za jednou OAuth 2.1 gateway a ven jsou vystavené jen přes **vlastní Tailscale uzel**:
 Funnel na portu 443 pro claude.ai (web, mobil, Desktop) a tailnet pro Claude Code / lokální Claude Desktop.
@@ -33,6 +34,7 @@ Claude Code / mcp-remote (Mac, tailnet) ──WireGuard────────�
  ├─ garmin-mcp ─── vlastní server, tokeny ve volume garmin-tokens, privátní síť "mcp"
  └─ coach-mcp ──── vlastní server, SQLite ve volume coach-data, privátní síť "mcp"
                    ranní briefing → Telegram Bot API (HTTPS ven, jen když je nastavený)
+                   čte garmin-mcp a hevy-mcp (jen čtecí nástroje)
 ```
 
 URL konektorů (stejné z claude.ai i z tailnetu, MagicDNS v tailnetu vrací 100.x adresu). `<tailnet>` je
@@ -55,7 +57,7 @@ gateway nemusí publikovat žádný port na hostu.
 | Přihlášení | `/authorize` (heslo argon2id + TOTP) jen z tvých zařízení v tailnetu (`Tailscale-User-Login` = `OWNER_TAILSCALE_LOGIN`, ne přes Funnel). Lockout s exponenciálním backoffem, ochrana proti znovupoužití TOTP kódu, CSRF cookie. |
 | OAuth | MCP auth spec 2025-11-25: PKCE S256 povinně, `resource` (RFC 8707), takže každý token platí jen pro jeden endpoint (Hevy token na Garminu nefunguje). `iss` (RFC 9207). Access token 1 h, refresh 90 dní, rotace s detekcí znovupoužití (s oknem 120 s na retry). Revokace (RFC 7009). |
 | Klienti | Žádná otevřená registrace (DCR). Povolení klienti jsou v `gateway/config.toml`: Claude (claude.ai, CIMD), Claude Code (CIMD) a `mcp-remote`. CIMD dokumenty jsou připnuté (žádný runtime fetch, žádné SSRF), `healthcheck.sh` hlídá změny. |
-| Backendy | Klientský token se nikdy nepřeposílá. Gateway posílá vlastní interní token pro každý backend (`secrets/*_backend_token`). `coach-mcp` čte `garmin-mcp` vlastním read-only tokenem (`secrets/garmin_readonly_token`): nástroj, který není označený jako čtecí (`create_workout`, `schedule_workout`, `unschedule_workout`, `log_weight`), mu `garmin-mcp` odmítne dřív, než se spustí. Hevy nástroj `feedback` (posílá report autorovi) je zablokovaný. |
+| Backendy | Klientský token se nikdy nepřeposílá. Gateway posílá vlastní interní token pro každý backend (`secrets/*_backend_token`). `coach-mcp` čte `garmin-mcp` vlastním read-only tokenem (`secrets/garmin_readonly_token`): nástroj, který není označený jako čtecí (`create_workout`, `schedule_workout`, `unschedule_workout`, `log_weight`), mu `garmin-mcp` odmítne dřív, než se spustí. Hevy nástroj `feedback` (posílá report autorovi) je zablokovaný. `coach-mcp` čte `hevy-mcp` napřímo s jeho interním tokenem a smí volat jen dva čtecí nástroje (`get-workout-events`, `get-exercise-template`); token `hevy-mcp` má plná práva, takže zápisům kouče do Hevy brání jen tento seznam v kódu. |
 | Tokeny | Opaque 256 bit, v SQLite jen jejich SHA-256 hash. |
 | Kontejnery | Non-root (uid 10001), `read_only`, `cap_drop: ALL`, `no-new-privileges`, limity paměti a procesů, healthchecky, rotace logů. Image pinnuté `tag@sha256`, Python závislosti zamčené s hashi. |
 | Secrets | `secrets/` (0700, soubory 0640 se skupinou 10001), Docker secrets, nikdy v gitu, env ani logu. |
@@ -315,11 +317,21 @@ v `COACH_BRIEFING_CUTOFF` (v logu jednou `history status=config_warning`).
 Vypnutí: `COACH_HISTORY_ENABLED=false` v `.env` a `docker compose up -d coach-mcp` (uložená data zůstanou,
 jen se nedoplňují). Ostatní volby `COACH_HISTORY_*` jsou v `.env.example`.
 
-V logu (`docker compose logs coach-mcp`) je jeden řádek na běh, `history status=done|partial|paused|
-rate_limited|service_error|auth|unreachable|no_credentials fetched=… failed=… pending=… given_up=… ms=…`, nikdy
-data ani hodnoty. Při `COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek
+Silové tréninky z Hevy: stejný běh si po Garminu přes `hevy-mcp` načte workouty změněné od posledního úplného
+běhu, i upravené a smazané (`get-workout-events`, po 10 na stránku), a ke každému cviku jednou jeho šablonu kvůli
+hlavní svalové skupině (`get-exercise-template`). Ukládá se jen souhrn po cvicích (pracovní série, objem v kg,
+nejlepší série a její odhad 1RM podle Epleyho), ne jednotlivé série; zahřívací série se nepočítají. První běh
+načte stejných `COACH_HISTORY_BACKFILL_DAYS` dní zpět se stejnou pauzou mezi voláními (jedno volání na 10
+workoutů a jedno na každý cvik), další noci obvykle jedno volání. Když Hevy nebo `hevy-mcp` nefunguje, Garmin
+část doběhne normálně, silová data zůstanou nepokrytá (`available: false`) a další pokus je za hodinu, při
+omezení počtu volání za 1 až 8 hodin; nic se nevzdává. V logu je pro Hevy druhý řádek
+`history status=… part=strength workouts=… deleted=… templates=… failed=… ms=…`.
+
+V logu (`docker compose logs coach-mcp`) je na každý běh jeden řádek za Garmin, `history status=done|partial|
+paused|rate_limited|service_error|auth|unreachable|no_credentials fetched=… failed=… pending=… given_up=… ms=…`,
+nikdy data ani hodnoty. Při `COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek
 `history status=config_warning`.
-`healthcheck.sh` hlásí stav úlohy (`on` / `off` / `stopped`). Silová data z Hevy se do historie zatím neukládají.
+`healthcheck.sh` hlásí stav úlohy (`on` / `off` / `stopped`).
 
 ### Obnova Garmin tokenů
 
@@ -477,7 +489,8 @@ docker run --rm --network none -v fitness-coach-mcp_gateway-data:/data --entrypo
 Vzor smaže i pomocné soubory `-journal` / `-wal` / `-shm` a kopii, ze které ses právě vrátil.
 
 Denní historie (`history_days`) je ve stejném souboru jako `coach.db`; když se ztratí, `coach-mcp` ji po startu znovu
-načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.
+načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní. Silová historie z Hevy (tabulky `strength_workouts`,
+`hevy_templates`, `hevy_sync`) se po ztrátě stejně znovu načte z Hevy.
 
 ## Troubleshooting
 
@@ -499,6 +512,7 @@ načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.
 | `coach-mcp` se pořád restartuje, v logu `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | V `.env` je chat id, ale token chybí nebo je poškozený → `scripts/setup-secrets.sh telegram-token`, nebo chat id z `.env` smaž (briefing vypnutý). |
 | `get_trends` / `get_weekly_report` nemají data | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect nebo internet nefungoval, další pokus za 1 až 8 h, dny se nezapočítají; `given_up` > 0 = dny, které třikrát selhaly, i když Garmin jiné dny vracel). |
 | `get_plan` nemá u minulého tréninku `suggestion` | Trénink není `planned`, je typu `mobility` / `other`, den se ještě nenačetl (poprvé den po tréninku v 03:30), je starší než 7 dní od nasazení, nebo je historie vypnutá (`COACH_HISTORY_ENABLED=false`); řádek `history status=… matched=… no_activity=…` v `docker compose logs coach-mcp`. |
+| `get_strength_progress` nebo silová část `get_weekly_report` nemá data | Silová historie se teprve načítá nebo `hevy-mcp` nefunguje: `docker compose logs coach-mcp`, řádky `history status=… part=strength` (`no_credentials` = kontejner `coach-mcp` nemá `hevy_backend_token`, po aktualizaci `docker compose up -d coach-mcp`; `unreachable` = `hevy-mcp` neodpovídá; `auth` = neplatný Hevy klíč, `scripts/setup-secrets.sh hevy-key`; `rate_limited` = Hevy omezil počet volání, další pokus za 1 až 8 h; `service_error` = Hevy vrátil chybu nebo nečekanou stránku, další pokus za 1 až 8 h). |
 | Ranní notifikace nepřišla | `docker compose logs coach-mcp`: `skipped` = služba startovala až po cutoff; `gave_up` = Telegram zprávu odmítl (token, chat id, bot zablokovaný nebo mu ještě nikdo nenapsal) nebo neodpovídal; žádný řádek `briefing` = briefing vypnutý (`healthcheck.sh` to vypíše). |
 | Hevy nástroje vrací 401 | Neplatný Hevy klíč nebo vypršelo Hevy PRO → `scripts/setup-secrets.sh hevy-key`. |
 | Garmin nástroje: „spusť scripts/garmin-login.sh“ | Tokeny chybí nebo expirovaly → `scripts/garmin-login.sh`. |
