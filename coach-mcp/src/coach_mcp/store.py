@@ -104,6 +104,30 @@ CREATE TABLE history_days (
   updated_at            TEXT NOT NULL
 );
 """,
+    # Plan reconciliation (PR 13): the alert key missed_planned_session (SQLite cannot alter a CHECK, so
+    # alert_state is rebuilt with all its rows) and the nightly suggestion per session.
+    """
+CREATE TABLE alert_state_new (
+  key          TEXT PRIMARY KEY
+               CHECK (key IN ('hrv_below_baseline','resting_hr_elevated','acwr_out_of_range','missed_workout','garmin_auth','missed_planned_session')),
+  value        INTEGER NOT NULL CHECK (value IN (0, 1)),
+  evaluated_on TEXT NOT NULL,
+  fired_on     TEXT
+);
+INSERT INTO alert_state_new (key, value, evaluated_on, fired_on)
+  SELECT key, value, evaluated_on, fired_on FROM alert_state;
+DROP TABLE alert_state;
+ALTER TABLE alert_state_new RENAME TO alert_state;
+CREATE TABLE session_suggestions (
+  session_id   INTEGER PRIMARY KEY REFERENCES sessions(id),
+  result       TEXT NOT NULL CHECK (result IN ('matched','no_activity')),
+  final        INTEGER NOT NULL CHECK (final IN (0, 1)),
+  evidence     TEXT CHECK (evidence IS NULL OR (json_valid(evidence) AND length(evidence) <= 2000)),
+  evaluated_on TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  CHECK ((result = 'matched') = (evidence IS NOT NULL))
+);
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -320,6 +344,32 @@ class Store:
             tuple(ids),
         )
         return {row["moved_from_id"]: (row["id"], row["date"]) for row in rows}
+
+    def upsert_suggestions(self, rows: Sequence[tuple[int, str, bool, str | None]], evaluated_on: date) -> None:
+        """Store (session_id, result, final, evidence JSON) for each row in one transaction; nothing is deleted."""
+        now = _now()
+        with self._conn() as conn, conn:
+            for session_id, result, final, evidence in rows:
+                conn.execute(
+                    "INSERT INTO session_suggestions (session_id, result, final, evidence, evaluated_on, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET result = excluded.result, final = excluded.final, "
+                    "evidence = excluded.evidence, evaluated_on = excluded.evaluated_on, "
+                    "updated_at = excluded.updated_at",
+                    (session_id, result, int(final), evidence, evaluated_on.isoformat(), now),
+                )
+
+    def suggestions_for(self, ids: Sequence[int]) -> dict[int, dict[str, Any]]:
+        """session_id -> {session_id, result, final, evidence, evaluated_on} for the ids that have a row."""
+        if not ids:
+            return {}
+        marks = ", ".join("?" for _ in ids)
+        rows = self._all(
+            f"SELECT session_id, result, final, evidence, evaluated_on FROM session_suggestions "
+            f"WHERE session_id IN ({marks})",
+            tuple(ids),
+        )
+        return {row["session_id"]: row for row in rows}
 
     def update_session_status(
         self, session_id: int, status: str, new_date: date | None, note: tuple[date, str] | None
