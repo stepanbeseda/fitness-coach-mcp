@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import sqlite3
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -23,6 +24,12 @@ _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 MAX_RANGE_DAYS = 92
 LATEST_NOTES = 10
+SEARCH_LIMIT = 20
+SEARCH_LIMIT_MAX = 50
+SEARCH_QUERY_ERROR = (
+    'invalid search query: use plain words (all must match), "exact phrase", OR, NOT and prefix*; '
+    'put a word containing punctuation such as - : , . ? or \' in double quotes, e.g. "low-carb"'
+)
 
 SessionType = Literal["running", "cycling", "swimming", "strength", "mobility", "other"]
 
@@ -431,6 +438,50 @@ def add_note(
         raise ToolError(f"session {session_id} not found")
     note_id = store.insert_note(day, body, session_id)
     return {"note": note_out(_must_get(store.get_note(note_id), "note", note_id))}
+
+
+def search_notes(
+    store: Store,
+    today: dt.date,
+    *,
+    query: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    session_id: int | None = None,
+    limit: int = SEARCH_LIMIT,
+) -> dict[str, Any]:
+    text = _required_text(query, "query")
+    start = parse_date(start_date, "start_date") if start_date is not None else None
+    end = parse_date(end_date, "end_date") if end_date is not None else None
+    if start is not None and end is not None and start > end:
+        raise ToolError("start_date must be on or before end_date")
+    if session_id is not None and store.get_session(session_id) is None:
+        raise ToolError(f"session {session_id} not found")
+    try:
+        rows = store.search_notes(text, start, end, session_id, limit + 1)
+    except sqlite3.OperationalError as exc:
+        if exc.sqlite_errorcode != sqlite3.SQLITE_ERROR:
+            raise
+        raise ToolError(SEARCH_QUERY_ERROR) from None
+    return {"notes": [note_out(r) for r in rows[:limit]], "more": len(rows) > limit}
+
+
+def list_goals(store: Store, today: dt.date) -> dict[str, Any]:
+    return {
+        "goals": [
+            {**goal_out(g, today), "created_at": g["created_at"], "updated_at": g["updated_at"]}
+            for g in store.list_goals()
+        ]
+    }
+
+
+def list_constraints(store: Store, today: dt.date) -> dict[str, Any]:
+    return {
+        "constraints": [
+            {**constraint_out(c), "created_at": c["created_at"], "updated_at": c["updated_at"]}
+            for c in store.list_constraints()
+        ]
+    }
 
 
 def _must_get(row: dict[str, Any] | None, kind: str, row_id: int) -> dict[str, Any]:
