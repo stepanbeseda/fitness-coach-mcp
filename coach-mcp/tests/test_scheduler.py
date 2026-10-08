@@ -637,7 +637,7 @@ async def test_send_briefing_command_with_unusable_token_reports_permanent(db_pa
 
 def test_main_dispatch_usage(capsys, monkeypatch, restore_logging):
     assert main(["bogus"]) == 2
-    assert capsys.readouterr().err == "usage: python -m coach_mcp [send-briefing]\n"
+    assert capsys.readouterr().err == "usage: python -m coach_mcp [send-briefing | backup | restore [PATH]]\n"
     assert main(["send-briefing", "extra"]) == 2
     monkeypatch.delenv("COACH_TELEGRAM_CHAT_ID", raising=False)
     capsys.readouterr()
