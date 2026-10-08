@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from . import __version__, activities, body, health, performance, workouts
+from .access import ReadOnlyGuard
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
 from .formatting import to_json
@@ -85,6 +86,7 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
+    guard = ReadOnlyGuard()
     server = MCPServer(
         name="garmin-coach",
         title="Garmin Connect (fitness coach)",
@@ -92,6 +94,7 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         version=__version__,
         lifespan=lifespan,
         log_level=settings.log_level if settings.log_level in ("DEBUG", "INFO", "WARNING", "ERROR") else "INFO",
+        extensions=[guard],
     )
 
     def tool(name: str, annotations: ToolAnnotations) -> Callable[[Callable[..., Awaitable[Any]]], Any]:
@@ -104,6 +107,7 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
                 annotations=annotations,
                 structured_output=False,
             )
+            guard.register(name, annotations)
             return fn
 
         return register
@@ -329,7 +333,12 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
 def create_app(settings: Settings | None = None, service: GarminService | None = None) -> ASGIApp:
     settings = settings or Settings.from_env()
     service = service or GarminService(settings)
-    server = build_server(service, settings)
+    return asgi_app(build_server(service, settings), settings)
+
+
+def asgi_app(server: MCPServer, settings: Settings) -> ASGIApp:
+    """Streamable HTTP app of ``server`` behind the bearer check (gateway token: full access,
+    coach-mcp's token: read-only)."""
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=bool(settings.allowed_hosts),
         allowed_hosts=settings.allowed_hosts,
@@ -343,4 +352,11 @@ def create_app(settings: Settings | None = None, service: GarminService | None =
         transport_security=security,
         max_request_body_size=256 * 1024,
     )
-    return BearerAuthMiddleware(app, BackendToken(settings.bearer_token_file), prefix="/mcp")
+    readonly = BackendToken(settings.readonly_token_file)
+    if readonly.value() is None:
+        logging.getLogger("garmin_coach_mcp.auth").warning(
+            "read-only token file missing or too short: only the gateway token is accepted"
+        )
+    return BearerAuthMiddleware(
+        app, BackendToken(settings.bearer_token_file), prefix="/mcp", readonly_token=readonly
+    )

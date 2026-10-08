@@ -11,10 +11,15 @@ def _split(value: str | None) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
 
 
+READONLY_TOKEN_FILE = "/run/secrets/garmin_readonly_token"
+
+
 @dataclass(frozen=True)
 class Settings:
     tokens_dir: Path = Path("~/.garminconnect").expanduser()
     bearer_token_file: Path = Path("/run/secrets/garmin_backend_token")
+    # coach-mcp's token: tool calls of tools not annotated read-only are refused (access.py).
+    readonly_token_file: Path = Path(READONLY_TOKEN_FILE)
     host: str = "0.0.0.0"
     port: int = 8000
     timezone: str = "Europe/Prague"
@@ -35,6 +40,7 @@ class Settings:
             bearer_token_file=Path(
                 env.get("GARMIN_MCP_BEARER_TOKEN_FILE", "/run/secrets/garmin_backend_token")
             ),
+            readonly_token_file=Path(env.get("GARMIN_MCP_READONLY_TOKEN_FILE", READONLY_TOKEN_FILE)),
             host=env.get("GARMIN_MCP_HOST", "0.0.0.0"),
             port=int(env.get("GARMIN_MCP_PORT", "8000")),
             timezone=env.get("TZ") or "Europe/Prague",
