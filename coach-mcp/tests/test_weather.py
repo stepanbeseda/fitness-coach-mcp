@@ -500,16 +500,18 @@ async def test_success_is_logged_without_coordinates(caplog):
 
 @pytest.mark.anyio
 async def test_non_numeric_values_become_null():
-    hours = good_only([10, 11, 12, 13])
+    hours = good_only([10, 11, 12, 13, 14])
     hours[f"{DAY0}T11:00"] = {"apparent_temperature": "n/a"}
     hours[f"{DAY0}T12:00"] = {"wind_speed_10m": True}
+    hours[f"{DAY0}T13:00"] = {"temperature_2m": math.nan}  # json.dumps writes NaN, which json.loads accepts
     service, _, _ = make(open_meteo_payload(hours=hours))
     result = await service.forecast()
     hourly = result["days"][0]["hourly"]
     assert hourly["apparent_temperature_c"][11] is None and hourly["apparent_temperature_c"][10] == 10.0
     assert hourly["wind_speed_kmh"][12] is None and hourly["wind_speed_kmh"][13] == 10.0
-    # Both hours are not eligible: the window splits into 10:00 and 13:00; equal, so the earlier one.
-    assert window_of(result) == ("10:00", "11:00")
+    assert hourly["temperature_c"][13] is None and hourly["temperature_c"][14] == 12.0
+    # Hours 11 and 12 are not eligible: the window splits into 10:00 and 13:00-15:00; the longer one wins.
+    assert window_of(result) == ("13:00", "15:00")
 
 
 @pytest.mark.anyio
