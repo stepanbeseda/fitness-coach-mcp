@@ -189,7 +189,7 @@ def test_defaults_last_90_days_ending_yesterday(store):
         ({"metrics": ["readiness"]}, "at least two different metrics are needed"),
         ({"metrics": ["readiness", "readiness"]}, "at least two different metrics are needed"),
         (
-            {"metrics": ["readiness", "sleep_score", "stress_avg", "resting_hr", "acute_load", "acwr_ratio", "vo2max"]},
+            {"metrics": ["readiness", "sleep_score", "stress_avg", "resting_hr", "acute_load", "acwr_ratio", "vo2max_running"]},
             "at most 6 different metrics",
         ),
         ({"metrics": ["readiness", "steps"]}, "unknown metric: steps"),

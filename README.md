@@ -305,9 +305,10 @@ obě proměnné do `.env` a nakonec `docker compose up -d --build --no-deps coac
 `get_hrv_trend` sahá jen 28 dní zpět a `get_body_battery` 31. Aby kouč viděl dál, `coach-mcp` si každou noc
 (03:30) uloží denní hodnoty z Garminu (HRV, spánek, klidová tepovka, Body Battery, stres, readiness, zátěž,
 VO2max a součty aktivit po sportech) do SQLite ve volume `coach-data`. `get_trends` je čte po dnech, týdnech
-a měsících a `get_weekly_report` z nich skládá týdenní přehled. Data zůstávají na serveru, nové vystavení
-osobních dat tím nevzniká. Z uložených aktivit server každou noc navrhne stav plánovaných tréninků posledních
-7 dní (`matched` / `no_activity`); stav sám nemění, potvrzuje ho kouč přes `update_session`.
+a měsících, `get_weekly_report` z nich skládá týdenní přehled a `get_correlations` počítá korelace
+(souvislost, ne příčinu). Data zůstávají na serveru, nové vystavení osobních dat tím nevzniká. Z uložených
+aktivit server každou noc navrhne stav plánovaných tréninků posledních 7 dní (`matched` / `no_activity`);
+stav sám nemění, potvrzuje ho kouč přes `update_session`.
 
 První běh je největší: minutu po nasazení se začne načítat 90 dní zpět, asi 470 volání Garmin Connect ve 103
 voláních `garmin-mcp` s pauzou 15 s, dohromady zhruba 30 minut; pak je to asi 16 volání za noc. Mezi
@@ -512,7 +513,7 @@ načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní. Silová hist
 | `garmin-mcp` nebo `coach-mcp` se nespustí: `bind source path does not exist: …/secrets/garmin_readonly_token` | Chybí read-only token kouče → `scripts/setup-secrets.sh` a `docker compose up -d --build garmin-mcp coach-mcp`. |
 | Briefing ani historie nemají data z Garminu, v logu `garmin-mcp` je `read-only token file missing or too short` | Soubor `secrets/garmin_readonly_token` je prázdný → `scripts/setup-secrets.sh` ho doplní; běžící služby si nový token načtou samy. |
 | `coach-mcp` se pořád restartuje, v logu `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | V `.env` je chat id, ale token chybí nebo je poškozený → `scripts/setup-secrets.sh telegram-token`, nebo chat id z `.env` smaž (briefing vypnutý). |
-| `get_trends` / `get_weekly_report` nemají data | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect nebo internet nefungoval, další pokus za 1 až 8 h, dny se nezapočítají; `given_up` > 0 = dny, které třikrát selhaly, i když Garmin jiné dny vracel). |
+| `get_trends` / `get_weekly_report` nemají data, `get_correlations` vrací `too_few_pairs` | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect nebo internet nefungoval, další pokus za 1 až 8 h, dny se nezapočítají; `given_up` > 0 = dny, které třikrát selhaly, i když Garmin jiné dny vracel). |
 | `get_plan` nemá u minulého tréninku `suggestion` | Trénink není `planned`, je typu `mobility` / `other`, den se ještě nenačetl (poprvé den po tréninku v 03:30), je starší než 7 dní od nasazení, nebo je historie vypnutá (`COACH_HISTORY_ENABLED=false`); řádek `history status=… matched=… no_activity=…` v `docker compose logs coach-mcp`. |
 | `get_strength_progress` nebo silová část `get_weekly_report` nemá data | Silová historie se teprve načítá nebo `hevy-mcp` nefunguje: `docker compose logs coach-mcp`, řádky `history status=… part=strength` (`no_credentials` = kontejner `coach-mcp` nemá `hevy_backend_token`, po aktualizaci `docker compose up -d coach-mcp`; `unreachable` = `hevy-mcp` neodpovídá; `auth` = neplatný Hevy klíč, `scripts/setup-secrets.sh hevy-key`; `rate_limited` = Hevy omezil počet volání, další pokus za 1 až 8 h; `service_error` = Hevy vrátil chybu nebo nečekanou stránku, další pokus za 1 až 8 h). |
 | Ranní notifikace nepřišla | `docker compose logs coach-mcp`: `skipped` = služba startovala až po cutoff; `gave_up` = Telegram zprávu odmítl (token, chat id, bot zablokovaný nebo mu ještě nikdo nenapsal) nebo neodpovídal; žádný řádek `briefing` = briefing vypnutý (`healthcheck.sh` to vypíše). |

@@ -23,6 +23,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from . import __version__, strength, tools, trends
+from . import correlations
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
 from .garmin import GarminReader, GarminSource, HistorySource, exception_kind
@@ -61,6 +62,8 @@ INSTRUCTIONS = (
     " search_notes searches the whole notes log (get_coach_context has only the latest 10 notes); "
     "list_goals and list_constraints include achieved, abandoned and resolved entries. Search there "
     "before asking the athlete about something they may already have told the coach."
+    " get_correlations returns Pearson and Spearman coefficients between stored history metrics "
+    "(optionally a few days apart); a correlation is not a cause, say so when you use it."
 )
 
 GoalStatus = Literal["active", "achieved", "abandoned"]
@@ -387,6 +390,31 @@ def build_server(
         kind, title, details, status and created_at / updated_at in UTC; for a resolved constraint (e.g. a
         past injury) updated_at is when it was resolved or last changed."""
         return tools.list_constraints(store, today())
+
+    @tool("get_correlations", _read("Correlations"))
+    async def get_correlations(
+        metrics: Annotated[
+            list[trends.TrendMetric],
+            Field(min_length=2, max_length=6, description="Metric names from the get_trends catalogue, 2-6."),
+        ],
+        start_date: Annotated[str | None, Field(description="YYYY-MM-DD; default end_date - 89 days.")] = None,
+        end_date: Annotated[str | None, Field(description="YYYY-MM-DD, not after today; default yesterday.")] = None,
+        lag_days: Annotated[
+            int, Field(ge=0, le=3, description="0-3: metric a on day d against metric b on day d + lag_days.")
+        ] = 0,
+    ) -> Any:
+        """Correlation between stored daily history metrics (the get_trends catalogue, max 731 days): for
+        every pair of the chosen metrics (a = the one listed earlier, b = the later one) the Pearson and
+        Spearman coefficients (-1 to 1) and the number of paired days. With lag_days = k, a on day d is
+        paired with b on day d + k, both inside the date range, e.g. acute_load first and hrv_last_night_ms
+        second asks whether load shows in HRV k days later. Days without either value are skipped, never
+        counted as zero (an activity total is 0 on a day whose activities were fetched and empty). Fewer than
+        14 paired days or a constant series give available: false with a reason. Every result carries a
+        fixed caveat: a correlation is not a cause. Default: the 90 days ending yesterday. Only the
+        get_trends metrics are available; Hevy strength history is not part of them. Reads the stored history only."""
+        return correlations.get_correlations(
+            store, today(), metrics=metrics, start_date=start_date, end_date=end_date, lag_days=lag_days
+        )
 
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Request) -> JSONResponse:

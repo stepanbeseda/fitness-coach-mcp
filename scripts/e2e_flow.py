@@ -200,6 +200,15 @@ def exercise_history(client: httpx.Client, token: str) -> None:
     ok, data = tool_result(body)
     check(ok and isinstance(data, dict) and data.get("available") is False and data.get("exercises") == [],
           "coach get_strength_progress answers from the empty history")
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {
+        "name": "get_correlations", "arguments": {"metrics": ["acute_load", "hrv_last_night_ms"]}}, msg_id=12)
+    ok, data = tool_result(body)
+    pairs = data.get("pairs") if isinstance(data, dict) else None
+    first = pairs[0] if isinstance(pairs, list) and pairs and isinstance(pairs[0], dict) else {}
+    caveat = data.get("caveat") if isinstance(data, dict) else None
+    check(ok and first.get("available") is False and first.get("reason") == "too_few_pairs"
+          and isinstance(caveat, str) and "not a cause" in caveat,
+          "coach get_correlations answers from the empty history with the caveat")
 
 
 def main() -> int:
