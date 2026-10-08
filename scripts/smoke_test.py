@@ -139,8 +139,10 @@ def main() -> int:
 
     section("Kouč: initialize + tools/list")
     coach = McpSession(f"{base}/coach/mcp", coach_token)
+    coach_ready = False
     try:
         info = coach.initialize()
+        coach_ready = True
         tools = [t["name"] for t in coach.request("tools/list")["tools"]]
         print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
         section("Kouč: get_coach_context (jen počty)")
@@ -169,6 +171,23 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")
+
+    if coach_ready:
+        section("Kouč: počasí (bez souřadnic)")
+        try:
+            data = json.loads(coach.call("get_weather_forecast", {}))
+            first = data["days"][0] if data["days"] else {}
+            summary = first.get("summary", {})
+            print(f"počasí: {data['timezone']} | dní {len(data['days'])} | {first.get('date')} "
+                  f"východ {first.get('sunrise')} západ {first.get('sunset')} | "
+                  f"teplota {summary.get('temperature_min_c')} až {summary.get('temperature_max_c')} °C | "
+                  f"oken venku {len(data['best_outdoor_windows'])} | načteno {data['fetched_at']}")
+        except Exception as exc:  # noqa: BLE001
+            if "No home location configured" in str(exc):
+                print("počasí: poloha není nastavená (COACH_HOME_LATITUDE a COACH_HOME_LONGITUDE v .env)")
+            else:
+                failures += 1
+                print(f"FAIL: {exc}")
 
     print("\nOK" if failures == 0 else f"\n{failures} část(i) selhala")
     return 1 if failures else 0
