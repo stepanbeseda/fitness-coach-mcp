@@ -5,7 +5,8 @@ stress, load, VO2max) from ``get_recovery_snapshot`` and per-sport activity tota
 Progress is the stored state, not a cursor: ``needs_fetch`` decides from the dates and failure counters in
 the store which days still need a call, so a restart resumes where the last run stopped. The clock and the
 sleep function are injected. Log lines carry outcome words, counters and exception class names only, never
-dates, values, payload text or arguments.
+dates, values, payload text or arguments. After every run the job stores a suggestion (matched / no_activity)
+for the planned sessions of the last seven days (``reconcile``); it never changes a session status.
 """
 
 from __future__ import annotations
@@ -15,13 +16,14 @@ import json
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, time as dt_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .garmin import HistorySource, exception_kind
+from .reconcile import RECONCILE_DAYS, DayActivities, suggest
 from .store import Store
 
 log = logging.getLogger("coach_mcp.history")
@@ -180,11 +182,41 @@ def needs_fetch(day: date, fetched_on: date | None, failures: int, today: date) 
     return fetched_on < today and fetched_on < day + timedelta(days=REFETCH_DAYS) and failures < MAX_FAILURES
 
 
+def activities_settled(day: date, fetched_on: date, failures: int) -> bool:
+    """No later run re-fetches the activities of ``day``: the inverse of the re-fetch rule in ``needs_fetch``."""
+    return fetched_on >= day + timedelta(days=REFETCH_DAYS) or failures >= MAX_FAILURES
+
+
 def _fetched_on(value: Any) -> date | None:
     try:
         return date.fromisoformat(value) if isinstance(value, str) else None
     except ValueError:
         return None
+
+
+def day_activities(rows: Sequence[Mapping[str, Any]]) -> dict[str, DayActivities]:
+    """Stored activity totals per date (``history_days`` rows) for ``reconcile.suggest``.
+
+    A day never fetched (activities NULL, also a given-up day), with invalid JSON or without a fetch date is
+    left out, so it gets no suggestion.
+    """
+    out: dict[str, DayActivities] = {}
+    for row in rows:
+        fetched_on = _fetched_on(row.get("activities_fetched_on"))
+        text = row.get("activities")
+        if fetched_on is None or not isinstance(text, str):
+            continue
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        settled = activities_settled(
+            date.fromisoformat(row["date"]), fetched_on, row.get("activities_failures") or 0
+        )
+        out[row["date"]] = DayActivities(parsed, settled)
+    return out
 
 
 class _Stop(Exception):
@@ -310,7 +342,7 @@ class HistoryJob:
     # ------------------------------------------------------------------ run
 
     async def run_once(self) -> str:
-        """One collection run; returns its outcome word (and logs exactly one line)."""
+        """One collection run plus the reconcile step; returns its outcome word (and logs exactly one line)."""
         started = time.monotonic()
         run = _Run()
         try:
@@ -318,17 +350,49 @@ class HistoryJob:
         except _Stop as stop:
             outcome = stop.outcome  # the held errors of the run are dropped, not charged
         level = logging.WARNING if outcome in _WARNING_OUTCOMES else logging.INFO
+        # The step needs only the store, so it runs after every run, also after an early return or a stop.
+        try:
+            matched, no_activity = self._reconcile(self._today(self._now()))
+            step = f"matched={matched} no_activity={no_activity}"
+        except Exception as exc:  # the run's outcome and scheduling stand; BaseException propagates
+            step = f"reconcile=error kind={exception_kind(exc)}"
+            level = logging.WARNING
         log.log(
             level,
-            "history status=%s fetched=%d failed=%d pending=%d given_up=%d ms=%.0f",
+            "history status=%s fetched=%d failed=%d pending=%d given_up=%d ms=%.0f %s",
             outcome,
             run.fetched,
             run.failed,
             len(run.pending),
             run.given_up,
             (time.monotonic() - started) * 1000,
+            step,
         )
         return outcome
+
+    def _reconcile(self, today: date) -> tuple[int, int]:
+        """Store a suggestion for every planned session of the last RECONCILE_DAYS days; changes no status.
+
+        Returns (matched, no_activity).
+        """
+        first, last = today - timedelta(days=RECONCILE_DAYS), today - timedelta(days=1)
+        found = suggest(
+            self._store.sessions_between(first, last), day_activities(self._store.history_rows(first, last))
+        )
+        self._store.upsert_suggestions(
+            [
+                (
+                    sid,
+                    s.result,
+                    s.final,
+                    None if s.evidence is None else json.dumps(s.evidence, sort_keys=True, separators=(",", ":")),
+                )
+                for sid, s in found.items()
+            ],
+            today,
+        )
+        matched = sum(1 for s in found.values() if s.result == "matched")
+        return matched, len(found) - matched
 
     async def _collect(self, run: _Run) -> str:
         today = self._today(self._now())
