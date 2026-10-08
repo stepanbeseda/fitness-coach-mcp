@@ -21,6 +21,8 @@ def test_from_env_defaults():
     assert s.telegram_token_file == Path("/run/secrets/telegram_bot_token")
     assert s.garmin_url == "http://garmin-mcp:8000/mcp"
     assert s.garmin_token_file == Path("/run/secrets/garmin_readonly_token")
+    assert s.hevy_url == "http://hevy-mcp:3000/mcp"
+    assert s.hevy_token_file == Path("/run/secrets/hevy_backend_token")
     assert s.briefing_time == dt.time(6, 30)
     assert s.briefing_cutoff == dt.time(9, 30)
     assert s.briefing_retry_minutes == 15
@@ -144,9 +146,14 @@ def test_blank_briefing_values_fall_back_to_defaults():
         "COACH_HISTORY_TIME",
         "COACH_HISTORY_BACKFILL_DAYS",
         "COACH_HISTORY_CALL_DELAY_SECONDS",
+        "COACH_HEVY_MCP_URL",
+        "COACH_HEVY_TOKEN_FILE",
     )
-    assert Settings.from_env(dict.fromkeys(names, "")) == Settings()
-    assert Settings.from_env(dict.fromkeys(names, "  ")) == Settings()
+    defaults = Settings()
+    assert defaults.hevy_url == "http://hevy-mcp:3000/mcp"
+    assert defaults.hevy_token_file == Path("/run/secrets/hevy_backend_token")
+    assert Settings.from_env(dict.fromkeys(names, "")) == defaults
+    assert Settings.from_env(dict.fromkeys(names, "  ")) == defaults
 
 
 def test_chat_id_not_in_repr(tmp_path):
@@ -252,3 +259,18 @@ def test_db_path_from_env():
         db_path_from_env({"COACH_MCP_DB_PATH": "relative/coach.db"})
     with pytest.raises(ValueError, match="COACH_MCP_DB_PATH must not be empty"):
         db_path_from_env({"COACH_MCP_DB_PATH": " "})
+
+
+def test_hevy_settings_overrides():
+    s = Settings.from_env({"COACH_HEVY_MCP_URL": "https://hevy.example/mcp", "COACH_HEVY_TOKEN_FILE": "/tmp/hevy"})
+    assert s.hevy_url == "https://hevy.example/mcp"
+    assert s.hevy_token_file == Path("/tmp/hevy")
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["ftp://hevy-mcp:3000/mcp", "http://hevy-mcp:3000/x", "http://hevy-mcp:3000/mcp?x", "http://hevy-mcp:3000"],
+)
+def test_invalid_hevy_url_is_rejected(url):
+    with pytest.raises(ValueError, match="COACH_HEVY_MCP_URL"):
+        Settings.from_env({"COACH_HEVY_MCP_URL": url})

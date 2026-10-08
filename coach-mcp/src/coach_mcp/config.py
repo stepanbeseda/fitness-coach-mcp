@@ -100,6 +100,8 @@ class Settings:
     telegram_token_file: Path = Path("/run/secrets/telegram_bot_token")
     garmin_url: str = "http://garmin-mcp:8000/mcp"
     garmin_token_file: Path = Path("/run/secrets/garmin_readonly_token")
+    hevy_url: str = "http://hevy-mcp:3000/mcp"
+    hevy_token_file: Path = Path("/run/secrets/hevy_backend_token")
     briefing_time: dt.time = dt.time(6, 30)
     briefing_cutoff: dt.time = dt.time(9, 30)
     briefing_retry_minutes: int = 15
@@ -152,6 +154,11 @@ class Settings:
         if not garmin_url.endswith("/mcp"):
             raise ValueError("COACH_GARMIN_MCP_URL must end with /mcp")
 
+        hevy_url = _opt(env, "COACH_HEVY_MCP_URL", "http://hevy-mcp:3000/mcp")
+        _url("COACH_HEVY_MCP_URL", hevy_url)
+        if not hevy_url.endswith("/mcp"):
+            raise ValueError("COACH_HEVY_MCP_URL must end with /mcp")
+
         briefing_time = _clock_time("COACH_BRIEFING_TIME", _opt(env, "COACH_BRIEFING_TIME", "06:30"))
         briefing_cutoff = _clock_time("COACH_BRIEFING_CUTOFF", _opt(env, "COACH_BRIEFING_CUTOFF", "09:30"))
         if briefing_cutoff <= briefing_time:
@@ -184,6 +191,8 @@ class Settings:
             telegram_token_file=telegram_token_file,
             garmin_url=garmin_url,
             garmin_token_file=Path(_opt(env, "COACH_GARMIN_TOKEN_FILE", "/run/secrets/garmin_readonly_token")),
+            hevy_url=hevy_url,
+            hevy_token_file=Path(_opt(env, "COACH_HEVY_TOKEN_FILE", "/run/secrets/hevy_backend_token")),
             briefing_time=briefing_time,
             briefing_cutoff=briefing_cutoff,
             briefing_retry_minutes=retry,
