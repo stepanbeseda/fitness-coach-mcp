@@ -48,6 +48,7 @@ from history_helpers import (
     seed_template,
     sport,
 )
+from weather_payloads import WEATHER_T0, open_meteo_payload
 
 EXPECTED_TOOLS = {
     "get_coach_context",
@@ -65,10 +66,11 @@ EXPECTED_TOOLS = {
     "list_goals",
     "list_constraints",
     "get_correlations",
+    "get_weather_forecast",
 }
 WRITE_TOOLS = {"set_goal", "set_constraint", "save_plan", "update_session", "add_note"}
-# Tools that reach an outside service (garmin-mcp); every other tool only touches the local store.
-OPEN_WORLD_TOOLS = {"get_daily_briefing"}
+# Tools that reach an outside service (garmin-mcp, Open-Meteo); every other tool only touches the local store.
+OPEN_WORLD_TOOLS = {"get_daily_briefing", "get_weather_forecast"}
 
 INIT = {
     "jsonrpc": "2.0",
@@ -145,6 +147,7 @@ async def test_initialize_list_and_annotations(app):
         for name in ("search_notes", "list_goals", "list_constraints"):
             assert name in init["instructions"]
         assert "get_correlations" in init["instructions"]
+        assert "get_weather_forecast" in init["instructions"]
 
         r = await client.post("/mcp", headers=auth_headers(), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert r.status_code == 202
@@ -816,3 +819,85 @@ async def test_create_app_runs_the_strength_part(settings, store):
 
 def rows_of(store):
     return store.history_rows(None, date(2030, 1, 1))
+
+
+# ----------------------------------------------------------------- weather
+
+
+def weather_app(settings: Settings, store: Store, handler, **overrides):
+    home = Settings(**{**settings.__dict__, **overrides})
+    return create_app(
+        home, store, today=lambda: TODAY, now=lambda: WEATHER_T0, weather_transport=httpx2.MockTransport(handler)
+    )
+
+
+@pytest.mark.anyio
+async def test_weather_forecast_over_http(settings, store):
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx2.Response(503)
+        return httpx2.Response(200, json=open_meteo_payload())
+
+    app = weather_app(settings, store, handler, home_latitude=50.09, home_longitude=14.42)
+    async with running_client(app) as client:
+        # The SDK prefixes every ToolError text with "Error executing tool ...", so the texts are checked with `in`.
+        failed = await call_tool(client, "get_weather_forecast", {})
+        assert failed["isError"] is True
+        assert "Weather service answered HTTP 503." in failed["content"][0]["text"]
+
+        # The service keeps running: another tool and /healthz still answer.
+        assert (await call_tool(client, "get_coach_context", {}, id_=3))["isError"] is False
+        assert (await client.get("/healthz")).status_code == 200
+
+        ok = await call_tool(client, "get_weather_forecast", {}, id_=4)
+        assert ok["isError"] is False
+        data = payload(ok)
+        assert data["location"] == {"latitude": 50.09, "longitude": 14.42, "source": "home"}
+        assert len(data["days"]) == 7 and data["days"][0]["sunrise"] == "07:12"
+        assert data["best_outdoor_windows"][0]["start"] == "07:12"
+        assert len(seen) == 2
+
+        # The schema rejects an out-of-range argument before any request.
+        bad = await call_tool(client, "get_weather_forecast", {"latitude": 91, "longitude": 0}, id_=5)
+        assert bad["isError"] is True
+        assert len(seen) == 2
+
+        away = await call_tool(client, "get_weather_forecast", {"latitude": 48.2082, "longitude": 16.3738}, id_=6)
+        assert away["isError"] is False and payload(away)["location"]["source"] == "arguments"
+        assert seen[2].url.params["latitude"] == "48.21" and seen[2].url.params["longitude"] == "16.37"
+
+    app = weather_app(settings, store, handler)  # no home location
+    async with running_client(app) as client:
+        none = await call_tool(client, "get_weather_forecast", {}, id_=7)
+        assert none["isError"] is True
+        assert (
+            "No home location configured: set COACH_HOME_LATITUDE and COACH_HOME_LONGITUDE in .env, "
+            "or give latitude and longitude."
+        ) in none["content"][0]["text"]
+        assert len(seen) == 3
+
+
+@pytest.mark.anyio
+async def test_weather_log_has_no_coordinates(settings, store, caplog, restore_logging):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.params["latitude"] == "47.07":
+            raise httpx2.ConnectError("x")
+        return httpx2.Response(200, json=open_meteo_payload())
+
+    for name in ("httpx2", "httpcore2", "mcp"):
+        logging.getLogger(name).setLevel(logging.NOTSET)
+    configure_logging("INFO")
+    caplog.set_level(logging.DEBUG)
+    app = weather_app(settings, store, handler)
+    async with running_client(app) as client:
+        ok = await call_tool(client, "get_weather_forecast", {"latitude": 48.2082, "longitude": 16.3738})
+        assert ok["isError"] is False
+        failed = await call_tool(client, "get_weather_forecast", {"latitude": 47.0712, "longitude": 15.4395}, id_=3)
+        assert failed["isError"] is True
+    assert "tool=get_weather_forecast status=ok" in caplog.text
+    assert "weather status=error reason=unreachable" in caplog.text
+    for secret in ("48.21", "16.37", "48.2082", "47.07", "15.44"):
+        assert secret not in caplog.text, secret
