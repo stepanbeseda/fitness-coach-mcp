@@ -143,6 +143,29 @@ def test_write_normalised_leaves_a_rollback_journal_database_alone(tmp_path):
     assert normalised(data) == data
 
 
+def test_write_normalised_does_not_copy_the_database():
+    import tracemalloc
+
+    class Sink:
+        written = 0
+
+        def write(self, chunk):
+            self.written += len(chunk)
+
+    data = bytearray(8 * 1024 * 1024)
+    data[18:20] = b"\x02\x02"
+    data = bytes(data)
+    sink = Sink()
+    tracemalloc.start()
+    try:
+        write_normalised(data, sink)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert sink.written == len(data)
+    assert peak < 1024 * 1024
+
+
 def test_write_normalised_changes_only_the_header_flags(db):
     store = Store(str(db))
     add_grant(store, 1)

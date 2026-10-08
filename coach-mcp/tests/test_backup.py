@@ -176,6 +176,30 @@ def test_write_normalised_fixes_a_wal_header(db_path, tmp_path):
     assert [p.name for p in target.parent.iterdir()] == ["coach.db"]
 
 
+def test_write_normalised_does_not_copy_the_database():
+    """The header fix streams views of the image; it must not build a second copy (memory rule of the module)."""
+    import tracemalloc
+
+    class Sink:
+        written = 0
+
+        def write(self, chunk):
+            self.written += len(chunk)
+
+    data = bytearray(8 * 1024 * 1024)
+    data[18:20] = b"\x02\x02"
+    data = bytes(data)
+    sink = Sink()
+    tracemalloc.start()
+    try:
+        write_normalised(data, sink)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert sink.written == len(data)
+    assert peak < 1024 * 1024
+
+
 def test_write_normalised_leaves_a_rollback_journal_database_alone(db_path):
     make_db(db_path)
     data, _ = snapshot(db_path, check_coach)
@@ -437,6 +461,8 @@ def test_restore_rejects_bad_input_and_changes_nothing(case, tmp_path, monkeypat
 
     err = capsys.readouterr().err
     assert err.startswith("restore failed: ") and err.endswith("; nothing changed\n")
+    if case == "oversized":
+        assert "input is larger than" in err  # the stdin guard, not the later size check of the snapshot
     assert {p.name: p.read_bytes() for p in vol.iterdir()} == snapshot_before
 
 
