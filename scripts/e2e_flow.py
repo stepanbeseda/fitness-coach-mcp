@@ -154,7 +154,7 @@ def exercise_coach_memory(client: httpx.Client, token: str) -> None:
 
 
 def exercise_daily_briefing(client: httpx.Client, token: str) -> None:
-    """get_daily_briefing reaches garmin-mcp with the internal token (no Garmin login in e2e)."""
+    """get_daily_briefing reaches garmin-mcp with coach-mcp's read-only token (no Garmin login in e2e)."""
     _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_daily_briefing", "arguments": {}},
                   msg_id=8)
     ok, data = tool_result(body)
@@ -165,6 +165,19 @@ def exercise_daily_briefing(client: httpx.Client, token: str) -> None:
     check(ok and data.get("verdict") == "yellow" and set(calls.values()) == {"auth_error"}
           and alerts.get("garmin_auth") is True,
           "coach get_daily_briefing reads garmin-mcp (not logged in: yellow, garmin_auth alert)")
+
+
+def exercise_garmin_gateway_write(client: httpx.Client, token: str) -> None:
+    """The gateway's token keeps full access: a write tool runs and stops at the missing Garmin login."""
+    _, body = rpc(client, "/garmin/mcp", token, "tools/call", {
+        "name": "unschedule_workout", "arguments": {"schedule_id": 1}}, msg_id=11)
+    result = body.get("result") if isinstance(body, dict) else None
+    content = result.get("content") if isinstance(result, dict) else None
+    first = content[0] if isinstance(content, list) and content and isinstance(content[0], dict) else {}
+    text = str(first.get("text", ""))
+    check(isinstance(result, dict) and result.get("isError") is True and "scripts/garmin-login.sh" in text
+          and "read-only access" not in text,
+          "garmin write tool runs with the gateway's token (stops at the missing Garmin login)")
 
 
 def exercise_history(client: httpx.Client, token: str) -> None:
@@ -190,6 +203,7 @@ def main() -> int:
         check(public.status_code == 403, "login page refused through Funnel")
         hevy = exercise_backend(client, "hevy", "get-workouts", {"page": 1, "page_size": 3})
         garmin = exercise_backend(client, "garmin", "get_recovery_snapshot", {})
+        exercise_garmin_gateway_write(client, garmin)
         cross = client.post(f"{GW}/garmin/mcp", headers={**FUNNEL, "authorization": f"Bearer {hevy}"},
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         check(cross.status_code == 401, "Hevy token rejected by the Garmin endpoint (audience)")

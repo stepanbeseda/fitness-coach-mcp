@@ -4,6 +4,8 @@
 # untouched), starts them as a separate compose project with the
 # compose.test.yml overlay (no Tailscale login, no internet), runs the OAuth +
 # MCP flow from scripts/e2e_flow.py and tears everything down again.
+# Before the build it runs the offline test of setup-secrets.sh; once the stack is healthy it
+# checks coach-mcp's read-only Garmin token from inside coach-mcp (scripts/e2e_coach_garmin.py).
 #
 #   scripts/e2e-test.sh
 source "$(dirname "$0")/lib.sh"
@@ -29,6 +31,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+info "Offline test of scripts/setup-secrets.sh..."
+bash scripts/test-setup-secrets.sh >&2 || die "Offline test setup-secrets.sh selhal (výpis výše)."
+
 info "Build images..."
 # --progress=plain: with stdout redirected, Compose's default (tty) progress renderer fails with
 # "failed to get console: provided file is not a console". The plain log goes to a file and is
@@ -43,6 +48,7 @@ put gateway_password_hash "$(printf '%s\n' "$E2E_PASSWORD" | docker run --rm -i 
 put gateway_totp_secret "$(python3 -c 'import base64, os; print(base64.b32encode(os.urandom(20)).decode())')"
 put hevy_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put garmin_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+put garmin_readonly_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put coach_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put telegram_bot_token ""
 put hevy_api_key "00000000-0000-0000-0000-000000000000"
@@ -62,6 +68,10 @@ for _ in $(seq 1 60); do
 done
 "${compose[@]}" ps --format 'table {{.Service}}\t{{.Status}}'
 [[ $unhealthy == 0 ]] || { "${compose[@]}" logs --tail 30; die "Služby nejsou healthy."; }
+
+info "coach-mcp -> garmin-mcp (read-only token)..."
+"${compose[@]}" exec -T coach-mcp python - < scripts/e2e_coach_garmin.py \
+  || { "${compose[@]}" logs --tail 30 garmin-mcp coach-mcp; die "Kontroly read-only tokenu v coach-mcp selhaly (výpis výše)."; }
 
 status=0
 "${compose[@]}" exec -T -e E2E_PASSWORD="$E2E_PASSWORD" gateway python - < scripts/e2e_flow.py || status=1
