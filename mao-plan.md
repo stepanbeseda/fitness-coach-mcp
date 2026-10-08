@@ -78,7 +78,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 07 | Strength workouts on the watch | — | planned |
 | 08 | Daily briefing via Telegram | 04 | done |
 | 09 | Strength history and progress | 05 | planned |
-| 10 | Separate e2e image tags and a configurable time zone | — | **in review** (PR #13) |
+| 10 | Separate e2e image tags and a configurable time zone | — | done |
 | 11 | Online and scheduled backups | 03 | planned |
 | 12 | Read-only Garmin token for the coach | 04 | planned |
 | 13 | Plan reconciliation | 05 | planned |
