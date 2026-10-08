@@ -4,7 +4,8 @@ The verdict (green / yellow / red) comes from four criteria taken from the Garmi
 recovery snapshot. A missing input never makes the verdict greener: it caps it at
 yellow and is named in the message. Alerts are conditions evaluated once a day; an
 alert is *new* when it holds now and did not hold at the previous evaluation, except event alerts
-(yesterday's missed workout), which are new whenever they hold.
+(yesterday's missed workout in Garmin's calendar and yesterday's planned session without an activity), which
+are new whenever they hold.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 from .push import PushMessage
+from .reconcile import MATCHED_TYPES
 
 if TYPE_CHECKING:
     from .garmin import GarminData
@@ -29,11 +31,12 @@ ALERT_KEYS = (
     "resting_hr_elevated",
     "acwr_out_of_range",
     "missed_workout",
+    "missed_planned_session",
     "garmin_auth",
 )
-# Event alerts are about a different object each day (yesterday's workouts), so they are not
-# edge-triggered: "it held yesterday too" must not hide today's new event.
-EVENT_ALERTS = frozenset({"missed_workout"})
+# Event alerts are about a different object each day (yesterday's workouts and planned sessions), so they are
+# not edge-triggered: "it held yesterday too" must not hide today's new event.
+EVENT_ALERTS = frozenset({"missed_workout", "missed_planned_session"})
 # Garmin acwrStatus values that mean "outside the optimal range", shown in Czech. Any other
 # value (including "OPTIMAL") never fires; the raw string never reaches the message.
 ACWR_OUT = {"LOW": "nízký", "HIGH": "vysoký", "VERY_HIGH": "velmi vysoký"}
@@ -263,7 +266,40 @@ def _resting_hr(snapshot: Mapping[str, Any] | None) -> tuple[float | int, float 
     return (today, avg) if today is not None and avg is not None else None
 
 
-def alert_conditions(day: date, data: GarminData, nights_below: int | None) -> dict[str, bool | None]:
+def _yesterday_matchable(yesterday_sessions: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return [s for s in yesterday_sessions if s.get("status") == "planned" and s.get("type") in MATCHED_TYPES]
+
+
+def _suggested(session: Mapping[str, Any]) -> str | None:
+    suggestion = session.get("suggestion")
+    return suggestion.get("result") if isinstance(suggestion, Mapping) else None
+
+
+def missed_session_condition(yesterday_sessions: Sequence[Mapping[str, Any]]) -> bool | None:
+    """Yesterday's planned (running/cycling/swimming/strength) sessions: True when one has no activity,
+    False when all are matched (or there are none), None when one has no suggestion yet."""
+    results = [_suggested(s) for s in _yesterday_matchable(yesterday_sessions)]
+    if "no_activity" in results:
+        return True
+    if all(r == "matched" for r in results):
+        return False
+    return None
+
+
+def _missed_session_names(yesterday_sessions: Sequence[Mapping[str, Any]]) -> list[str]:
+    return [
+        f"{_TYPE_CS.get(s.get('type'), 'jiné')} – {_one_line(s.get('description', ''), 80)}"
+        for s in _yesterday_matchable(yesterday_sessions)
+        if _suggested(s) == "no_activity"
+    ]
+
+
+def alert_conditions(
+    day: date,
+    data: GarminData,
+    nights_below: int | None,
+    yesterday_sessions: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, bool | None]:
     """``{key: True | False | None}`` in ``ALERT_KEYS`` order; None means the condition is unknown."""
     out: dict[str, bool | None] = {}
 
@@ -289,6 +325,8 @@ def alert_conditions(day: date, data: GarminData, nights_below: int | None) -> d
         out["missed_workout"] = False
     else:
         out["missed_workout"] = None
+
+    out["missed_planned_session"] = missed_session_condition(yesterday_sessions)
 
     if data.auth_problem:
         out["garmin_auth"] = True
@@ -375,7 +413,9 @@ def _session_line(session: Mapping[str, Any]) -> str:
     return f"- {kind}: {_one_line(session.get('description', ''), 120)}{details}{_STATUS_CS.get(session.get('status'), '')}"
 
 
-def _alert_text(key: str, data: GarminData, day: date, nights_below: int | None) -> str:
+def _alert_text(
+    key: str, data: GarminData, day: date, nights_below: int | None, missed_sessions: Sequence[str] = ()
+) -> str:
     if key == "hrv_below_baseline":
         return f"HRV pod baseline {nights_cs(nights_below or 0)} po sobě."
     if key == "resting_hr_elevated":
@@ -390,6 +430,8 @@ def _alert_text(key: str, data: GarminData, day: date, nights_below: int | None)
         return f"Poměr akutní a chronické zátěže {fmt_ratio(ratio)} je mimo optimální rozsah Garminu ({word})."
     if key == "missed_workout":
         return f"Včera naplánovaný trénink nebyl splněn: {', '.join(_missed_names(data.scheduled, day))}."
+    if key == "missed_planned_session":
+        return f"Včera v plánu bez aktivity v Garminu: {'; '.join(missed_sessions)}."
     return "Garmin není přihlášený: na serveru spusť scripts/garmin-login.sh."
 
 
@@ -413,6 +455,7 @@ def render(
     garmin_today: Sequence[str],
     new_alerts: Sequence[str],
     nights_below: int | None,
+    missed_sessions: Sequence[str] = (),
 ) -> PushMessage:
     lines = [f"Verdikt: {_LEVEL_CS[verdict]} – {_ADVICE[verdict]}"]
 
@@ -467,7 +510,7 @@ def render(
 
     if new_alerts:
         lines.append("Upozornění:")
-        lines.extend(f"- {_alert_text(key, data, day, nights_below)}" for key in new_alerts)
+        lines.extend(f"- {_alert_text(key, data, day, nights_below, missed_sessions)}" for key in new_alerts)
 
     alerting = bool(new_alerts)
     warning = f" {_WARNING}" if alerting else ""
@@ -482,11 +525,12 @@ def build_briefing(
     data: GarminData,
     sessions: Sequence[Mapping[str, Any]],
     alert_rows: Mapping[str, Mapping[str, Any]],
+    yesterday_sessions: Sequence[Mapping[str, Any]] = (),
 ) -> Briefing:
     nights = nights_below_baseline(data.hrv_trend, day)
     criteria = criteria_from_snapshot(data.snapshot, nights)
     verdict, missing = decide_verdict({key: criteria[key]["level"] for key in CRITERIA})
-    conditions = alert_conditions(day, data, nights)
+    conditions = alert_conditions(day, data, nights, yesterday_sessions)
     new = {
         key: is_new(holds, alert_rows.get(key), day, event=key in EVENT_ALERTS) for key, holds in conditions.items()
     }
@@ -500,7 +544,18 @@ def build_briefing(
         payload_criteria[key] = (
             {"level": "missing"} if entry["level"] is None else {k: v for k, v in entry.items()}
         )
-    message = render(day, verdict, criteria, missing, data, planned, garmin_today, new_alerts, nights)
+    message = render(
+        day,
+        verdict,
+        criteria,
+        missing,
+        data,
+        planned,
+        garmin_today,
+        new_alerts,
+        nights,
+        _missed_session_names(yesterday_sessions),
+    )
     payload = {
         "date": day.isoformat(),
         "verdict": verdict,

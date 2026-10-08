@@ -498,6 +498,52 @@ async def test_missed_workout_reports_each_newly_missed_session(db_path):
 
 
 @pytest.mark.anyio
+async def test_missed_planned_session_reports_each_day_through_the_store(db_path):
+    store = Store(db_path)
+    d1, d2, d3 = D, D + timedelta(days=1), D + timedelta(days=2)
+    day_before = D - timedelta(days=1)
+    ids = store.replace_planned(
+        day_before,
+        d3,
+        day_before,
+        [
+            {"date": day_before, "type": "running", "description": "Intervaly"},
+            {"date": d1, "type": "running", "description": "Tempo"},
+            {"date": d2, "type": "running", "description": "Lehký"},
+        ],
+    )[1]
+    store.upsert_suggestions(
+        [(ids[0], "no_activity", False, None), (ids[1], "no_activity", False, None)]
+        + [(ids[2], "matched", False, '{"count":1}')],
+        d2,
+    )
+
+    async def day_run(day: date, from_hour: int = 0, to_hour: int = 12) -> list[str]:
+        push, _ = await run_scheduler(
+            db_path, local(day, from_hour), FakeGarmin(garmin_data(scheduled=scheduled([]))),
+            until=local(day, to_hour), store=Store(db_path),
+        )
+        return [msg.body for _, msg in push.sent]
+
+    text = "Včera v plánu bez aktivity v Garminu"
+    # 1. yesterday's planned session has no activity
+    (message,) = await day_run(d1)
+    assert f"{text}: běh – Intervaly." in message
+    assert Store(db_path).alert_states()["missed_planned_session"]["fired_on"] == d1.isoformat()
+    # 2. a restart on the same day sends nothing
+    assert await day_run(d1, from_hour=7, to_hour=23) == []
+    # 3. the next day another session has none: it is reported, the old one is not
+    (message,) = await day_run(d2)
+    assert f"{text}: běh – Tempo." in message and "Intervaly" not in message
+    assert Store(db_path).alert_states()["missed_planned_session"]["fired_on"] == d2.isoformat()
+    # 4. the day after, yesterday's session was matched: no text
+    (message,) = await day_run(d3)
+    assert text not in message
+    state = Store(db_path).alert_states()["missed_planned_session"]
+    assert state["value"] == 0 and state["fired_on"] == d2.isoformat()
+
+
+@pytest.mark.anyio
 async def test_missing_baseline_sends_at_the_briefing_time(db_path):
     garmin = FakeGarmin(garmin_data(snapshot={**GREEN_SNAPSHOT, "hrv": {"last_night_avg_ms": 62}}))
     push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
