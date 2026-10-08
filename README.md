@@ -15,6 +15,7 @@ Self-hosted MCP servery pro osobního fitness kouče v Claude:
   Každou noc ukládá denní historii z Garminu a silové tréninky z Hevy pro trendy delší než 28 dní,
   týdenní přehled a progres síly (odhad 1RM).
   Celý deník poznámek jde prohledávat a uzavřené cíle i vyřešená omezení zůstávají dohledatelné.
+  Na požádání vrátí předpověď počasí na 7 dní (Open-Meteo) s nejlepšími okny pro trénink venku.
 
 Všechny tři běží za jednou OAuth 2.1 gateway a ven jsou vystavené jen přes **vlastní Tailscale uzel**:
 Funnel na portu 443 pro claude.ai (web, mobil, Desktop) a tailnet pro Claude Code / lokální Claude Desktop.
@@ -36,6 +37,7 @@ Claude Code / mcp-remote (Mac, tailnet) ──WireGuard────────�
  └─ coach-mcp ──── vlastní server, SQLite ve volume coach-data, privátní síť "mcp"
                    ranní briefing → Telegram Bot API (HTTPS ven, jen když je nastavený)
                    čte garmin-mcp a hevy-mcp (jen čtecí nástroje)
+                   předpověď počasí → Open-Meteo (HTTPS ven, jen zaokrouhlené souřadnice)
 ```
 
 URL konektorů (stejné z claude.ai i z tailnetu, MagicDNS v tailnetu vrací 100.x adresu). `<tailnet>` je
@@ -53,7 +55,7 @@ gateway nemusí publikovat žádný port na hostu.
 
 | Vrstva | Co dělá |
 |---|---|
-| Síť | Žádný publikovaný port na hostu. Gateway poslouchá jen na 127.0.0.1 v namespace sidecaru, takže jediná cesta dovnitř je `tailscale serve`. Backendy jsou jen v privátní Docker síti; ven volají jen svá API (Hevy, Garmin Connect) a `coach-mcp` volitelně Telegram Bot API (`api.telegram.org`) pro ranní briefing (viz Provoz → Ranní briefing). Ostatní služby hostu ani jeho vlastní `tailscale serve` se nemění. |
+| Síť | Žádný publikovaný port na hostu. Gateway poslouchá jen na 127.0.0.1 v namespace sidecaru, takže jediná cesta dovnitř je `tailscale serve`. Backendy jsou jen v privátní Docker síti; ven volají jen svá API (Hevy, Garmin Connect) a `coach-mcp` volitelně Telegram Bot API (`api.telegram.org`) pro ranní briefing (viz Provoz → Ranní briefing) a Open-Meteo (`api.open-meteo.com`, bez klíče) pro předpověď počasí, kam odchází jen zaokrouhlené souřadnice (viz Provoz → Počasí). Ostatní služby hostu ani jeho vlastní `tailscale serve` se nemění. |
 | Funnel | Veřejně jde jen discovery (`/.well-known/*`), odpověď 401 a `/token`. Cokoli s tokenem a `/token` přes Funnel projde jen z `160.79.104.0/21` (publikovaný odchozí rozsah Anthropicu pro MCP konektory). |
 | Přihlášení | `/authorize` (heslo argon2id + TOTP) jen z tvých zařízení v tailnetu (`Tailscale-User-Login` = `OWNER_TAILSCALE_LOGIN`, ne přes Funnel). Lockout s exponenciálním backoffem, ochrana proti znovupoužití TOTP kódu, CSRF cookie. |
 | OAuth | MCP auth spec 2025-11-25: PKCE S256 povinně, `resource` (RFC 8707), takže každý token platí jen pro jeden endpoint (Hevy token na Garminu nefunguje). `iss` (RFC 9207). Access token 1 h, refresh 90 dní, rotace s detekcí znovupoužití (s oknem 120 s na retry). Revokace (RFC 7009). |
@@ -119,6 +121,7 @@ a kdy chodí ranní briefing a běží noční historie.
 Volitelně ranní briefing do Telegramu: `COACH_TELEGRAM_CHAT_ID` a `COACH_BRIEFING_*` (viz Provoz → Ranní briefing).
 Noční historie z Garminu je zapnutá; volby `COACH_HISTORY_*` jsou v `.env.example` (viz Provoz → Noční historie).
 Pro zálohy nastav `BACKUP_DIR` (absolutní cesta mimo repo) a volitelně `BACKUP_KEEP` (viz Provoz → Zálohy).
+Volitelně poloha pro počasí: `COACH_HOME_LATITUDE` a `COACH_HOME_LONGITUDE` (viz Provoz → Počasí).
 
 ### 4. Secrets
 
@@ -177,6 +180,7 @@ scripts/smoke-test.sh              # tools/list na všech třech endpointech, so
 5. Totéž pro `Kouč`, URL `https://fitness-mcp.<tailnet>/coach/mcp`.
 6. V projektu „Fitness kouč“ všechny tři konektory zapni. Custom Instructions jsou v
    [`docs/coach-instructions.md`](docs/coach-instructions.md).
+7. Volitelně v projektu zapni i vestavěný konektor **Google Calendar** (Settings → Connectors): kouč pak před návrhem časů kontroluje volné bloky a po potvrzení nabídne zápis událostí. Bez něj funguje stejně, jen se na čas zeptá.
 
 Konektory se automaticky objeví v Claude Desktop i v mobilní aplikaci (volání jdou vždy z cloudu
 Anthropicu přes Funnel). Přihlašovat se je potřeba jen při prvním připojení, případně když vyprší refresh
@@ -335,6 +339,29 @@ paused|rate_limited|service_error|auth|unreachable|no_credentials fetched=… fa
 nikdy data ani hodnoty. Při `COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek
 `history status=config_warning`.
 `healthcheck.sh` hlásí stav úlohy (`on` / `off` / `stopped`).
+
+### Počasí
+
+`get_weather_forecast` vrací předpověď na 7 dní z [Open-Meteo](https://open-meteo.com/): po dnech východ a
+západ slunce, souhrn (minimum a maximum teploty, pocitové teploty, nejvyšší pravděpodobnost srážek a vítr) a
+hodinové hodnoty teploty, pocitové teploty, pravděpodobnosti srážek a větru (°C, %, km/h, časy místní pro dané
+místo). Na každý den přidá jedno nejlepší okno pro trénink venku: nejdelší souvislý úsek hodin s denním světlem
+(aspoň 30 minut z hodiny mezi východem a západem), které ještě nezačaly, s pocitovou teplotou −5 až 25 °C,
+pravděpodobností srážek nejvýš 30 % a větrem nejvýš 25 km/h (při shodě vyhraje nižší pravděpodobnost srážek,
+pak dřívější okno).
+
+- **Soukromí:** do Open-Meteo odchází jen zaokrouhlené souřadnice (dvě desetinná místa, asi 1 km) a IP adresa
+  serveru, žádná zdravotní data. Služba je pro nekomerční použití zdarma a bez klíče.
+- **Nastavení:** do `.env` doplň `COACH_HOME_LATITUDE` a `COACH_HOME_LONGITUDE` (desetinné stupně, např. 51.48 a
+  0.00; obě, nebo žádnou), pak `docker compose up -d coach-mcp`. Bez nich vrací nástroj jen chybu „No home
+  location configured“; souřadnice zadané jako argumenty (cesty) fungují vždy. Neplatná hodnota zastaví start
+  `coach-mcp` s jasnou chybou.
+- **Cache:** odpověď se drží 30 minut v paměti (po restartu zmizí), chyby se necachují.
+- **Log** (`docker compose logs coach-mcp`): `weather status=fetched|error reason=…`, nikdy se souřadnicemi.
+- **Kalendář:** konektor Google Calendar je vestavěný v claude.ai a volitelný; v tomto repozitáři pro něj
+  nic není, kouč s ním pracuje podle [`docs/coach-instructions.md`](docs/coach-instructions.md).
+
+Data o počasí: [Open-Meteo.com](https://open-meteo.com/) (licence CC BY 4.0).
 
 ### Obnova Garmin tokenů
 
@@ -516,6 +543,9 @@ načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní. Silová hist
 | `get_trends` / `get_weekly_report` nemají data, `get_correlations` vrací `too_few_pairs` | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect nebo internet nefungoval, další pokus za 1 až 8 h, dny se nezapočítají; `given_up` > 0 = dny, které třikrát selhaly, i když Garmin jiné dny vracel). |
 | `get_plan` nemá u minulého tréninku `suggestion` | Trénink není `planned`, je typu `mobility` / `other`, den se ještě nenačetl (poprvé den po tréninku v 03:30), je starší než 7 dní od nasazení, nebo je historie vypnutá (`COACH_HISTORY_ENABLED=false`); řádek `history status=… matched=… no_activity=…` v `docker compose logs coach-mcp`. |
 | `get_strength_progress` nebo silová část `get_weekly_report` nemá data | Silová historie se teprve načítá nebo `hevy-mcp` nefunguje: `docker compose logs coach-mcp`, řádky `history status=… part=strength` (`no_credentials` = kontejner `coach-mcp` nemá `hevy_backend_token`, po aktualizaci `docker compose up -d coach-mcp`; `unreachable` = `hevy-mcp` neodpovídá; `auth` = neplatný Hevy klíč, `scripts/setup-secrets.sh hevy-key`; `rate_limited` = Hevy omezil počet volání, další pokus za 1 až 8 h; `service_error` = Hevy vrátil chybu nebo nečekanou stránku, další pokus za 1 až 8 h). |
+| `get_weather_forecast`: „No home location configured“ | V `.env` chybí `COACH_HOME_LATITUDE` a `COACH_HOME_LONGITUDE` → doplň obě a `docker compose up -d coach-mcp`; nebo zadej souřadnice jako argumenty. |
+| `get_weather_forecast`: „Weather service unreachable / timed out / answered HTTP …“ | Open-Meteo nebo internet nefunguje. Chyby se necachují, další volání to zkusí znovu; `docker compose logs coach-mcp`, řádky `weather status=error`. |
+| `coach-mcp` se nespustí, v logu `COACH_HOME_… must be set together / must be a number / must be between` | Oprav nebo smaž obě hodnoty `COACH_HOME_LATITUDE` a `COACH_HOME_LONGITUDE` v `.env`. |
 | Ranní notifikace nepřišla | `docker compose logs coach-mcp`: `skipped` = služba startovala až po cutoff; `gave_up` = Telegram zprávu odmítl (token, chat id, bot zablokovaný nebo mu ještě nikdo nenapsal) nebo neodpovídal; žádný řádek `briefing` = briefing vypnutý (`healthcheck.sh` to vypíše). |
 | Hevy nástroje vrací 401 | Neplatný Hevy klíč nebo vypršelo Hevy PRO → `scripts/setup-secrets.sh hevy-key`. |
 | Garmin nástroje: „spusť scripts/garmin-login.sh“ | Tokeny chybí nebo expirovaly → `scripts/garmin-login.sh`. |
@@ -530,7 +560,7 @@ načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní. Silová hist
 ```
 docker-compose.yml       služby, hardening, sítě, volumes, secrets
 compose.test.yml         overlay pro e2e test (bez Tailscale loginu a internetu)
-.env.example             nesecretní konfigurace (hostname, owner, UID/GID, ranní briefing)
+.env.example             nesecretní konfigurace (hostname, owner, UID/GID, ranní briefing, poloha pro počasí)
 tailscale/               sidecar image (non-root) + serve.json s Funnelem
 gateway/                 OAuth 2.1 gateway (Python, Starlette), testy, config.toml
 hevy-mcp/                wrapper nad oficiální image (secrets ze souborů, telemetrie vypnutá)
