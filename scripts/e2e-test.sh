@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Full-stack test without real secrets and without touching the live deployment:
-# builds the images, starts them as a separate compose project with the
+# builds the images under their own fcm-e2e/*:test tags (the live tags stay
+# untouched), starts them as a separate compose project with the
 # compose.test.yml overlay (no Tailscale login, no internet), runs the OAuth +
 # MCP flow from scripts/e2e_flow.py and tears everything down again.
 #
@@ -38,7 +39,7 @@ info "Build images..."
 info "Throwaway secrets..."
 put() { printf '%s\n' "$2" > "$TMP_SECRETS/$1"; chmod 0644 "$TMP_SECRETS/$1"; }
 put gateway_password_hash "$(printf '%s\n' "$E2E_PASSWORD" | docker run --rm -i --network none \
-  --entrypoint python fitness-coach-mcp/gateway:0.1.0 -m gateway.cli hash-password --stdin)"
+  --entrypoint python fcm-e2e/gateway:test -m gateway.cli hash-password --stdin)"
 put gateway_totp_secret "$(python3 -c 'import base64, os; print(base64.b32encode(os.urandom(20)).decode())')"
 put hevy_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put garmin_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"

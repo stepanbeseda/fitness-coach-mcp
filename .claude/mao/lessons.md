@@ -121,4 +121,5 @@ agents read it before working; general lessons are in
   live database without a backup. Before any deploy step compare the running container's image ID with the
   tag (`docker inspect -f '{{.Image}}' <container>` against `docker image inspect -f '{{.Id}}' <tag>`), say
   so in the live-step warning, and run no compose command that creates `coach-mcp` before the backup. (PR 04,
-  review 1, N6)
+  review 1, N6) Since 2026-10-09 the e2e test builds `fcm-e2e/*:test` tags and no longer retags the live ones;
+  the image-ID check before a deploy stays, because a plain `docker compose build` in a worktree still does.

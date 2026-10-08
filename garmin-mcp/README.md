@@ -66,7 +66,7 @@ scripts/garmin-login.sh --import /tmp/garmin_tokens.json && shred -u /tmp/garmin
 |---|---|---|
 | `GARMINTOKENS` | `/data/garmin` | adresář s tokeny |
 | `GARMIN_MCP_BEARER_TOKEN_FILE` | `/run/secrets/garmin_backend_token` | interní token od gateway (min. 16 znaků) |
-| `TZ` | `Europe/Prague` | co znamená „dnes“ |
+| `TZ` | `Europe/Prague` | co znamená „dnes“; v compose se nastavuje přes `ATHLETE_TZ` v `.env` |
 | `GARMIN_KEEPALIVE_HOURS` | `6` | interval keepalive (0 = vypnuto) |
 | `GARMIN_API_SESSION` | `requests` | `curl_cffi` = obejití python-garminconnect #444 (HTTP 403 na datová volání) |
 | `GARMIN_MCP_ALLOWED_HOSTS` | *(prázdné)* | zapne kontrolu Host hlavičky (např. `garmin-mcp:8000`) |

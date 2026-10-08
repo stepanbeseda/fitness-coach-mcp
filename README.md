@@ -111,6 +111,8 @@ cp .env.example .env && chmod 600 .env
 
 V `.env` vyplň `PUBLIC_BASE_URL` (`https://fitness-mcp.<tailnet>`) a `OWNER_TAILSCALE_LOGIN` (tvůj
 Tailscale login, např. `jane@github`). Příkazy, které ti obě hodnoty vypíšou, jsou přímo v `.env.example`.
+Když nežiješ v časovém pásmu `Europe/Prague`, nastav `ATHLETE_TZ` (např. `Europe/London`): určuje, co je „dnes“,
+a kdy chodí ranní briefing a běží noční historie.
 Volitelně ranní briefing do Telegramu: `COACH_TELEGRAM_CHAT_ID` a `COACH_BRIEFING_*` (viz Provoz → Ranní briefing).
 Noční historie z Garminu je zapnutá; volby `COACH_HISTORY_*` jsou v `.env.example` (viz Provoz → Noční historie).
 

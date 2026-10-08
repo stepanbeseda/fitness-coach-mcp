@@ -743,6 +743,8 @@ write to Hevy, a dashboard or any UI.
   called on the owner's account; they may return nothing.
 - **e2e test shares image tags with the live stack.** `scripts/e2e-test.sh`
   builds images under the same tags as the live project (open since PR 03).
+  Resolved 2026-10-09: `compose.test.yml` gives the e2e builds their own
+  `fcm-e2e/*:test` tags, so the live tags are never retagged by the test.
 - **PR 07 strength payload and exercise catalogue.** Unverified; the chapter
   starts with a spike.
 - **Cycling power target.** `garmin-mcp/README.md` notes that a custom power
