@@ -43,6 +43,9 @@ repeated findings.
 - [ ] Input of unbounded size is not read into memory whole.
 - [ ] Clean-up is in `finally` / a cleanup hook, not on a single failure
   branch.
+- [ ] Retry/give-up logic: run the backend-outage scenario (every call errors
+  for N runs, then recovers) and confirm no item is given up permanently and
+  nothing is charged for the outage.
 
 ## Configuration and secrets
 

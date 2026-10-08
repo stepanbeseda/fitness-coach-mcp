@@ -167,6 +167,23 @@ def exercise_daily_briefing(client: httpx.Client, token: str) -> None:
           "coach get_daily_briefing reads garmin-mcp (not logged in: yellow, garmin_auth alert)")
 
 
+def exercise_history(client: httpx.Client, token: str) -> None:
+    """The history tools answer from the empty store (the nightly job is off in e2e)."""
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {
+        "name": "get_trends", "arguments": {"metrics": ["hrv_last_night_ms"]}}, msg_id=9)
+    ok, data = tool_result(body)
+    metrics = data.get("metrics") if isinstance(data, dict) else None
+    hrv = metrics.get("hrv_last_night_ms") if isinstance(metrics, dict) else None
+    check(ok and isinstance(hrv, dict) and hrv.get("summary") == {"n": 0},
+          "coach get_trends answers from the empty history")
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_weekly_report", "arguments": {}},
+                  msg_id=10)
+    ok, data = tool_result(body)
+    strength = data.get("strength") if isinstance(data, dict) else None
+    check(ok and isinstance(strength, dict) and strength.get("available") is False,
+          "coach get_weekly_report marks sections without data")
+
+
 def main() -> int:
     with httpx.Client(timeout=60, follow_redirects=False) as client:
         public = client.get(f"{GW}/authorize", headers=FUNNEL)
@@ -181,6 +198,7 @@ def main() -> int:
         coach = exercise_backend(client, "coach", "get_coach_context", {})
         exercise_coach_memory(client, coach)
         exercise_daily_briefing(client, coach)
+        exercise_history(client, coach)
         cross = client.post(f"{GW}/coach/mcp", headers={**FUNNEL, "authorization": f"Bearer {garmin}"},
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         check(cross.status_code == 401, "Garmin token rejected by the coach endpoint (audience)")

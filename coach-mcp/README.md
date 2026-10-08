@@ -5,8 +5,8 @@ vybavení), tréninkový plán po dnech se stavem a deník poznámek. Data jsou 
 `coach-data`. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp` v privátní Docker síti; MCP klienti
 se k němu dostanou jen přes gateway (`/coach/mcp`), která posílá interní bearer token
 (`/run/secrets/coach_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed). Sám volá
-jen `garmin-mcp` (tři čtecí nástroje, interní token `garmin_backend_token`) a volitelně Telegram Bot API
-(ranní briefing).
+jen `garmin-mcp` (čtyři čtecí nástroje, interní token `garmin_backend_token`) a volitelně Telegram Bot API
+(ranní briefing). Každou noc si z Garminu ukládá denní historii pro trendy a týdenní přehled.
 Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená a nahrazené tréninky zůstanou
 jako `superseded`.
 
@@ -22,6 +22,8 @@ jako `superseded`.
 | `update_session` | zápis | nastaví stav tréninku (`planned` / `done` / `skipped` / `moved`); `moved` s `new_date` vytvoří propojenou plánovanou kopii; volitelná poznámka |
 | `add_note` | zápis | přidá datovanou poznámku do deníku, volitelně k tréninku |
 | `get_daily_briefing` | čtení | dnešní ranní briefing: verdikt zelená / žlutá / červená, čísla za ním, co chybí, dnešní plán a upozornění; počítá se stejně jako ranní push, z aktuálních dat |
+| `get_trends` | čtení | uložená denní historie z Garminu (HRV, spánek, klidová tepovka, Body Battery, stres, readiness, zátěž, VO2max, aktivity po sportech) za libovolné období po dnech, týdnech nebo měsících: počet, průměr, minimum, maximum, změna |
+| `get_weekly_report` | čtení | jeden ISO týden proti průměru předchozích čtyř: vytrvalost po sportech, spánek, HRV, klidová tepovka, plnění plánu, nové maximum a varování; sekce bez dat mají `available: false`, silová data zatím chybí |
 
 Všechny zápisy jsou označené jako ne-read-only a ne-destruktivní; v popisu mají větu „Only after the athlete
 confirmed“, takže je kouč navrhuje a zapisuje až po potvrzení. Data jsou `YYYY-MM-DD` v místním čase
@@ -30,7 +32,7 @@ confirmed“, takže je kouč navrhuje a zapisuje až po potvrzení. Data jsou `
 ## Ranní briefing
 
 Jednou denně (a na požádání nástrojem `get_daily_briefing`) server přečte z `garmin-mcp` ranní data
-(`get_recovery_snapshot`, `get_hrv_trend`, `list_scheduled_workouts`; jiné nástroje volat nemůže), přidá
+(`get_recovery_snapshot`, `get_hrv_trend`, `list_scheduled_workouts`), přidá
 dnešní plán z vlastní paměti a spočítá verdikt bez LLM. Rozhoduje **nejhorší ukazatel**; chybějící údaj
 nedovolí zelenou (nejvýš žlutá) a je ve zprávě jmenovaný.
 
@@ -73,6 +75,40 @@ docker compose exec coach-mcp python -m coach_mcp send-briefing
 
 Návratový kód: 0 odesláno, 1 selhalo, 2 push není nastavený nebo špatný argument.
 
+## Noční historie
+
+Server si každou noc (`COACH_HISTORY_TIME`, výchozí 03:30, časové pásmo `TZ`) uloží z `garmin-mcp` denní hodnoty
+do tabulky `history_days`, jeden řádek na den: readiness, HRV poslední noci a týdenní průměr, spánek (délka,
+skóre), klidovou tepovku, Body Battery (nejvyšší a nejnižší), stres, akutní a chronickou zátěž, poměr zátěže,
+VO2max a součty aktivit po sportech (počet, délka, vzdálenost, tréninková zátěž). Řádek dne D má spánek a HRV
+noci, která skončila ráno D, a aktivity, které začaly v D. Dnešek se neukládá (není úplný): den se načte poprvé
+den po něm a pak ještě dvakrát v dalších dvou dnech, aby se zachytila pozdní synchronizace hodinek. Nad uloženou
+historií pracují `get_trends` a `get_weekly_report`; `get_hrv_trend` sahá jen 28 dní zpět a `get_body_battery` 31.
+
+Doplňují se jen chybějící dny, takže po restartu se pokračuje tam, kde se skončilo (průběh je daný uloženými
+daty). První běh přijde minutu po startu služby a načte `COACH_HISTORY_BACKFILL_DAYS` dní zpět (výchozí 90):
+asi 470 volání Garmin Connect ve 103 voláních `garmin-mcp`, mezi nimi pauza `COACH_HISTORY_CALL_DELAY_SECONDS`
+(15 s), dohromady zhruba 30 minut. Mezi `COACH_BRIEFING_TIME` a `COACH_BRIEFING_CUTOFF` běh stojí a po cutoff
+pokračuje. Každou další noc je to asi 16 volání.
+
+- Garmin odpoví 429 (omezení počtu volání): běh se zastaví a zkusí to za hodinu, pak za 2, 4 a nejvýš za 8 hodin.
+- Garmin není přihlášený nebo `garmin-mcp` neodpovídá: žádné volání, další pokus za hodinu (nejpozději
+  v `COACH_HISTORY_TIME`).
+- Garmin Connect nefunguje (výpadek, server bez internetu): `garmin-mcp` vrací chybu u všech dnů. Po třech
+  chybách po sobě se server zeptá na den, který už jednou prošel; když selže i ten, běh skončí jako
+  `service_error`, výpadek dny nezapočítá a další pokus je za 1, 2, 4 a nejvýš 8 hodin.
+- Chyba, která se týká jen jednoho dne (Garmin jiné dny vrací), se tomu dni započítá; den, který takhle selže
+  třikrát, zůstane prázdný (`given_up` v logu). Den, který už data má, se po třech chybách přestane znovu načítat.
+- Na úplně prázdné historii server nemá den na porovnání a tři chyby po sobě bere jako výpadek; vyřeší se,
+  jakmile projde první den (nejpozději s dalším dnem).
+
+Z `garmin-mcp` může server volat jen čtyři čtecí nástroje (`get_recovery_snapshot`, `get_hrv_trend`,
+`list_scheduled_workouts`, `list_activities`); jeho zapisovací nástroje jsou pro kouče nedostupné. Log má jeden
+řádek na běh: `history status=… fetched=… failed=… pending=… given_up=… ms=…` (bez dat a hodnot). Při
+`COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek `history status=config_warning`.
+`/healthz` hlásí pole `history`: `on`, `off` (`COACH_HISTORY_ENABLED=false`) nebo `stopped` (úloha nečekaně
+skončila). Silová data z Hevy se zatím neukládají.
+
 ## Data
 
 - `goals`: cíl (název, volitelně `target`, `target_date`, `target_result`), stav `active` / `achieved` / `abandoned`.
@@ -86,10 +122,27 @@ Návratový kód: 0 odesláno, 1 selhalo, 2 push není nastavený nebo špatný 
 - `notes`: datované poznámky, volitelně navázané na trénink.
 - `briefing_runs`: den, kdy plánovač úspěšně poslal briefing (verdikt, čas odeslání).
 - `alert_state`: u každého upozornění poslední známý stav, datum vyhodnocení a kdy naposledy přišlo.
+- `history_days`: jeden řádek na den s hodnotami z Garminu (readiness, HRV, spánek, klidová tepovka, Body Battery,
+  stres, zátěž, VO2max) a součty aktivit po sportech; kdy a s kolika chybami se den naposledy načetl.
 
 Verze schématu je v `PRAGMA user_version`, migrace jsou jen dopředné (seřazený seznam SQL skriptů, každý
 v jedné transakci). Starší image odmítne otevřít novější databázi, aby ji nepoškodil. Zálohy a obnova:
 hlavní `README.md` (sekce Zálohy); volume `coach-data` je jediná kopie těchto dat.
+
+**Návrat na verzi bez historie** (schéma 3 → 2). Starší image databázi se schématem 3 odmítne
+(`database schema version 3 is newer`). Před nasazením starší verze proto smaž jen tabulku historie; cíle,
+omezení, plán, poznámky a stav briefingu zůstanou (historii si server po novém nasazení znovu načte z Garminu).
+Služba musí stát, příkazy spouštěj po jednom:
+
+```bash
+docker compose stop coach-mcp
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 3 or sys.exit(f"schema version {v}, expected 3: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE history_days; PRAGMA user_version = 2; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+Druhý příkaz musí vypsat `schema version 2`. Pak nasaď starší verzi (`git checkout <commit před PR 05>` a
+`docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 3 nemá
+a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří. Návrat až
+na verzi bez briefingu (schéma 1) je nejdřív tento postup 3 → 2 a potom následující 2 → 1.
 
 **Návrat na verzi bez ranního briefingu** (schéma 2 → 1). Starší image databázi se schématem 2 odmítne
 (`database schema version 2 is newer`). Před nasazením starší verze proto smaž jen tabulky briefingu; cíle,
@@ -122,6 +175,10 @@ a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open databa
 | `COACH_BRIEFING_TIME` | `06:30` | kdy plánovač začne (`HH:MM`, časové pásmo `TZ`) |
 | `COACH_BRIEFING_CUTOFF` | `09:30` | nejpozdější čas odeslání, i s chybějícími daty (pozdější než čas začátku) |
 | `COACH_BRIEFING_RETRY_MINUTES` | `15` | pauza mezi pokusy, když chybí spánek nebo HRV (1 až 180) |
+| `COACH_HISTORY_ENABLED` | `true` | noční historie z Garminu (`true` / `false`) |
+| `COACH_HISTORY_TIME` | `03:30` | kdy (`HH:MM`, `TZ`); čas uvnitř okna briefingu posune běh na cutoff |
+| `COACH_HISTORY_BACKFILL_DAYS` | `90` | kolik dní zpět načíst (1 až 366) |
+| `COACH_HISTORY_CALL_DELAY_SECONDS` | `15` | pauza mezi voláními `garmin-mcp` (1 až 600 s) |
 
 Neplatná hodnota ukončí start s chybou (kontejner se nespustí) místo pozdějšího selhání v nástroji.
 

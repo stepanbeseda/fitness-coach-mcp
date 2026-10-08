@@ -3,13 +3,13 @@ import json
 import logging
 import sqlite3
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import anyio
 import httpx2
 import pytest
-from fakes import FakeGarmin, FakePush, StopLoop, fake_garmin_app, fake_garmin_running
+from fakes import FakeClock, FakeGarmin, FakeHistorySource, FakePush, StopLoop, fake_garmin_app, fake_garmin_running
 
 from conftest import BACKEND_TOKEN, MCP_HEADERS, TODAY, auth_headers, call_tool, payload, running_client
 from coach_mcp.__main__ import configure_logging
@@ -17,7 +17,8 @@ from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminData, GarminReader
 from coach_mcp.server import create_app
 from coach_mcp.store import SCHEMA_VERSION, Store
-from garmin_payloads import GREEN_SNAPSHOT, YELLOW_SNAPSHOT, garmin_data, yellow_data
+from garmin_payloads import GREEN_SNAPSHOT, YELLOW_SNAPSHOT, garmin_data, history_snapshot, yellow_data
+from history_helpers import seed_activities, seed_day, sport
 
 EXPECTED_TOOLS = {
     "get_coach_context",
@@ -28,6 +29,8 @@ EXPECTED_TOOLS = {
     "update_session",
     "add_note",
     "get_daily_briefing",
+    "get_trends",
+    "get_weekly_report",
 }
 WRITE_TOOLS = {"set_goal", "set_constraint", "save_plan", "update_session", "add_note"}
 # Tools that reach an outside service (garmin-mcp); every other tool only touches the local store.
@@ -53,7 +56,13 @@ async def test_healthz_reports_db_state(app, store, monkeypatch):
     async with running_client(app) as client:
         r = await client.get("/healthz")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok", "db": "ok", "schema_version": SCHEMA_VERSION, "scheduler": "off"}
+        assert r.json() == {
+            "status": "ok",
+            "db": "ok",
+            "schema_version": SCHEMA_VERSION,
+            "scheduler": "off",
+            "history": "off",
+        }
 
         def broken():
             raise sqlite3.OperationalError("x")
@@ -96,6 +105,8 @@ async def test_initialize_list_and_annotations(app):
         assert init["serverInfo"]["name"] == "coach-memory"
         assert "get_coach_context" in init["instructions"]
         assert "get_daily_briefing" in init["instructions"]
+        assert "get_trends" in init["instructions"]
+        assert "get_weekly_report" in init["instructions"]
 
         r = await client.post("/mcp", headers=auth_headers(), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert r.status_code == 202
@@ -115,6 +126,7 @@ async def test_initialize_list_and_annotations(app):
         assert "distance_km" in json.dumps(by_name["save_plan"]["inputSchema"])
         status_schema = by_name["update_session"]["inputSchema"]["properties"]["status"]
         assert sorted(status_schema["enum"]) == ["done", "moved", "planned", "skipped"]
+        assert len(by_name["get_trends"]["inputSchema"]["properties"]["metrics"]["items"]["enum"]) == 46
         assert len(json.dumps(tools)) < 40_000
 
 
@@ -423,3 +435,158 @@ async def test_push_and_tool_report_the_same_briefing(settings, store):
         assert text in sent.text
     # the alert state the push wrote keeps the already announced alerts "new" for the day
     assert store.alert_states()["acwr_out_of_range"]["fired_on"] == "2026-10-07"
+
+
+# ------------------------------------------------------------ stored history
+
+
+@pytest.mark.anyio
+async def test_trends_and_weekly_report_over_http(app, store):
+    for n in range(1, 8):
+        day = date(2026, 9, 28) + timedelta(days=n - 1)  # Monday 09-28 .. Sunday 10-04
+        seed_day(store, day, hrv_last_night_ms=50 + n, sleep_duration_h=7.0, resting_hr=48)
+        seed_activities(store, day, {"running": sport(1, 40, 8.0, 50)} if n % 2 else {})
+    async with running_client(app) as client:
+        result = await call_tool(client, "get_trends", {"metrics": ["hrv_last_night_ms", "running_distance_km"]})
+        assert result["isError"] is False
+        trend = payload(result)
+        assert trend["start"] == "2026-07-09" and trend["end"] == "2026-10-06" and trend["period"] == "week"
+        assert trend["days_with_data"] == 7
+        assert trend["metrics"]["hrv_last_night_ms"]["summary"]["n"] == 7
+        assert trend["metrics"]["running_distance_km"]["buckets"][0]["total"] == 32.0
+
+        result = await call_tool(client, "get_weekly_report", {}, id_=3)
+        assert result["isError"] is False
+        report = payload(result)
+        assert report["week"]["iso_week"] == "2026-W40" and report["week"]["partial"] is False
+        assert report["endurance"]["total"]["count"] == 4
+        assert report["strength"]["available"] is False
+
+        bad = await call_tool(client, "get_trends", {"metrics": ["readiness"], "end_date": "2026-10-09"}, id_=4)
+        assert bad["isError"] is True and "end_date must not be after today" in bad["content"][0]["text"]
+        for arguments in ({"metrics": []}, {"metrics": ["steps"]}, {"metrics": ["readiness"] * 9}):
+            invalid = await call_tool(client, "get_trends", arguments, id_=5)
+            assert invalid["isError"] is True, arguments
+        future = await call_tool(client, "get_weekly_report", {"week": "2026-10-12"}, id_=6)
+        assert future["isError"] is True and "future" in future["content"][0]["text"]
+
+
+def history_settings(settings: Settings, **overrides) -> Settings:
+    return Settings(**{**settings.__dict__, "history_enabled": True, **overrides})
+
+
+def history_clock() -> FakeClock:
+    return FakeClock(datetime(2026, 10, 7, 14, 0, tzinfo=PRAGUE))
+
+
+def history_sleep_for(source: FakeHistorySource, clock: FakeClock):
+    """Wakes up on the fake clock until the first backend call, then never (ends by raising, never hangs)."""
+
+    async def sleep(seconds: float) -> None:
+        if source.calls:
+            await never_wake(seconds)
+        await clock.sleep(seconds)
+        await asyncio.sleep(0)
+
+    return sleep
+
+
+@pytest.mark.anyio
+async def test_history_job_on_from_lifespan(settings, store, caplog):
+    caplog.set_level(logging.DEBUG)
+    clock = history_clock()
+    source = FakeHistorySource(clock=clock)
+    app = create_app(
+        history_settings(settings, history_backfill_days=2),
+        store,
+        today=lambda: TODAY,
+        now=clock.now,
+        history_source=source,
+        history_sleep=history_sleep_for(source, clock),
+    )
+    async with running_client(app) as client:
+        await wait_for(lambda: source.calls)
+        assert (await client.get("/healthz")).json()["history"] == "on"
+        assert source.auth_checks == 1
+    await anyio.sleep(0.05)  # let the task's done-callback run
+    assert "history status=stopped" not in caplog.text and "Exception in callback" not in caplog.text
+    assert source.calls[0][0] == "list_activities"
+
+
+@pytest.mark.anyio
+async def test_history_job_that_dies_is_reported_stopped(settings, store, caplog):
+    caplog.set_level(logging.DEBUG)
+
+    async def dying_sleep(_seconds: float) -> None:
+        raise RuntimeError("boom")  # outside run()'s try: the history task dies
+
+    app = create_app(
+        history_settings(settings),
+        store,
+        today=lambda: TODAY,
+        now=lambda: datetime(2026, 10, 7, 14, 0, tzinfo=PRAGUE),
+        history_source=FakeHistorySource(),
+        history_sleep=dying_sleep,
+    )
+    with anyio.fail_after(10):
+        async with running_client(app) as client:
+            await wait_for(lambda: "history status=stopped kind=RuntimeError" in caplog.text)
+            response = await client.get("/healthz")
+            assert response.status_code == 200
+            assert response.json()["history"] == "stopped" and response.json()["status"] == "ok"
+            left_at = time.monotonic()
+        assert time.monotonic() - left_at < 2  # the dead task is not awaited again on shutdown
+    assert "boom" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_history_off_makes_no_calls(settings, store):
+    clock = history_clock()
+    source = FakeHistorySource(clock=clock)
+    app = create_app(
+        history_settings(settings, history_enabled=False),
+        store,
+        today=lambda: TODAY,
+        now=clock.now,
+        history_source=source,
+        history_sleep=history_sleep_for(source, clock),
+    )
+    async with running_client(app) as client:
+        assert (await client.get("/healthz")).json()["history"] == "off"
+        await anyio.sleep(0.05)
+    assert source.calls == [] and source.auth_checks == 0
+
+
+@pytest.mark.anyio
+async def test_lifespan_exit_cancels_a_running_history_call(settings, store):
+    class HangingSource(FakeHistorySource):
+        def __init__(self, clock: FakeClock) -> None:
+            super().__init__(clock=clock)
+            self.started = asyncio.Event()
+
+        async def history_call(self, name, args):
+            self.started.set()
+            await asyncio.sleep(5)
+            raise AssertionError("history call was not cancelled")
+
+    clock = history_clock()
+    source = HangingSource(clock)
+    app = create_app(
+        history_settings(settings),
+        store,
+        today=lambda: TODAY,
+        now=clock.now,
+        history_source=source,
+        history_sleep=history_sleep_for(source, clock),
+    )
+    with anyio.fail_after(10):
+        async with running_client(app):
+            await asyncio.wait_for(source.started.wait(), 2)
+            left_at = time.monotonic()
+        # a swallowed cancellation would keep the shutdown waiting for the history task
+        assert time.monotonic() - left_at < 2
+    assert rows_of(store) == []
+
+
+def rows_of(store):
+    return store.history_rows(None, date(2030, 1, 1))

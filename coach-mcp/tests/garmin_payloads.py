@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from coach_mcp.garmin import ALLOWED_TOOLS, GarminData
+from coach_mcp.garmin import BRIEFING_TOOLS, GarminData
 
 DAY = date(2026, 10, 7)
 
@@ -64,7 +64,7 @@ YELLOW_SCHEDULED = scheduled(
     ]
 )
 
-ALL_OK = dict.fromkeys(ALLOWED_TOOLS, "ok")
+ALL_OK = dict.fromkeys(BRIEFING_TOOLS, "ok")
 
 
 def garmin_data(**overrides: Any) -> GarminData:
@@ -84,3 +84,83 @@ def yellow_data(**overrides: Any) -> GarminData:
     fields: dict[str, Any] = {"snapshot": YELLOW_SNAPSHOT, "hrv_trend": YELLOW_TREND, "scheduled": YELLOW_SCHEDULED}
     fields.update(overrides)
     return garmin_data(**fields)
+
+
+# ---- the nightly history job (get_recovery_snapshot of any day, list_activities rows)
+
+HISTORY_SECTIONS: tuple[str, ...] = (
+    "readiness",
+    "hrv",
+    "sleep",
+    "body_battery",
+    "resting_hr",
+    "stress",
+    "training_status",
+)
+
+
+def history_snapshot(day: str, **sections: Any) -> dict[str, Any]:
+    """A full ``get_recovery_snapshot`` payload; keyword arguments replace a whole section."""
+    payload: dict[str, Any] = {
+        "date": day,
+        "readiness": {"score": 70, "morning_score": 72},
+        "hrv": {"last_night_avg_ms": 55, "weekly_avg_ms": 57, "status": "BALANCED"},
+        "sleep": {"duration_h": 7.4, "score": 81},
+        "body_battery": {"high": 88, "low": 21},
+        "resting_hr": {"today": 47},
+        "stress": {"avg": 28},
+        "training_status": {
+            "acute": 410,
+            "chronic": 380,
+            "acwr_ratio": 1.08,
+            "vo2max_running": 52.3,
+            "vo2max_cycling": 50.1,
+        },
+    }
+    unknown = set(sections) - set(HISTORY_SECTIONS)
+    assert not unknown, unknown
+    payload.update(sections)
+    return payload
+
+
+# The columns ``recovery_values(history_snapshot(...))`` must produce (readiness prefers morning_score).
+HISTORY_ROW: dict[str, Any] = {
+    "readiness": 72,
+    "hrv_last_night_ms": 55,
+    "hrv_weekly_avg_ms": 57,
+    "hrv_status": "BALANCED",
+    "sleep_duration_h": 7.4,
+    "sleep_score": 81,
+    "resting_hr": 47,
+    "body_battery_high": 88,
+    "body_battery_low": 21,
+    "stress_avg": 28,
+    "acute_load": 410,
+    "chronic_load": 380,
+    "acwr_ratio": 1.08,
+    "vo2max_running": 52.3,
+    "vo2max_cycling": 50.1,
+}
+
+
+def activity(
+    day: str,
+    type_: str | None,
+    duration_min: Any = None,
+    distance_km: Any = None,
+    training_load: Any = None,
+    hhmm: str = "07:00",
+) -> dict[str, Any]:
+    """A ``list_activities`` row (garmin-mcp drops absent values, so ``None`` leaves the key out)."""
+    row: dict[str, Any] = {"id": 1, "start_local": f"{day}T{hhmm}", "type": type_}
+    for key, value in (("duration_min", duration_min), ("distance_km", distance_km), ("training_load", training_load)):
+        if value is not None:
+            row[key] = value
+    return row
+
+
+def activities_payload(rows: list[dict[str, Any]], truncated: bool = False) -> dict[str, Any]:
+    payload: dict[str, Any] = {"start": "x", "end": "y", "count": len(rows), "activities": rows}
+    if truncated:
+        payload["truncated"] = True
+    return payload

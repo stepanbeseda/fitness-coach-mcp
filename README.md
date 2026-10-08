@@ -12,6 +12,7 @@ Self-hosted MCP servery pro osobního fitness kouče v Claude:
 - **Kouč (paměť)**: cíle, omezení (zranění, dostupné dny, vybavení), tréninkový plán po dnech se stavem
   a deník poznámek, aby si kouč pamatoval stav mezi konverzacemi (vlastní server `coach-mcp/` se SQLite).
   Volitelně ráno pošle briefing s verdiktem a upozorněními do tvého chatu s Telegram botem (viz Provoz).
+  Každou noc ukládá denní historii z Garminu pro trendy delší než 28 dní a týdenní přehled.
 
 Všechny tři běží za jednou OAuth 2.1 gateway a ven jsou vystavené jen přes **vlastní Tailscale uzel**:
 Funnel na portu 443 pro claude.ai (web, mobil, Desktop) a tailnet pro Claude Code / lokální Claude Desktop.
@@ -111,6 +112,7 @@ cp .env.example .env && chmod 600 .env
 V `.env` vyplň `PUBLIC_BASE_URL` (`https://fitness-mcp.<tailnet>`) a `OWNER_TAILSCALE_LOGIN` (tvůj
 Tailscale login, např. `jane@github`). Příkazy, které ti obě hodnoty vypíšou, jsou přímo v `.env.example`.
 Volitelně ranní briefing do Telegramu: `COACH_TELEGRAM_CHAT_ID` a `COACH_BRIEFING_*` (viz Provoz → Ranní briefing).
+Noční historie z Garminu je zapnutá; volby `COACH_HISTORY_*` jsou v `.env.example` (viz Provoz → Noční historie).
 
 ### 4. Secrets
 
@@ -232,6 +234,7 @@ Konektory z claude.ai fungují v Desktopu samy. Pokud chceš spojení čistě p�
 | Změna hesla / nový TOTP | `scripts/setup-secrets.sh password` / `scripts/setup-secrets.sh totp` |
 | Rotace interních tokenů | `scripts/setup-secrets.sh backend-tokens` |
 | Ranní briefing ručně | `docker compose exec coach-mcp python -m coach_mcp send-briefing` |
+| Noční historie (průběh) | `docker compose logs coach-mcp` (řádky `history status=…`) |
 | Telegram bot | `scripts/setup-secrets.sh telegram-token` (token od @BotFather, vypíše chat id), `scripts/setup-secrets.sh telegram-chat-id` (chat id znovu) |
 | Nové verze | `scripts/check-updates.sh` |
 | Test bez dopadu na provoz | `scripts/e2e-test.sh` (samostatný compose projekt, bez internetu a Tailscale) |
@@ -288,6 +291,29 @@ běží jako samostatný proces: stejné řádky vypíše jen do terminálu, v l
 (stačí prázdný) a briefing zapíná přes `COACH_NTFY_URL` a `COACH_NTFY_TOPIC` v `.env`. Po
 `git checkout <commit před PR 08>` spusť `scripts/setup-secrets.sh` (ta verze prázdný soubor vytvoří), vrať
 obě proměnné do `.env` a nakonec `docker compose up -d --build --no-deps coach-mcp`. Databáze se nemění.
+
+### Noční historie
+
+`get_hrv_trend` sahá jen 28 dní zpět a `get_body_battery` 31. Aby kouč viděl dál, `coach-mcp` si každou noc
+(03:30) uloží denní hodnoty z Garminu (HRV, spánek, klidová tepovka, Body Battery, stres, readiness, zátěž,
+VO2max a součty aktivit po sportech) do SQLite ve volume `coach-data`. `get_trends` je čte po dnech, týdnech
+a měsících a `get_weekly_report` z nich skládá týdenní přehled. Data zůstávají na serveru, nové vystavení
+osobních dat tím nevzniká.
+
+První běh je největší: minutu po nasazení se začne načítat 90 dní zpět, asi 470 volání Garmin Connect ve 103
+voláních `garmin-mcp` s pauzou 15 s, dohromady zhruba 30 minut; pak je to asi 16 volání za noc. Mezi
+`COACH_BRIEFING_TIME` a `COACH_BRIEFING_CUTOFF` se nic nevolá, aby si ráno briefing a historie nedělily limit
+Garminu; po cutoff běh pokračuje. Když `COACH_HISTORY_TIME` padne do tohoto okna, noční běh začne až
+v `COACH_BRIEFING_CUTOFF` (v logu jednou `history status=config_warning`).
+
+Vypnutí: `COACH_HISTORY_ENABLED=false` v `.env` a `docker compose up -d coach-mcp` (uložená data zůstanou,
+jen se nedoplňují). Ostatní volby `COACH_HISTORY_*` jsou v `.env.example`.
+
+V logu (`docker compose logs coach-mcp`) je jeden řádek na běh, `history status=done|partial|paused|
+rate_limited|service_error|auth|unreachable|no_credentials fetched=… failed=… pending=… given_up=… ms=…`, nikdy
+data ani hodnoty. Při `COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek
+`history status=config_warning`.
+`healthcheck.sh` hlásí stav úlohy (`on` / `off` / `stopped`). Silová data z Hevy se do historie zatím neukládají.
 
 ### Obnova Garmin tokenů
 
@@ -376,7 +402,8 @@ docker compose start coach-mcp
 ```
 
 Archivy `coach-data.tgz` i `coach-data-pred-obnovou-*.tgz` obsahují osobní tréninková data: ulož je mimo repo
-a mimo veřejná úložiště.
+a mimo veřejná úložiště. Denní historie (`history_days`) je ve stejném souboru; když se ztratí, `coach-mcp` ji po
+startu znovu načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.
 
 ## Troubleshooting
 
@@ -393,6 +420,7 @@ a mimo veřejná úložiště.
 | `coach-mcp` unhealthy, v logu `database schema version N is newer` | Běží starší image než data: nasaď znovu novější verzi; volume `coach-data` nemaž. |
 | `coach-mcp` se nespustí: `bind source path does not exist: …/secrets/telegram_bot_token` | Chybí soubor pro token bota (stačí prázdný) → `scripts/setup-secrets.sh` a `docker compose up -d coach-mcp`. |
 | `coach-mcp` se pořád restartuje, v logu `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | V `.env` je chat id, ale token chybí nebo je poškozený → `scripts/setup-secrets.sh telegram-token`, nebo chat id z `.env` smaž (briefing vypnutý). |
+| `get_trends` / `get_weekly_report` nemají data | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect nebo internet nefungoval, další pokus za 1 až 8 h, dny se nezapočítají; `given_up` > 0 = dny, které třikrát selhaly, i když Garmin jiné dny vracel). |
 | Ranní notifikace nepřišla | `docker compose logs coach-mcp`: `skipped` = služba startovala až po cutoff; `gave_up` = Telegram zprávu odmítl (token, chat id, bot zablokovaný nebo mu ještě nikdo nenapsal) nebo neodpovídal; žádný řádek `briefing` = briefing vypnutý (`healthcheck.sh` to vypíše). |
 | Hevy nástroje vrací 401 | Neplatný Hevy klíč nebo vypršelo Hevy PRO → `scripts/setup-secrets.sh hevy-key`. |
 | Garmin nástroje: „spusť scripts/garmin-login.sh“ | Tokeny chybí nebo expirovaly → `scripts/garmin-login.sh`. |

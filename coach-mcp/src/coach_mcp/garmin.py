@@ -1,8 +1,8 @@
-"""Read-only client for garmin-mcp: three allowlisted read tools over MCP.
+"""Read-only client for garmin-mcp: allowlisted read tools over MCP.
 
-The coach reads recovery data only to compose the morning briefing. It uses the
-internal bearer token garmin-mcp already accepts from the gateway and can call
-nothing but ``ALLOWED_TOOLS``; garmin-mcp's write tools are unreachable from here.
+The morning briefing calls ``BRIEFING_TOOLS``, the nightly history job ``HISTORY_TOOLS``. The
+coach uses the internal bearer token garmin-mcp already accepts from the gateway and can call
+nothing outside ``ALLOWED_TOOLS``; garmin-mcp's write tools are unreachable from here.
 Log lines carry outcome words, durations and exception class names only.
 """
 
@@ -26,7 +26,12 @@ from .config import Settings
 
 log = logging.getLogger("coach_mcp.garmin")
 
-ALLOWED_TOOLS = ("get_recovery_snapshot", "get_hrv_trend", "list_scheduled_workouts")
+BRIEFING_TOOLS = ("get_recovery_snapshot", "get_hrv_trend", "list_scheduled_workouts")
+HISTORY_TOOLS = ("get_recovery_snapshot", "list_activities")
+# Every garmin-mcp tool the coach may call; garmin-mcp's write tools are not in it.
+ALLOWED_TOOLS = ("get_recovery_snapshot", "get_hrv_trend", "list_scheduled_workouts", "list_activities")
+# garmin-mcp's garmin_client.py: "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry."
+RATE_LIMIT_HINT = "HTTP 429"
 # Both NOT_LOGGED_IN and SESSION_EXPIRED in garmin-mcp's garmin_client.py contain this hint.
 GARMIN_LOGIN_HINT = "scripts/garmin-login.sh"
 MIN_TOKEN_LENGTH = 16
@@ -58,6 +63,12 @@ class GarminData:
 
 class GarminSource(Protocol):
     async def fetch(self, day: date) -> GarminData: ...
+
+
+class HistorySource(Protocol):
+    async def auth_state(self) -> str | None: ...
+
+    async def history_call(self, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]: ...
 
 
 async def _call(client: Client, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
@@ -96,9 +107,56 @@ class GarminReader:
             return None
         return value if value in AUTH_VALUES else None
 
+    async def auth_state(self) -> str | None:
+        """garmin-mcp's ``garmin_auth`` from /healthz ("ok", "missing", "error"); None when not reachable."""
+        async with httpx2.AsyncClient(timeout=httpx2.Timeout(30.0), transport=self._transport) as http:
+            return await self._auth(http)
+
+    async def history_call(self, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        """One history tool call -> (outcome, payload); the payload is a dict only for ``ok``.
+
+        Outcomes: ok, rate_limited, auth_error, error (the backend answered but not usably),
+        unreachable, no_credentials. Logs nothing: the history job logs one line per run.
+        """
+        if name not in HISTORY_TOOLS:
+            raise ValueError(f"tool {name!r} is not allowed")
+        token = self._token()
+        if token is None:
+            return "no_credentials", None
+        try:
+            async with httpx2.AsyncClient(
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=httpx2.Timeout(30.0, read=90.0),
+                transport=self._transport,
+            ) as http:
+                with anyio.fail_after(180):
+                    async with Client(
+                        streamable_http_client(self._settings.garmin_url, http_client=http),
+                        read_timeout_seconds=90,
+                    ) as client:
+                        result = await client.call_tool(name, args)
+        except Exception:  # never BaseException: a cancel (shutdown) must propagate
+            return "unreachable", None
+        text = "".join(c.text for c in result.content if isinstance(c, mcp.types.TextContent))
+        if result.is_error:
+            if RATE_LIMIT_HINT in text:
+                return "rate_limited", None
+            return ("auth_error" if GARMIN_LOGIN_HINT in text else "error"), None
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return "error", None
+        if not isinstance(payload, dict):
+            return "error", None
+        # garmin-mcp turns a 429 of one library call into an error section while the tool itself succeeds.
+        for value in payload.values():
+            if isinstance(value, dict) and RATE_LIMIT_HINT in str(value.get("error", "")):
+                return "rate_limited", None
+        return "ok", payload
+
     async def fetch(self, day: date) -> GarminData:
         started = time.monotonic()
-        outcomes = dict.fromkeys(ALLOWED_TOOLS, "error")
+        outcomes = dict.fromkeys(BRIEFING_TOOLS, "error")
         token = self._token()
         if token is None:
             log.warning("garmin status=error kind=no_credentials")
@@ -112,7 +170,7 @@ class GarminReader:
                 "end_date": day.isoformat(),
             },
         }
-        payloads: dict[str, dict[str, Any] | None] = dict.fromkeys(ALLOWED_TOOLS)
+        payloads: dict[str, dict[str, Any] | None] = dict.fromkeys(BRIEFING_TOOLS)
         failure = ""
         async with httpx2.AsyncClient(
             headers={"Authorization": f"Bearer {token}"},
@@ -127,7 +185,7 @@ class GarminReader:
                             streamable_http_client(self._settings.garmin_url, http_client=http),
                             read_timeout_seconds=90,
                         ) as client:
-                            for name in ALLOWED_TOOLS:
+                            for name in BRIEFING_TOOLS:
                                 outcomes[name], payloads[name] = await _call(client, name, arguments[name])
                 except Exception as exc:  # never BaseException: a cancel (shutdown) must propagate
                     failure = f" kind={exception_kind(exc)}"
