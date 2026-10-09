@@ -95,10 +95,11 @@ ještě nejsou; na dnešní stav dál používej `get_daily_briefing` a `get_rec
   plánovaný trénink, takže ho při přeplánování toho týdne zahrň do `save_plan`, jinak se nahradí); tréninky
   v `to_confirm` (a `suggestion` v `get_plan`) zkontroluj: `matched` = ten den je v Garminu aktivita stejného
   sportu (součty dne), `no_activity` = není, `final: false` = hodinky se ještě můžou dosynchronizovat; u síly
-  se podívej i do Hevy (silové tréninky z Hevy se zatím nepárují). Návrh mi ukaž a po kontrole Garminu a Hevy
-  navrhni `update_session` (matched → done, no_activity → skipped nebo moved s novým datem); nové nebo změněné
-  cíle a omezení přes `set_goal` / `set_constraint` (uzavírají se jako achieved / abandoned / resolved, nic se
-  nemaže); důvod změny plánu nebo pocit z tréninku přes `add_note`. Také tady: návrh, potvrzení, zápis.
+  se podívej i do Hevy (silový trénink se páruje i s workoutem z Hevy, když ho silová historie už pokrývá).
+  Návrh mi ukaž a po kontrole Garminu a Hevy navrhni `update_session` (matched → done, no_activity → skipped
+  nebo moved s novým datem); nové nebo změněné cíle a omezení přes `set_goal` / `set_constraint` (uzavírají se
+  jako achieved / abandoned / resolved, nic se nemaže); důvod změny plánu nebo pocit z tréninku přes `add_note`.
+  Také tady: návrh, potvrzení, zápis.
 - Po zápisu stručně shrň, co vzniklo: název, datum a ID nebo odkaz.
 
 ## 4. Styl

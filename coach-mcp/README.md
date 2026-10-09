@@ -122,7 +122,9 @@ s read-only tokenem kouče odmítne dřív, než se spustí. Z `hevy-mcp` smí v
 a `get-exercise-template`. Log má na každý běh jeden řádek za Garmin:
 `history status=… fetched=… failed=… pending=… given_up=… ms=… matched=… no_activity=…` (`reconcile=error kind=…`,
 když sladění plánu selže, běh historie tím neselže) a jeden za Hevy:
-`history status=… part=strength workouts=… deleted=… templates=… failed=… ms=…` (bez dat a hodnot). Při
+`history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (bez dat a hodnot;
+`skipped` = události z Hevy, které nešly použít). Hevy část běží před sladěním plánu, její řádek je v logu před
+řádkem za Garmin. Při
 `COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek `history status=config_warning`.
 `/healthz` hlásí pole `history`: `on`, `off` (`COACH_HISTORY_ENABLED=false`) nebo `stopped` (úloha nečekaně
 skončila).
@@ -130,16 +132,17 @@ skončila).
 ## Sladění plánu
 
 Po každém běhu noční historie server porovná plánované tréninky posledních 7 dní (bez dneška) s uloženými
-součty aktivit stejného dne a sportu (`running`, `cycling`, `swimming`, `strength`; `mobility` a `other` se
-nepárují) a uloží návrh do tabulky `session_suggestions`: `matched` s důkazem (sport, počet aktivit, délka
+součty aktivit stejného dne a sportu (`running`, `cycling`, `swimming`, `strength`; `mobility` a `other`
+návrh nemají) a uloží návrh do tabulky `session_suggestions`: `matched` s důkazem (sport, počet aktivit, délka
 a vzdálenost toho sportu za den) nebo `no_activity`. Den, jehož aktivity se ještě nenačetly nebo se po třech
 chybách vzdaly, návrh nemá. Víc tréninků stejného sportu v jeden den: aktivity se nejdřív přiřadí tréninkům
 už označeným `done`, zbytek plánovaným v pořadí plánu. Návrh má `final: false`, dokud se den může ještě znovu
 načíst (do třetího dne po něm, pozdní synchronizace hodinek). Stav tréninku server nikdy nemění: `get_plan`
 a `get_coach_context` ukazují návrh jen u tréninků ve stavu `planned`, kouč ho ověří a po potvrzení zapíše
-`update_session`. Silové tréninky se zatím párují jen se silovým záznamem z hodinek (`strength_training`),
-ne s Hevy. Bez noční historie (`COACH_HISTORY_ENABLED=false`) návrhy nevznikají. Ranní briefing jmenuje
-včerejší plánované tréninky s `no_activity` (upozornění výše).
+`update_session`. Silový trénink se páruje se silovým záznamem z hodinek (`strength_training`) nebo s workoutem
+z Hevy téhož dne (důkaz `source: hevy` s počtem sérií a objemem); den, který silová historie z Hevy ještě
+nepokrývá, se páruje jen s hodinkami. Bez noční historie (`COACH_HISTORY_ENABLED=false`) návrhy
+nevznikají. Ranní briefing jmenuje včerejší plánované tréninky s `no_activity` (upozornění výše).
 
 ## Data
 
@@ -171,6 +174,21 @@ v jedné transakci). Starší image odmítne otevřít novější databázi, aby
 
 Před přechodem na starší verzi spusť `scripts/backup.sh`.
 
+**Návrat na verzi bez silové historie** (schéma 5 → 4). Starší image databázi se schématem 5 odmítne
+(`database schema version 5 is newer`). Před nasazením starší verze proto smaž jen tabulky silové historie; cíle,
+omezení, plán, poznámky, stav briefingu i historie z Garminu zůstanou (silovou historii si server po novém
+nasazení znovu načte z Hevy). Služba musí stát, příkazy spouštěj po jednom:
+
+```bash
+docker compose stop coach-mcp
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 5 or sys.exit(f"schema version {v}, expected 5: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE strength_workouts; DROP TABLE hevy_templates; DROP TABLE hevy_sync; PRAGMA user_version = 4; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+Druhý příkaz musí vypsat `schema version 4`. Pak nasaď starší verzi (`git checkout <commit před PR 09>` a
+`docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 5 nemá
+a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří. Návrat na
+starší verze je nejdřív tento postup 5 → 4 a potom následující.
+
 **Návrat na verzi bez sladění plánu** (schéma 4 → 3). Starší image databázi se schématem 4 odmítne
 (`database schema version 4 is newer`). Před nasazením starší verze proto smaž jen tabulku návrhů; cíle,
 omezení, plán, poznámky, stav briefingu i historie zůstanou. Tabulka `alert_state` si nechá rozšířenou
@@ -186,21 +204,6 @@ Druhý příkaz musí vypsat `schema version 3`. Pak nasaď starší verzi (`git
 a `docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 4
 nemá a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří.
 Návrat na ještě starší verzi je nejdřív tento postup 4 → 3 a potom následující.
-
-**Návrat na verzi bez silové historie** (schéma 4 → 3). Starší image databázi se schématem 4 odmítne
-(`database schema version 4 is newer`). Před nasazením starší verze proto smaž jen tabulky silové historie; cíle,
-omezení, plán, poznámky, stav briefingu i historie z Garminu zůstanou (silovou historii si server po novém
-nasazení znovu načte z Hevy). Služba musí stát, příkazy spouštěj po jednom:
-
-```bash
-docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 4 or sys.exit(f"schema version {v}, expected 4: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE strength_workouts; DROP TABLE hevy_templates; DROP TABLE hevy_sync; PRAGMA user_version = 3; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
-```
-
-Druhý příkaz musí vypsat `schema version 3`. Pak nasaď starší verzi (`git checkout <commit před PR 09>` a
-`docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 4 nemá
-a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří. Návrat na
-starší verze je nejdřív tento postup 4 → 3 a potom následující.
 
 **Návrat na verzi bez historie** (schéma 3 → 2). Starší image databázi se schématem 3 odmítne
 (`database schema version 3 is newer`). Před nasazením starší verze proto smaž jen tabulku historie; cíle,

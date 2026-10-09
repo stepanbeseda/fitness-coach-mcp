@@ -325,7 +325,8 @@ načte stejných `COACH_HISTORY_BACKFILL_DAYS` dní zpět se stejnou pauzou mezi
 workoutů a jedno na každý cvik), další noci obvykle jedno volání. Když Hevy nebo `hevy-mcp` nefunguje, Garmin
 část doběhne normálně, silová data zůstanou nepokrytá (`available: false`) a další pokus je za hodinu, při
 omezení počtu volání za 1 až 8 hodin; nic se nevzdává. V logu je pro Hevy druhý řádek
-`history status=… part=strength workouts=… deleted=… templates=… failed=… ms=…`.
+`history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (`skipped` = události
+z Hevy, které nešly použít); běží před sladěním plánu, takže je v logu před řádkem za Garmin.
 
 V logu (`docker compose logs coach-mcp`) je na každý běh jeden řádek za Garmin, `history status=done|partial|
 paused|rate_limited|service_error|auth|unreachable|no_credentials fetched=… failed=… pending=… given_up=… ms=…`,
