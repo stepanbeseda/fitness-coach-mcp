@@ -68,7 +68,9 @@ for file in "${archives[@]}"; do
     *) new="$file" ;;
   esac
 done
-[[ -n "$new" && "$new" != *2020* && "$new" != *20991230* ]] || stop "krok 5: rotace nechala špatné archivy (${archives[*]})" "$w/out2"
+# Match the date part only: a time of day like T202050Z must not look like an old archive.
+[[ -n "$new" && "$new" != fitness-coach-backup-202001* && "$new" != fitness-coach-backup-20991230* ]] \
+  || stop "krok 5: rotace nechala špatné archivy (${archives[*]})" "$w/out2"
 for gone in 20200101 20200102 20200103 20991230; do
   [[ ! -e "$w/a/fitness-coach-backup-${gone}T000000Z.tgz" ]] || stop "krok 5: rotace nesmazala starý archiv $gone" "$w/out2"
 done
