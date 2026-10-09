@@ -14,7 +14,6 @@ from typing import Any, Literal
 
 RECONCILE_DAYS = 7  # the window: today - 7 .. today - 1
 MATCHED_TYPES = ("running", "cycling", "swimming", "strength")  # session type == history sport of the totals
-_COUNTED_STATUSES = ("planned", "done")
 
 
 @dataclass(frozen=True)
@@ -53,8 +52,9 @@ def _evidence(sport: str, entry: Mapping[str, Any], count: int) -> dict[str, Any
 def suggest(sessions: Sequence[Mapping[str, Any]], days: Mapping[str, DayActivities]) -> dict[int, Suggestion]:
     """Suggest ``matched`` / ``no_activity`` for the planned sessions that have stored activity totals.
 
-    Only sessions of ``MATCHED_TYPES`` with status ``planned`` or ``done`` are considered, grouped by
-    (date, type); every other session gets nothing and consumes nothing. A date missing from ``days``
+    Only sessions of ``MATCHED_TYPES`` are considered, grouped by (date, type); only ``done`` sessions
+    consume an activity and only ``planned`` ones get a suggestion, so every other status gets nothing and
+    consumes nothing. A date missing from ``days``
     (activities never fetched, given up, unreadable) gives no suggestion. The group's activity count is
     ``totals[type]["count"]`` (an int >= 0, otherwise 0); sessions already ``done`` take activities first,
     and the planned ones, in order of id, get ``matched`` while activities remain and ``no_activity``
@@ -63,7 +63,7 @@ def suggest(sessions: Sequence[Mapping[str, Any]], days: Mapping[str, DayActivit
     """
     groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for session in sessions:
-        if session.get("type") in MATCHED_TYPES and session.get("status") in _COUNTED_STATUSES:
+        if session.get("type") in MATCHED_TYPES:
             groups.setdefault((session["date"], session["type"]), []).append(session)
     out: dict[int, Suggestion] = {}
     for (date_, type_), group in groups.items():

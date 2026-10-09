@@ -73,7 +73,11 @@ def test_two_sessions_of_different_sports_on_one_day():
 
 def test_two_sessions_of_one_sport_share_the_count():
     sessions = [s(5), s(3)]  # given out of order: the planned ones are taken in order of id
-    results = lambda count: {i: x.result for i, x in suggest(sessions, {"2026-10-06": day({"running": sport(count, 30, 5)})}).items()}  # noqa: E731
+
+    def results(count):
+        days = {"2026-10-06": day({"running": sport(count, 30, 5)})}
+        return {i: x.result for i, x in suggest(sessions, days).items()}
+
     assert results(1) == {3: "matched", 5: "no_activity"}
     assert results(2) == {3: "matched", 5: "matched"}
     assert results(3) == {3: "matched", 5: "matched"}
@@ -133,7 +137,12 @@ def test_evidence_keeps_only_positive_numbers(entry):
 
 
 def row(date_="2026-10-06", activities=None, fetched_on=None, failures=0):
-    return {"date": date_, "activities": activities, "activities_fetched_on": fetched_on, "activities_failures": failures}
+    return {
+        "date": date_,
+        "activities": activities,
+        "activities_fetched_on": fetched_on,
+        "activities_failures": failures,
+    }
 
 
 def test_day_activities_leaves_out_days_without_fetched_activities():
@@ -303,7 +312,8 @@ async def test_reconcile_error_is_logged_and_the_run_stands(store, caplog, monke
     assert message.startswith("history status=done") and message.endswith("reconcile=error kind=OperationalError")
     assert "SECRET-DB-TEXT" not in caplog.text
     assert len(store.history_rows(None, TODAY)) == 1  # the history itself was stored
-    assert (clock.now() + timedelta(seconds=delay)).astimezone(local(TODAY, 0).tzinfo) == local(date(2026, 10, 8), 3, 30)
+    next_due = (clock.now() + timedelta(seconds=delay)).astimezone(local(TODAY, 0).tzinfo)
+    assert next_due == local(date(2026, 10, 8), 3, 30)
 
 
 @pytest.mark.anyio

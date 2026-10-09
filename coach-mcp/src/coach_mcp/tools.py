@@ -178,7 +178,9 @@ def sessions_out(store: Store, rows: list[dict[str, Any]]) -> list[dict[str, Any
                     "moved_from_id": r["moved_from_id"],
                     "moved_to": {"id": link[0], "date": link[1]} if link else None,
                     "suggestion": (
-                        suggestion_out(suggested[r["id"]]) if r["status"] == "planned" and r["id"] in suggested else None
+                        suggestion_out(suggested[r["id"]])
+                        if r["status"] == "planned" and r["id"] in suggested
+                        else None
                     ),
                 }
             )
