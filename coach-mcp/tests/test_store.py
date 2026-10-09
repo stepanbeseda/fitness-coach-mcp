@@ -376,14 +376,17 @@ DOWNGRADE_4_SQL = "BEGIN IMMEDIATE; DROP TABLE session_suggestions; PRAGMA user_
 
 
 def test_downgrade_4_sql_returns_to_a_version_3_file(db_path, monkeypatch):
-    new = Store(db_path)
-    goal_id = new.insert_goal({"title": "Keep me"})
-    session_id = _one_session(new)
-    new.upsert_suggestions([(session_id, "no_activity", False, None)], date(2026, 10, 7))
-    new.record_briefing_sent(
-        date(2026, 10, 7), "green", {"garmin_auth": (False, False), "missed_planned_session": (True, True)}
-    )
-    assert _user_version(db_path) == 4
+    # It is a 4 -> 3 recipe: the file is built at version 4 (a version 5 file must first go 5 -> 4).
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:4])
+        new = Store(db_path)
+        goal_id = new.insert_goal({"title": "Keep me"})
+        session_id = _one_session(new)
+        new.upsert_suggestions([(session_id, "no_activity", False, None)], date(2026, 10, 7))
+        new.record_briefing_sent(
+            date(2026, 10, 7), "green", {"garmin_auth": (False, False), "missed_planned_session": (True, True)}
+        )
+        assert _user_version(db_path) == 4
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(DOWNGRADE_4_SQL)
@@ -397,12 +400,14 @@ def test_downgrade_4_sql_returns_to_a_version_3_file(db_path, monkeypatch):
         goal = old.get_goal(goal_id)
         assert goal is not None and goal["title"] == "Keep me"
         assert set(old.alert_states()) == {"garmin_auth", "missed_planned_session"}  # the old code ignores the new key
-    again = Store(db_path)
-    assert _user_version(db_path) == SCHEMA_VERSION == 4
-    assert set(again.alert_states()) == {"garmin_auth", "missed_planned_session"}
-    assert again.alert_states()["missed_planned_session"]["value"] == 1
-    assert "session_suggestions" in _tables(db_path)
-    assert again.suggestions_for([session_id]) == {}
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:4])
+        again = Store(db_path)
+        assert _user_version(db_path) == 4
+        assert set(again.alert_states()) == {"garmin_auth", "missed_planned_session"}
+        assert again.alert_states()["missed_planned_session"]["value"] == 1
+        assert "session_suggestions" in _tables(db_path)
+        assert again.suggestions_for([session_id]) == {}
 
 
 def test_suggestion_checks_in_schema(store, db_path):
@@ -550,32 +555,32 @@ def test_history_status_check_in_schema(store, db_path):
         conn.close()
 
 
-# ------------------------------------------------------------- strength (migration 4)
+# ------------------------------------------------------------- strength (migration 5)
 
 
-def test_migration_4_upgrades_a_version_3_file_with_data(db_path, monkeypatch):
+def test_migration_5_upgrades_a_version_4_file_with_data(db_path, monkeypatch):
     with monkeypatch.context() as m:
-        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:3])
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:4])
         old = Store(db_path)
         goal_id = old.insert_goal({"title": "Keep me"})
         constraint_id = old.insert_constraint({"kind": "injury", "title": "Left knee"})
-        (session_id,) = old.replace_planned(
-            date(2026, 10, 5),
-            date(2026, 10, 11),
-            date(2026, 10, 5),
-            [{"date": date(2026, 10, 7), "type": "running", "description": "Easy run"}],
-        )[1]
+        session_id = _one_session(old)
         note_id = old.insert_note(date(2026, 10, 7), "A note", session_id)
-        old.record_briefing_sent(date(2026, 10, 7), "yellow", {"hrv_below_baseline": (True, True)})
+        old.record_briefing_sent(
+            date(2026, 10, 7), "yellow", {"hrv_below_baseline": (True, True), "missed_planned_session": (True, True)}
+        )
+        old.upsert_suggestions([(session_id, "matched", True, '{"source":"garmin","sport":"running","count":1}')], D3)
+        suggestions = old.suggestions_for([session_id])
         old.upsert_history_recovery(D1, {"readiness": 70, "hrv_last_night_ms": 55.5, "hrv_status": "BALANCED"}, D2)
         old.upsert_history_recovery(D2, {"readiness": 65}, D3)
         old.upsert_history_activities({D1: '{"running":{"count":1}}', D2: "{}"}, D3)
         before = old.history_rows(None, D3)
-        assert _user_version(db_path) == 3 and len(before) == 2
+        assert _user_version(db_path) == 4 and len(before) == 2 and suggestions
         assert not set(STRENGTH_TABLES) & _tables(db_path)
     new = Store(db_path)
-    assert _user_version(db_path) == 4 == SCHEMA_VERSION == STRENGTH_VERSION
+    assert _user_version(db_path) == 5 == SCHEMA_VERSION == STRENGTH_VERSION
     assert new.history_rows(None, D3) == before  # whole rows, every column
+    assert new.suggestions_for([session_id]) == suggestions  # PR 13's table is untouched
     goal, constraint = new.get_goal(goal_id), new.get_constraint(constraint_id)
     assert goal is not None and goal["title"] == "Keep me"
     assert constraint is not None and constraint["title"] == "Left knee"
@@ -583,34 +588,37 @@ def test_migration_4_upgrades_a_version_3_file_with_data(db_path, monkeypatch):
     assert session is not None and session["description"] == "Easy run"
     assert note is not None and note["text"] == "A note"
     assert new.briefing_sent(date(2026, 10, 7)) is True and new.alert_states()["hrv_below_baseline"]["value"] == 1
+    assert new.alert_states()["missed_planned_session"]["value"] == 1
     assert set(STRENGTH_TABLES) <= _tables(db_path)
     assert new.strength_workout_rows(None, date(2030, 1, 1)) == []
     assert new.hevy_templates() == {} and new.hevy_sync_state() is None and new.strength_template_ids() == set()
 
 
-def test_migration_4_upgrades_a_version_1_file(db_path, monkeypatch):
+def test_migration_5_upgrades_a_version_1_file(db_path, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:1])
         old = Store(db_path)
         goal_id = old.insert_goal({"title": "Keep me"})
         assert _user_version(db_path) == 1
     new = Store(db_path)
-    assert _user_version(db_path) == SCHEMA_VERSION  # through 2, 3 and 4
-    assert set(STRENGTH_TABLES) <= _tables(db_path) and "history_days" in _tables(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION  # through 2, 3, 4 and 5
+    assert set(STRENGTH_TABLES) <= _tables(db_path) and {"history_days", "session_suggestions"} <= _tables(db_path)
     goal = new.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Keep me"
 
 
-# Keep in sync with the 4 -> 3 downgrade command in coach-mcp/README.md.
-DOWNGRADE_4_SQL = (
+# Keep in sync with the 5 -> 4 downgrade command in coach-mcp/README.md.
+DOWNGRADE_5_SQL = (
     "BEGIN IMMEDIATE; DROP TABLE strength_workouts; DROP TABLE hevy_templates; DROP TABLE hevy_sync; "
-    "PRAGMA user_version = 3; COMMIT;"
+    "PRAGMA user_version = 4; COMMIT;"
 )
 
 
-def test_downgrade_4_sql_returns_to_a_version_3_file(db_path, monkeypatch):
+def test_downgrade_5_sql_returns_to_a_version_4_file(db_path, monkeypatch):
     new = Store(db_path)
     goal_id = new.insert_goal({"title": "Keep me"})
+    session_id = _one_session(new)
+    new.upsert_suggestions([(session_id, "no_activity", False, None)], D3)
     new.upsert_history_recovery(D1, {"readiness": 70}, D2)
     new.apply_strength_events({"W1": (D1, "2026-10-05T10:00:00.000000Z", "[]")}, ["W2"])
     new.upsert_hevy_template("T1", found=True, title="Bench", type_="weight_reps", group="chest", attempted_on=D2)
@@ -618,16 +626,17 @@ def test_downgrade_4_sql_returns_to_a_version_3_file(db_path, monkeypatch):
     assert _user_version(db_path) == STRENGTH_VERSION
     conn = sqlite3.connect(db_path)
     try:
-        conn.executescript(DOWNGRADE_4_SQL)
+        conn.executescript(DOWNGRADE_5_SQL)
     finally:
         conn.close()
-    assert _user_version(db_path) == 3
+    assert _user_version(db_path) == 4
     assert not set(STRENGTH_TABLES) & _tables(db_path)
-    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:3])
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:4])
     old = Store(db_path)
     goal = old.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Keep me"
     assert [r["readiness"] for r in old.history_rows(None, D3)] == [70]
+    assert old.suggestions_for([session_id])[session_id]["result"] == "no_activity"  # PR 13's data stays
 
 
 STRENGTH_UPDATED = "2026-10-05T10:00:00.000000Z"
