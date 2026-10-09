@@ -1,11 +1,22 @@
 import sqlite3
-from datetime import date
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from coach_mcp import store as store_module
 from coach_mcp.briefing import ALERT_KEYS
-from coach_mcp.store import HISTORY_COLUMNS, MIGRATIONS, SCHEMA_VERSION, SchemaTooNewError, Store
+from coach_mcp.store import (
+    HISTORY_COLUMNS,
+    MIGRATIONS,
+    SCHEMA_VERSION,
+    STRENGTH_TABLES,
+    SchemaTooNewError,
+    Store,
+)
+
+# The schema version of the strength tables: the only number that changes when this migration is renumbered.
+STRENGTH_VERSION = 5
 
 
 def _tables(path) -> set[str]:
@@ -36,8 +47,11 @@ def test_empty_file_gets_schema_and_version(db_path):
         "alert_state",
         "history_days",
         "session_suggestions",
+        "strength_workouts",
+        "hevy_templates",
+        "hevy_sync",
     } <= _tables(db_path)
-    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == 4
+    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == STRENGTH_VERSION
     assert s.check() == SCHEMA_VERSION
 
 
@@ -362,14 +376,17 @@ DOWNGRADE_4_SQL = "BEGIN IMMEDIATE; DROP TABLE session_suggestions; PRAGMA user_
 
 
 def test_downgrade_4_sql_returns_to_a_version_3_file(db_path, monkeypatch):
-    new = Store(db_path)
-    goal_id = new.insert_goal({"title": "Keep me"})
-    session_id = _one_session(new)
-    new.upsert_suggestions([(session_id, "no_activity", False, None)], date(2026, 10, 7))
-    new.record_briefing_sent(
-        date(2026, 10, 7), "green", {"garmin_auth": (False, False), "missed_planned_session": (True, True)}
-    )
-    assert _user_version(db_path) == 4
+    # It is a 4 -> 3 recipe: the file is built at version 4 (a version 5 file must first go 5 -> 4).
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:4])
+        new = Store(db_path)
+        goal_id = new.insert_goal({"title": "Keep me"})
+        session_id = _one_session(new)
+        new.upsert_suggestions([(session_id, "no_activity", False, None)], date(2026, 10, 7))
+        new.record_briefing_sent(
+            date(2026, 10, 7), "green", {"garmin_auth": (False, False), "missed_planned_session": (True, True)}
+        )
+        assert _user_version(db_path) == 4
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(DOWNGRADE_4_SQL)
@@ -383,12 +400,14 @@ def test_downgrade_4_sql_returns_to_a_version_3_file(db_path, monkeypatch):
         goal = old.get_goal(goal_id)
         assert goal is not None and goal["title"] == "Keep me"
         assert set(old.alert_states()) == {"garmin_auth", "missed_planned_session"}  # the old code ignores the new key
-    again = Store(db_path)
-    assert _user_version(db_path) == SCHEMA_VERSION == 4
-    assert set(again.alert_states()) == {"garmin_auth", "missed_planned_session"}
-    assert again.alert_states()["missed_planned_session"]["value"] == 1
-    assert "session_suggestions" in _tables(db_path)
-    assert again.suggestions_for([session_id]) == {}
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:4])
+        again = Store(db_path)
+        assert _user_version(db_path) == 4
+        assert set(again.alert_states()) == {"garmin_auth", "missed_planned_session"}
+        assert again.alert_states()["missed_planned_session"]["value"] == 1
+        assert "session_suggestions" in _tables(db_path)
+        assert again.suggestions_for([session_id]) == {}
 
 
 def test_suggestion_checks_in_schema(store, db_path):
@@ -532,5 +551,229 @@ def test_history_status_check_in_schema(store, db_path):
             with pytest.raises(sqlite3.IntegrityError):
                 conn.execute(sql)
         conn.execute(f"INSERT INTO history_days (date, hrv_status, updated_at) VALUES ('2026-10-05', '{'x' * 40}', 'a')")
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------- strength (migration 5)
+
+
+def test_migration_5_upgrades_a_version_4_file_with_data(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:4])
+        old = Store(db_path)
+        goal_id = old.insert_goal({"title": "Keep me"})
+        constraint_id = old.insert_constraint({"kind": "injury", "title": "Left knee"})
+        session_id = _one_session(old)
+        note_id = old.insert_note(date(2026, 10, 7), "A note", session_id)
+        old.record_briefing_sent(
+            date(2026, 10, 7), "yellow", {"hrv_below_baseline": (True, True), "missed_planned_session": (True, True)}
+        )
+        old.upsert_suggestions([(session_id, "matched", True, '{"source":"garmin","sport":"running","count":1}')], D3)
+        suggestions = old.suggestions_for([session_id])
+        old.upsert_history_recovery(D1, {"readiness": 70, "hrv_last_night_ms": 55.5, "hrv_status": "BALANCED"}, D2)
+        old.upsert_history_recovery(D2, {"readiness": 65}, D3)
+        old.upsert_history_activities({D1: '{"running":{"count":1}}', D2: "{}"}, D3)
+        before = old.history_rows(None, D3)
+        assert _user_version(db_path) == 4 and len(before) == 2 and suggestions
+        assert not set(STRENGTH_TABLES) & _tables(db_path)
+    new = Store(db_path)
+    assert _user_version(db_path) == 5 == SCHEMA_VERSION == STRENGTH_VERSION
+    assert new.history_rows(None, D3) == before  # whole rows, every column
+    assert new.suggestions_for([session_id]) == suggestions  # PR 13's table is untouched
+    goal, constraint = new.get_goal(goal_id), new.get_constraint(constraint_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    assert constraint is not None and constraint["title"] == "Left knee"
+    session, note = new.get_session(session_id), new.get_note(note_id)
+    assert session is not None and session["description"] == "Easy run"
+    assert note is not None and note["text"] == "A note"
+    assert new.briefing_sent(date(2026, 10, 7)) is True and new.alert_states()["hrv_below_baseline"]["value"] == 1
+    assert new.alert_states()["missed_planned_session"]["value"] == 1
+    assert set(STRENGTH_TABLES) <= _tables(db_path)
+    assert new.strength_workout_rows(None, date(2030, 1, 1)) == []
+    assert new.hevy_templates() == {} and new.hevy_sync_state() is None and new.strength_template_ids() == set()
+
+
+def test_migration_5_upgrades_a_version_1_file(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:1])
+        old = Store(db_path)
+        goal_id = old.insert_goal({"title": "Keep me"})
+        assert _user_version(db_path) == 1
+    new = Store(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION  # through 2, 3, 4 and 5
+    assert set(STRENGTH_TABLES) <= _tables(db_path) and {"history_days", "session_suggestions"} <= _tables(db_path)
+    goal = new.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+
+
+# Keep in sync with the 5 -> 4 downgrade command in coach-mcp/README.md.
+DOWNGRADE_5_SQL = (
+    "BEGIN IMMEDIATE; DROP TABLE strength_workouts; DROP TABLE hevy_templates; DROP TABLE hevy_sync; "
+    "PRAGMA user_version = 4; COMMIT;"
+)
+
+
+def test_downgrade_5_sql_returns_to_a_version_4_file(db_path, monkeypatch):
+    new = Store(db_path)
+    goal_id = new.insert_goal({"title": "Keep me"})
+    session_id = _one_session(new)
+    new.upsert_suggestions([(session_id, "no_activity", False, None)], D3)
+    new.upsert_history_recovery(D1, {"readiness": 70}, D2)
+    new.apply_strength_events({"W1": (D1, "2026-10-05T10:00:00.000000Z", "[]")}, ["W2"])
+    new.upsert_hevy_template("T1", found=True, title="Bench", type_="weight_reps", group="chest", attempted_on=D2)
+    new.record_hevy_sync(D1, datetime(2026, 10, 6, 1, 30, tzinfo=UTC), D2)
+    assert _user_version(db_path) == STRENGTH_VERSION
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_5_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == 4
+    assert not set(STRENGTH_TABLES) & _tables(db_path)
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:4])
+    old = Store(db_path)
+    goal = old.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    assert [r["readiness"] for r in old.history_rows(None, D3)] == [70]
+    assert old.suggestions_for([session_id])[session_id]["result"] == "no_activity"  # PR 13's data stays
+
+
+STRENGTH_UPDATED = "2026-10-05T10:00:00.000000Z"
+
+
+def _workouts(path) -> dict[str, tuple]:
+    conn = sqlite3.connect(path)
+    try:
+        return {
+            r[0]: r[1:]
+            for r in conn.execute("SELECT workout_id, date, deleted, hevy_updated_at, exercises FROM strength_workouts")
+        }
+    finally:
+        conn.close()
+
+
+def test_strength_upsert_replaces_a_workout_and_older_updates_lose(store, db_path):
+    store.apply_strength_events({"W1": (D1, "2026-10-05T10:00:00.000000Z", '[{"a":1}]')}, [])
+    store.apply_strength_events({"W1": (D2, "2026-10-05T12:00:00.000000Z", '[{"a":2}]')}, [])  # newer: replaces
+    assert _workouts(db_path)["W1"] == ("2026-10-06", 0, "2026-10-05T12:00:00.000000Z", '[{"a":2}]')
+    store.apply_strength_events({"W1": (D1, "2026-10-05T11:00:00.000000Z", '[{"a":3}]')}, [])  # older: ignored
+    assert _workouts(db_path)["W1"] == ("2026-10-06", 0, "2026-10-05T12:00:00.000000Z", '[{"a":2}]')
+    store.apply_strength_events({"W1": (D3, "2026-10-05T12:00:00.000000Z", '[{"a":4}]')}, [])  # equal: re-read
+    assert _workouts(db_path)["W1"] == ("2026-10-07", 0, "2026-10-05T12:00:00.000000Z", '[{"a":4}]')
+    store.apply_strength_events({"W1": (D1, None, '[{"a":5}]')}, [])  # no timestamp: cannot be older
+    assert _workouts(db_path)["W1"] == ("2026-10-05", 0, None, '[{"a":5}]')
+    store.apply_strength_events({"W1": (D2, "2026-10-05T09:00:00.000000Z", '[{"a":6}]')}, [])  # stored has none
+    assert _workouts(db_path)["W1"][0] == "2026-10-06"
+
+
+def test_strength_tombstone_is_terminal_and_older_updates_lose(store, db_path):
+    store.apply_strength_events({"W1": (D1, STRENGTH_UPDATED, '[{"a":1}]')}, [])
+    store.apply_strength_events({}, ["W1", "W9"])  # W9 was never seen
+    assert _workouts(db_path)["W1"] == ("2026-10-05", 1, STRENGTH_UPDATED, "[]")  # the day is kept
+    assert _workouts(db_path)["W9"] == (None, 1, None, "[]")
+    store.apply_strength_events({"W1": (D2, "2030-01-01T00:00:00.000000Z", '[{"a":2}]'), "W9": (D2, None, "[]")}, [])
+    assert _workouts(db_path)["W1"] == ("2026-10-05", 1, STRENGTH_UPDATED, "[]")  # never revived, even by a newer one
+    assert _workouts(db_path)["W9"] == (None, 1, None, "[]")
+    store.apply_strength_events({}, ["W1"])  # deleting twice is harmless
+    assert _workouts(db_path)["W1"][1] == 1
+
+
+def test_strength_events_are_one_transaction(store, db_path):
+    store.apply_strength_events({"W1": (D1, STRENGTH_UPDATED, "[]")}, [])
+    with pytest.raises(sqlite3.IntegrityError):
+        store.apply_strength_events({"W2": (D1, STRENGTH_UPDATED, "[]")}, ["x" * 65])  # the delete is invalid
+    assert set(_workouts(db_path)) == {"W1"}  # W2 was rolled back with it
+
+
+def test_strength_rows_exclude_deleted_and_filter_dates(store):
+    store.apply_strength_events(
+        {
+            "W3": (D3, STRENGTH_UPDATED, "[]"),
+            "W1": (D1, STRENGTH_UPDATED, "[]"),
+            "W2b": (D2, STRENGTH_UPDATED, "[]"),
+            "W2a": (D2, STRENGTH_UPDATED, "[]"),
+            "Wdeleted": (D2, STRENGTH_UPDATED, "[]"),
+        },
+        [],
+    )
+    store.apply_strength_events({}, ["Wdeleted"])
+    assert [r["workout_id"] for r in store.strength_workout_rows(None, D3)] == ["W1", "W2a", "W2b", "W3"]
+    assert [r["workout_id"] for r in store.strength_workout_rows(D2, D3)] == ["W2a", "W2b", "W3"]
+    assert [r["workout_id"] for r in store.strength_workout_rows(D2, D2)] == ["W2a", "W2b"]
+    assert [r["workout_id"] for r in store.strength_workout_rows(None, D1)] == ["W1"]
+    assert store.strength_workout_rows(date(2026, 10, 8), date(2026, 10, 9)) == []
+    assert set(store.strength_workout_rows(None, D1)[0]) >= {"workout_id", "date", "exercises", "hevy_updated_at"}
+
+
+def test_strength_template_ids_skip_invalid_json(store):
+    good = '[{"template_id":"T1","sets":1},{"template_id":"T2"},{"template_id":5},{"template_id":""},"x",{"sets":1}]'
+    store.apply_strength_events(
+        {
+            "W1": (D1, STRENGTH_UPDATED, good),
+            "W2": (D1, STRENGTH_UPDATED, "not json"),
+            "W3": (D1, STRENGTH_UPDATED, '{"template_id":"T9"}'),  # not a list
+            "W4": (D1, STRENGTH_UPDATED, '[{"template_id":"T3"}]'),
+            "W5": (D1, STRENGTH_UPDATED, '[{"template_id":"T4"}]'),
+        },
+        [],
+    )
+    store.apply_strength_events({}, ["W5"])  # a deleted workout references nothing
+    assert store.strength_template_ids() == {"T1", "T2", "T3"}
+
+
+def test_template_failure_does_not_overwrite_a_resolved_template(store):
+    store.record_hevy_template_failure("T1", D1)
+    assert store.hevy_templates()["T1"]["found"] is None and store.hevy_templates()["T1"]["attempted_on"] == "2026-10-05"
+    store.record_hevy_template_failure("T1", D2)
+    assert store.hevy_templates()["T1"]["attempted_on"] == "2026-10-06"
+    store.upsert_hevy_template("T1", found=True, title="Bench", type_="weight_reps", group="chest", attempted_on=D2)
+    store.record_hevy_template_failure("T1", D3)
+    row = store.hevy_templates()["T1"]
+    assert (row["found"], row["title"], row["primary_muscle_group"], row["attempted_on"]) == (1, "Bench", "chest", "2026-10-06")
+    store.upsert_hevy_template("T2", found=False, title=None, type_=None, group=None, attempted_on=D1)
+    store.record_hevy_template_failure("T2", D3)
+    assert store.hevy_templates()["T2"]["found"] == 0 and store.hevy_templates()["T2"]["attempted_on"] == "2026-10-05"
+    store.upsert_hevy_template("T1", found=True, title="Renamed", type_="x", group=None, attempted_on=D3)
+    assert store.hevy_templates()["T1"]["title"] == "Renamed" and store.hevy_templates()["T1"]["primary_muscle_group"] is None
+
+
+def test_hevy_sync_single_row(store, db_path):
+    assert store.hevy_sync_state() is None
+    store.record_hevy_sync(D1, datetime(2026, 10, 6, 1, 30, tzinfo=UTC), D2)
+    assert store.hevy_sync_state() == {"covered_from": "2026-10-05", "synced_at": "2026-10-06T01:30:00+00:00", "synced_on": "2026-10-06"}
+    prague = datetime(2026, 10, 7, 3, 30, tzinfo=ZoneInfo("Europe/Prague"))
+    store.record_hevy_sync(D2, prague, D3)
+    assert store.hevy_sync_state() == {"covered_from": "2026-10-06", "synced_at": "2026-10-07T01:30:00+00:00", "synced_on": "2026-10-07"}
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM hevy_sync").fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO hevy_sync VALUES (2, 'a', 'b', 'c', 'd')")
+    finally:
+        conn.close()
+
+
+def test_strength_check_constraints(store, db_path):
+    conn = sqlite3.connect(db_path)
+    try:
+        bad = [
+            "INSERT INTO strength_workouts (workout_id, deleted, updated_at) VALUES ('W1', 0, 'a')",  # live, no date
+            "INSERT INTO strength_workouts (workout_id, date, deleted, updated_at) VALUES ('W1', '2026-10-05', 2, 'a')",
+            f"INSERT INTO strength_workouts (workout_id, date, updated_at) VALUES ('{'x' * 65}', '2026-10-05', 'a')",
+            "INSERT INTO strength_workouts (workout_id, date, updated_at) VALUES ('', '2026-10-05', 'a')",
+            f"INSERT INTO strength_workouts (workout_id, date, hevy_updated_at, updated_at) "
+            f"VALUES ('W1', '2026-10-05', '{'x' * 41}', 'a')",
+            f"INSERT INTO hevy_templates (template_id, updated_at) VALUES ('{'x' * 65}', 'a')",
+            "INSERT INTO hevy_templates (template_id, found, updated_at) VALUES ('T1', 2, 'a')",
+            f"INSERT INTO hevy_templates (template_id, title, updated_at) VALUES ('T1', '{'x' * 201}', 'a')",
+            f"INSERT INTO hevy_templates (template_id, type, updated_at) VALUES ('T1', '{'x' * 41}', 'a')",
+            f"INSERT INTO hevy_templates (template_id, primary_muscle_group, updated_at) VALUES ('T1', '{'x' * 41}', 'a')",
+        ]
+        for sql in bad:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(sql)
+        conn.execute("INSERT INTO strength_workouts (workout_id, date, updated_at) VALUES ('x' || '', '2026-10-05', 'a')")
+        conn.execute("INSERT INTO strength_workouts (workout_id, deleted, updated_at) VALUES ('W2', 1, 'a')")  # tombstone
     finally:
         conn.close()

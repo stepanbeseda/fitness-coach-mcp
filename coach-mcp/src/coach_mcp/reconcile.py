@@ -40,12 +40,27 @@ def _positive(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
+count_of = _count  # the validity rule for a stored count, shared with the history job's Hevy merge
+
+
+def _finite(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _evidence(sport: str, entry: Mapping[str, Any], count: int) -> dict[str, Any]:
-    evidence: dict[str, Any] = {"source": "garmin", "sport": sport, "count": count}
+    # A day's totals come from the Garmin history; the history job replaces the strength entry by Hevy's own
+    # (``"source": "hevy"``, with the working sets and volume) when a Hevy workout covers the day.
+    source = entry.get("source")
+    evidence: dict[str, Any] = {"source": source if source in ("garmin", "hevy") else "garmin", "sport": sport, "count": count}
     for field in ("duration_min", "distance_km"):
         # activity_totals stores 0.0 for a missing value (e.g. the distance of strength); 0 is not a measurement.
         if _positive(entry.get(field)):
             evidence[field] = entry[field]
+    sets = entry.get("sets")
+    if isinstance(sets, int) and not isinstance(sets, bool):
+        evidence["sets"] = sets
+    if _finite(entry.get("volume_kg")):
+        evidence["volume_kg"] = entry["volume_kg"]
     return evidence
 
 
@@ -59,7 +74,8 @@ def suggest(sessions: Sequence[Mapping[str, Any]], days: Mapping[str, DayActivit
     ``totals[type]["count"]`` (an int >= 0, otherwise 0); sessions already ``done`` take activities first,
     and the planned ones, in order of id, get ``matched`` while activities remain and ``no_activity``
     afterwards. ``final`` is the day's ``final``. The evidence of a match is the day's totals of the sport
-    (count, and duration / distance when positive). Returns ``{session_id: Suggestion}`` for planned sessions.
+    (count, and duration / distance when positive; for a strength day that Hevy covers, ``source`` is ``hevy``
+    with the working sets and volume instead). Returns ``{session_id: Suggestion}`` for planned sessions.
     """
     groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for session in sessions:

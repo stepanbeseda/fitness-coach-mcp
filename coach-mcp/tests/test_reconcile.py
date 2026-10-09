@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import date, timedelta
@@ -9,9 +10,13 @@ from datetime import date, timedelta
 import pytest
 from fakes import FakeHistorySource
 from garmin_payloads import activities_payload, activity
-from history_helpers import local, make_job, next_run, run_first, seed_activities, seed_day, sport
+from fakes import FakeStrengthSource
+from hevy_payloads import day_workout, events_page, updated
+from history_helpers import local, make_job, next_run, run_first, run_job, seed_activities, seed_day, sport
 
-from coach_mcp.history import activities_settled, day_activities, needs_fetch
+from coach_mcp import strength as strength_module
+from coach_mcp.history import activities_settled, day_activities, needs_fetch, with_hevy_strength
+from coach_mcp.strength import Coverage, DayStrength
 from coach_mcp.reconcile import MATCHED_TYPES, RECONCILE_DAYS, DayActivities, Suggestion, suggest
 
 TODAY = date(2026, 10, 7)
@@ -350,3 +355,148 @@ async def test_reconcile_logs_carry_no_values(store, caplog):
     assert "matched=1 no_activity=0" in lines[0]
     for line in lines:
         assert not any(bit in line for bit in ("2026-", "running", "9.5"))
+
+
+# ---------------------------------------------------- Hevy strength in the matching
+
+COV = Coverage(date(2026, 9, 1), date(2026, 10, 6))
+D6 = date(2026, 10, 6)
+
+
+def hevy(workouts=1, sets=12, volume=3400.0) -> dict[date, DayStrength]:
+    return {D6: DayStrength(workouts=workouts, sets=sets, volume_kg=volume)}
+
+
+def merged(totals, hevy_days, cov=COV, final=False, day_text="2026-10-06"):
+    return with_hevy_strength({day_text: day(totals, final)}, hevy_days, cov)[day_text]
+
+
+def test_hevy_workout_matches_a_strength_session():
+    days = with_hevy_strength({"2026-10-06": day({})}, hevy(), COV)  # Garmin totals fetched, no strength
+    assert suggest([s(1, type_="strength")], days) == {
+        1: Suggestion(
+            "matched",
+            False,
+            {"count": 1, "sets": 12, "source": "hevy", "sport": "strength", "volume_kg": 3400.0},
+        )
+    }
+
+
+def test_uncovered_day_keeps_garmin_behaviour():
+    sessions = [s(1, type_="strength")]
+    for cov in (None, Coverage(date(2026, 9, 1), date(2026, 10, 5)), Coverage(date(2026, 10, 7), date(2026, 10, 20))):
+        days = with_hevy_strength({"2026-10-06": day({})}, hevy(), cov)  # the day is after / before the coverage
+        assert suggest(sessions, days) == {1: Suggestion("no_activity", False, None)}, cov
+
+
+def test_tie_prefers_hevy_more_watch_sessions_keep_garmin():
+    one = merged({"strength": sport(1, 50, 0, 40)}, hevy(workouts=1))
+    assert one.totals["strength"]["source"] == "hevy" and one.totals["strength"]["count"] == 1
+    two = merged({"strength": sport(2, 90, 0, 70)}, hevy(workouts=1))
+    assert two.totals["strength"] == sport(2, 90, 0, 70)  # unchanged Garmin evidence, count 2
+    got = suggest([s(1, type_="strength")], {"2026-10-06": two})
+    assert got[1].evidence == {"source": "garmin", "sport": "strength", "count": 2, "duration_min": 90}
+    more_hevy = merged({"strength": sport(1, 50, 0, 40)}, hevy(workouts=2))
+    assert more_hevy.totals["strength"]["count"] == 2
+
+
+def test_covered_day_without_workouts_is_no_activity():
+    for hevy_days in ({}, hevy(workouts=0)):
+        merged_day = merged({}, hevy_days)
+        assert suggest([s(1, type_="strength")], {"2026-10-06": merged_day}) == {1: Suggestion("no_activity", False, None)}
+    assert merged({}, hevy(workouts=0)).totals == {}  # a covered day with no workout adds no strength entry
+    # without a Hevy workout the watch's own strength activity still matches
+    watch = merged({"strength": sport(1, 50, 0, 40)}, {})
+    assert suggest([s(1, type_="strength")], {"2026-10-06": watch})[1].evidence["source"] == "garmin"
+
+
+@pytest.mark.parametrize(("through", "final"), [(D6, False), (date(2026, 10, 8), False), (date(2026, 10, 9), True)])
+def test_hevy_day_inside_overlap_is_not_final(through, final):
+    # cov.through - day = 0, 2 and 3 days: only a day outside the 3-day re-read of the Hevy listing is final
+    cov = Coverage(date(2026, 9, 1), through)
+    assert merged({}, hevy(), cov=cov, final=True).final is final
+    assert merged({}, hevy(), cov=cov, final=False).final is False  # a Garmin day that can still change stays open
+
+
+def test_other_sports_and_days_are_untouched():
+    days = {"2026-10-06": day({"running": sport(1, 30, 5)}), "2026-10-05": day({"strength": sport(1, 50)}, final=True)}
+    out = with_hevy_strength(days, hevy(), COV)
+    assert out["2026-10-06"].totals["running"] == sport(1, 30, 5) and out["2026-10-06"].totals["strength"]["source"] == "hevy"
+    assert out["2026-10-05"] == days["2026-10-05"]  # no Hevy workout that day
+    assert days["2026-10-06"].totals == {"running": sport(1, 30, 5)}  # the input is not changed
+
+
+def test_day_without_garmin_fetch_gets_no_suggestion_even_with_hevy():
+    out = with_hevy_strength({}, hevy(), COV)
+    assert out == {}
+    assert suggest([s(1, type_="strength")], out) == {}
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ({"count": 1, "source": "hevy", "sets": 5, "volume_kg": 100.5}, {"source": "hevy", "sets": 5, "volume_kg": 100.5}),
+        ({"count": 1, "source": "x", "sets": 5}, {"source": "garmin", "sets": 5}),
+        ({"count": 1, "source": 5}, {"source": "garmin"}),
+        ({"count": 1, "source": "hevy", "sets": True, "volume_kg": True}, {"source": "hevy"}),
+        ({"count": 1, "sets": 5.5, "volume_kg": float("nan")}, {"source": "garmin"}),
+        ({"count": 1, "sets": "5", "volume_kg": float("inf")}, {"source": "garmin"}),
+    ],
+)
+def test_evidence_source_comes_from_the_entry(entry, expected):
+    got = suggest([s(1, type_="strength")], {"2026-10-06": day({"strength": entry})})
+    assert got[1].evidence == {"sport": "strength", "count": 1, **expected}
+
+
+@pytest.mark.anyio
+async def test_hevy_workout_matches_a_planned_strength_session_in_one_run(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    session_id = add_session(store, "2026-10-06", type_="strength", description="Legs")
+    workout = day_workout("W1", "2026-10-06", sets=4, weight_kg=100, reps=5)
+    strength = FakeStrengthSource(events=lambda page, since, index: ("ok", events_page([updated(workout)], page, 1)))
+    garmin = FakeHistorySource(activities=lambda start, end, index: ("ok", activities_payload([])))  # no watch strength
+    job, clock = make_job(store, garmin, local(TODAY, 10, 0), strength=strength, history_backfill_days=10)
+    await run_first(job, clock)
+    # the Hevy part ran before the reconcile step, so the suggestion of the same run already uses it
+    got = store.suggestions_for([session_id])[session_id]
+    assert got["result"] == "matched" and got["final"] == 0
+    assert json.loads(got["evidence"]) == {"count": 1, "sets": 4, "source": "hevy", "sport": "strength", "volume_kg": 2000.0}
+    assert all(status == "planned" for _, status in session_statuses(store))  # still only a suggestion
+    messages = [r.getMessage() for r in history_lines(caplog)]
+    assert "part=strength" in messages[0] and messages[1].endswith(" matched=1 no_activity=0")
+
+
+@pytest.mark.anyio
+async def test_a_day_the_hevy_history_does_not_cover_is_matched_by_the_watch_only(store):
+    session_id = add_session(store, "2026-10-06", type_="strength")
+    down = FakeStrengthSource(events=lambda page, since, index: ("unreachable", None))
+    job, clock = make_job(store, FakeHistorySource(), local(TODAY, 10, 0), strength=down, history_backfill_days=10)
+    await run_first(job, clock)
+    # Hevy was never listed: no sync row, so the day stays "no_activity" exactly as in PR 13
+    assert store.hevy_sync_state() is None
+    assert store.suggestions_for([session_id])[session_id]["result"] == "no_activity"
+
+
+@pytest.mark.anyio
+async def test_strength_crash_keeps_the_garmin_line_and_reconcile(store, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+
+    def broken(events, zone):
+        raise RuntimeError("SECRET-PARSE-TEXT")
+
+    monkeypatch.setattr(strength_module, "parse_events", broken)
+    session_id = add_session(store, "2026-10-06")
+    seed_day(store, D6, fetched_on=TODAY, readiness=50)  # nothing for the Garmin part to do: no pacing sleeps
+    seed_activities(store, D6, {"running": sport(1, 45, 9)}, fetched_on=TODAY)
+    strength = FakeStrengthSource(events=lambda page, since, index: ("ok", events_page([updated(day_workout("W1", "2026-10-05"))], page, 1)))
+    job, clock = await run_job(
+        store, FakeHistorySource(), local(TODAY, 10, 0), max_sleeps=3, strength=strength,
+        settings_overrides={"history_backfill_days": 1},
+    )
+    assert clock.sleeps == [60.0, 3600.0, 3600.0]  # the crash is retried in an hour
+    lines = [r.getMessage() for r in history_lines(caplog)]
+    assert lines[0].startswith("history status=done fetched=0") and lines[0].endswith(" matched=1 no_activity=0")
+    assert lines[1] == "history status=crashed kind=RuntimeError"
+    assert not any("part=strength" in line for line in lines)
+    assert store.suggestions_for([session_id])[session_id]["result"] == "matched"  # the reconcile step still ran
+    assert "SECRET-PARSE-TEXT" not in caplog.text

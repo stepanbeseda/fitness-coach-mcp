@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import tools
+from . import strength, tools
 from .history import ENDURANCE_SPORTS, SPORTS
 from .store import Store
 
@@ -222,10 +222,7 @@ def _trend(
 
 # ------------------------------------------------------------- weekly report
 
-STRENGTH_NOT_AVAILABLE = {
-    "available": False,
-    "reason": "strength history from Hevy is not stored yet; read Hevy directly",
-}
+STRENGTH_NO_DATA = {"available": False, "reason": "no strength history from Hevy covers this week"}
 BASELINE_WEEKS = 4
 FLAG_PCT = 30.0
 MIN_DAYS_FOR_FLAG = 4
@@ -332,6 +329,7 @@ def get_weekly_report(store: Store, today: dt.date, *, week: str | None) -> dict
         "hrv": _daily_stat(this, baselines, "hrv_last_night_ms"),
         "resting": _daily_stat(this, baselines, "resting_hr"),
     }
+    strength_section, strength_bests, strength_flags = _strength(store, monday, sunday, baseline_mondays, partial)
     return {
         "week": {
             "start": monday.isoformat(),
@@ -341,14 +339,92 @@ def get_weekly_report(store: Store, today: dt.date, *, week: str | None) -> dict
         },
         "baseline_weeks": [tools.week_of(m)[2] for m in baseline_mondays],
         "endurance": endurance,
-        "strength": dict(STRENGTH_NOT_AVAILABLE),
+        "strength": strength_section,
         "sleep": sleep,
         "hrv": hrv,
         "resting_hr": resting,
         "adherence": adherence,
-        "new_bests": _new_bests(store, this, monday, final),
-        "flags": _flags(this, final, stats),
+        "new_bests": _new_bests(store, this, monday, final) + strength_bests,
+        "flags": _flags(this, final, stats) + strength_flags,
     }
+
+
+def _strength(
+    store: Store, monday: dt.date, sunday: dt.date, baseline_mondays: list[dt.date], partial: bool
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """The strength section, new e1RM bests and flags of the week from the stored Hevy workouts.
+
+    A week has a section when at least one of its days is covered by the Hevy history; baselines are the
+    complete covered weeks among the previous four, and the volume flag needs a final week like the others.
+    """
+    cov = strength.coverage(store.hevy_sync_state())
+    if cov is None:
+        return dict(STRENGTH_NO_DATA), [], []
+    templates = strength.Templates(store.hevy_templates())
+    totals = strength.day_totals(store.strength_workout_rows(baseline_mondays[0], sunday), templates)
+    this = strength.StrengthWeek(monday, totals, cov)
+    if this.days == 0:
+        return dict(STRENGTH_NO_DATA), [], []
+    baselines = [w for m in baseline_mondays if (w := strength.StrengthWeek(m, totals, cov)).complete]
+
+    volume = _stat(this.volume_kg, [w.volume_kg for w in baselines], 1)
+    sets = _stat(this.sets, [w.sets for w in baselines], 1)
+    groups = {g for g, n in this.muscle_sets.items() if n > 0}
+    for group in {g for w in baselines for g in w.muscle_sets}:
+        if _mean([w.muscle_sets.get(group, 0) for w in baselines]) > 0:
+            groups.add(group)
+    by_group: dict[str, Any] = {}
+    for group in sorted(groups):
+        base_sets = _mean([w.muscle_sets.get(group, 0) for w in baselines]) if baselines else None
+        base_volume = _mean([w.muscle_volume.get(group, 0.0) for w in baselines]) if baselines else None
+        by_group[group] = {
+            "sets": this.muscle_sets.get(group, 0),
+            "baseline_sets": None if base_sets is None else round(base_sets, 1),
+            "volume_kg": round(this.muscle_volume.get(group, 0.0), 1),
+            "baseline_volume_kg": None if base_volume is None else round(base_volume, 1),
+        }
+    section = {
+        "days": this.days,
+        "workouts": this.workouts,
+        "volume_kg": volume.out(),
+        "sets": sets.out(),
+        "by_muscle_group": by_group,
+    }
+
+    flags: list[dict[str, Any]] = []
+    final = this.complete and not partial
+    if (
+        final
+        and volume.baseline_weeks >= MIN_BASELINE_WEEKS_FOR_FLAG
+        and volume.change_pct is not None
+        and volume.change_pct > FLAG_PCT
+    ):
+        flags.append(_flag("strength_volume_up", volume))
+
+    earlier = strength.day_totals(store.strength_workout_rows(None, monday - dt.timedelta(days=1)), templates)
+    bests: list[dict[str, Any]] = []
+    for tid, (best, day, title) in this.best.items():
+        previous = max(
+            (
+                entry["best"]["e1rm_kg"]
+                for total in earlier.values()
+                if (entry := total.exercises.get(tid)) is not None and entry["best"] is not None
+            ),
+            default=None,
+        )
+        if previous is not None and best["e1rm_kg"] > previous:
+            bests.append(
+                {
+                    "metric": "e1rm_kg",
+                    "exercise": title,
+                    "template_id": tid,
+                    "value": best["e1rm_kg"],
+                    "previous_best": previous,
+                    "date": day.isoformat(),
+                }
+            )
+    bests.sort(key=lambda b: (b["exercise"] or "", b["template_id"]))
+    return section, bests, flags
 
 
 def _stat_for(this: _Week, complete_baselines: list[_Week], group: str, field: str) -> _Stat | None:

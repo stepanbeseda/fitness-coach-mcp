@@ -5,10 +5,11 @@ vybavení), tréninkový plán po dnech se stavem a deník poznámek. Data jsou 
 `coach-data`. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp` v privátní Docker síti; MCP klienti
 se k němu dostanou jen přes gateway (`/coach/mcp`), která posílá interní bearer token
 (`/run/secrets/coach_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed). Sám volá
-jen `garmin-mcp` (čtyři čtecí nástroje, read-only token `garmin_readonly_token`) a volitelně Telegram Bot API
-(ranní briefing). Každou noc si z Garminu ukládá denní historii pro trendy a týdenní přehled
-a podle ní navrhne stav minulých plánovaných tréninků. Nic se nemaže: cíle se uzavírají, omezení se označí
-jako vyřešená a nahrazené tréninky zůstanou jako `superseded`.
+jen `garmin-mcp` (čtyři čtecí nástroje, read-only token `garmin_readonly_token`), `hevy-mcp` (dva čtecí nástroje,
+interní token `hevy_backend_token`) a volitelně Telegram Bot API (ranní briefing). Každou noc si z Garminu ukládá
+denní historii a z Hevy silové tréninky pro trendy, týdenní přehled a progres síly a podle historie navrhne stav
+minulých plánovaných tréninků. Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená a nahrazené
+tréninky zůstanou jako `superseded`.
 
 ## Nástroje
 
@@ -23,7 +24,8 @@ jako vyřešená a nahrazené tréninky zůstanou jako `superseded`.
 | `add_note` | zápis | přidá datovanou poznámku do deníku, volitelně k tréninku |
 | `get_daily_briefing` | čtení | dnešní ranní briefing: verdikt zelená / žlutá / červená, čísla za ním, co chybí, dnešní plán a upozornění; počítá se stejně jako ranní push, z aktuálních dat |
 | `get_trends` | čtení | uložená denní historie z Garminu (HRV, spánek, klidová tepovka, Body Battery, stres, readiness, zátěž, VO2max, aktivity po sportech) za libovolné období po dnech, týdnech nebo měsících: počet, průměr, minimum, maximum, změna |
-| `get_weekly_report` | čtení | jeden ISO týden proti průměru předchozích čtyř: vytrvalost po sportech, spánek, HRV, klidová tepovka, plnění plánu, nové maximum a varování; sekce bez dat mají `available: false`, silová data zatím chybí |
+| `get_weekly_report` | čtení | jeden ISO týden proti průměru předchozích čtyř: vytrvalost po sportech, spánek, HRV, klidová tepovka, plnění plánu, silový objem a série po svalových skupinách z Hevy, nová maxima (i odhad 1RM) a varování; sekce bez dat mají `available: false` |
+| `get_strength_progress` | čtení | odhad 1RM (Epley) po cvicích a trénincích z uložené historie Hevy: nejlepší série každého tréninkového dne, nejlepší, první a poslední hodnota a příznak stagnace (`plateau_weeks`, výchozí 4) |
 
 Všechny zápisy jsou označené jako ne-read-only a ne-destruktivní; v popisu mají větu „Only after the athlete
 confirmed“, takže je kouč navrhuje a zapisuje až po potvrzení. Data jsou `YYYY-MM-DD` v místním čase
@@ -103,28 +105,44 @@ pokračuje. Každou další noc je to asi 16 volání.
 - Na úplně prázdné historii server nemá den na porovnání a tři chyby po sobě bere jako výpadek; vyřeší se,
   jakmile projde první den (nejpozději s dalším dnem).
 
+Silové tréninky z Hevy: stejný běh si po Garminu přes `hevy-mcp` načte workouty změněné od posledního úplného
+běhu, i upravené a smazané (`get-workout-events`, po 10 na stránku), a ke každému cviku jednou jeho šablonu kvůli
+hlavní svalové skupině (`get-exercise-template`). Ukládá se jen souhrn po cvicích (pracovní série, objem v kg,
+nejlepší série a její odhad 1RM podle Epleyho), ne jednotlivé série; zahřívací série se nepočítají. První běh
+načte stejných `COACH_HISTORY_BACKFILL_DAYS` dní zpět se stejnou pauzou mezi voláními (jedno volání na 10
+workoutů a jedno na každý cvik), další noci obvykle jedno volání. Každý výpis znovu přečte poslední 3 dny, aby
+se zachytily pozdní synchronizace. Když Hevy nebo `hevy-mcp` nefunguje, Garmin část doběhne normálně, silová
+data zůstanou nepokrytá (`available: false`) a další pokus je za hodinu, při omezení počtu volání za 1 až 8
+hodin; nic se nevzdává, neúspěšný výpis se příště zopakuje celý a neúspěšná šablona se zkouší nejvýš jednou
+denně.
+
 Z `garmin-mcp` může server volat jen čtyři čtecí nástroje (`get_recovery_snapshot`, `get_hrv_trend`,
 `list_scheduled_workouts`, `list_activities`). Jeho zapisovací nástroje kód kouče nevolá a `garmin-mcp` je
-s read-only tokenem kouče odmítne dřív, než se spustí. Log má jeden řádek na běh:
-`history status=… fetched=… failed=… pending=… given_up=… ms=… matched=… no_activity=…` (bez dat a hodnot;
-`reconcile=error kind=…`, když sladění plánu selže, běh historie tím neselže). Při
+s read-only tokenem kouče odmítne dřív, než se spustí. Z `hevy-mcp` smí volat jen `get-workout-events`
+a `get-exercise-template`. Log má na každý běh jeden řádek za Garmin:
+`history status=… fetched=… failed=… pending=… given_up=… ms=… matched=… no_activity=…` (`reconcile=error kind=…`,
+když sladění plánu selže, běh historie tím neselže) a jeden za Hevy:
+`history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (bez dat a hodnot;
+`skipped` = události z Hevy, které nešly použít). Hevy část běží před sladěním plánu, její řádek je v logu před
+řádkem za Garmin. Při
 `COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek `history status=config_warning`.
 `/healthz` hlásí pole `history`: `on`, `off` (`COACH_HISTORY_ENABLED=false`) nebo `stopped` (úloha nečekaně
-skončila). Silová data z Hevy se zatím neukládají.
+skončila).
 
 ## Sladění plánu
 
 Po každém běhu noční historie server porovná plánované tréninky posledních 7 dní (bez dneška) s uloženými
-součty aktivit stejného dne a sportu (`running`, `cycling`, `swimming`, `strength`; `mobility` a `other` se
-nepárují) a uloží návrh do tabulky `session_suggestions`: `matched` s důkazem (sport, počet aktivit, délka
+součty aktivit stejného dne a sportu (`running`, `cycling`, `swimming`, `strength`; `mobility` a `other`
+návrh nemají) a uloží návrh do tabulky `session_suggestions`: `matched` s důkazem (sport, počet aktivit, délka
 a vzdálenost toho sportu za den) nebo `no_activity`. Den, jehož aktivity se ještě nenačetly nebo se po třech
 chybách vzdaly, návrh nemá. Víc tréninků stejného sportu v jeden den: aktivity se nejdřív přiřadí tréninkům
 už označeným `done`, zbytek plánovaným v pořadí plánu. Návrh má `final: false`, dokud se den může ještě znovu
 načíst (do třetího dne po něm, pozdní synchronizace hodinek). Stav tréninku server nikdy nemění: `get_plan`
 a `get_coach_context` ukazují návrh jen u tréninků ve stavu `planned`, kouč ho ověří a po potvrzení zapíše
-`update_session`. Silové tréninky se zatím párují jen se silovým záznamem z hodinek (`strength_training`),
-ne s Hevy. Bez noční historie (`COACH_HISTORY_ENABLED=false`) návrhy nevznikají. Ranní briefing jmenuje
-včerejší plánované tréninky s `no_activity` (upozornění výše).
+`update_session`. Silový trénink se páruje se silovým záznamem z hodinek (`strength_training`) nebo s workoutem
+z Hevy téhož dne (důkaz `source: hevy` s počtem sérií a objemem); den, který silová historie z Hevy ještě
+nepokrývá, se páruje jen s hodinkami. Bez noční historie (`COACH_HISTORY_ENABLED=false`) návrhy
+nevznikají. Ranní briefing jmenuje včerejší plánované tréninky s `no_activity` (upozornění výše).
 
 ## Data
 
@@ -143,6 +161,11 @@ včerejší plánované tréninky s `no_activity` (upozornění výše).
   vyhodnocení); jeden řádek na trénink, každou noc se přepíše.
 - `history_days`: jeden řádek na den s hodnotami z Garminu (readiness, HRV, spánek, klidová tepovka, Body Battery,
   stres, zátěž, VO2max) a součty aktivit po sportech; kdy a s kolika chybami se den naposledy načetl.
+- `strength_workouts`: jeden řádek na workout z Hevy (id, místní datum začátku, čas poslední změny v Hevy) se
+  souhrnem po cvicích (šablona, název, pracovní série, objem v kg, nejlepší série a odhad 1RM); smazaný workout
+  zůstane jako značka `deleted` bez cviků.
+- `hevy_templates`: šablony cviků z Hevy (název, typ, hlavní svalová skupina), nebo že šablona v Hevy není.
+- `hevy_sync`: odkud a do kdy je silová historie úplná (poslední úplný běh).
 
 Verze schématu je v `PRAGMA user_version`, migrace jsou jen dopředné (seřazený seznam SQL skriptů, každý
 v jedné transakci). Starší image odmítne otevřít novější databázi, aby ji nepoškodil. Zálohy za běhu
@@ -150,6 +173,21 @@ v jedné transakci). Starší image odmítne otevřít novější databázi, aby
 `README.md` (sekce Zálohy); volume `coach-data` je jediná kopie těchto dat.
 
 Před přechodem na starší verzi spusť `scripts/backup.sh`.
+
+**Návrat na verzi bez silové historie** (schéma 5 → 4). Starší image databázi se schématem 5 odmítne
+(`database schema version 5 is newer`). Před nasazením starší verze proto smaž jen tabulky silové historie; cíle,
+omezení, plán, poznámky, stav briefingu i historie z Garminu zůstanou (silovou historii si server po novém
+nasazení znovu načte z Hevy). Služba musí stát, příkazy spouštěj po jednom:
+
+```bash
+docker compose stop coach-mcp
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 5 or sys.exit(f"schema version {v}, expected 5: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE strength_workouts; DROP TABLE hevy_templates; DROP TABLE hevy_sync; PRAGMA user_version = 4; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+Druhý příkaz musí vypsat `schema version 4`. Pak nasaď starší verzi (`git checkout <commit před PR 09>` a
+`docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 5 nemá
+a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří. Návrat na
+starší verze je nejdřív tento postup 5 → 4 a potom následující.
 
 **Návrat na verzi bez sladění plánu** (schéma 4 → 3). Starší image databázi se schématem 4 odmítne
 (`database schema version 4 is newer`). Před nasazením starší verze proto smaž jen tabulku návrhů; cíle,
@@ -210,13 +248,15 @@ a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open databa
 | `COACH_TELEGRAM_TOKEN_FILE` | `/run/secrets/telegram_bot_token` | token bota od @BotFather; s nastaveným chat id musí mít tvar tokenu, jinak se služba nespustí |
 | `COACH_GARMIN_MCP_URL` | `http://garmin-mcp:8000/mcp` | adresa `garmin-mcp` (končí `/mcp`) |
 | `COACH_GARMIN_TOKEN_FILE` | `/run/secrets/garmin_readonly_token` | read-only token pro `garmin-mcp` (min. 16 znaků); zapisovací nástroje s ním `garmin-mcp` odmítne |
+| `COACH_HEVY_MCP_URL` | `http://hevy-mcp:3000/mcp` | adresa `hevy-mcp` (končí `/mcp`) |
+| `COACH_HEVY_TOKEN_FILE` | `/run/secrets/hevy_backend_token` | interní token pro `hevy-mcp` (min. 16 znaků); bez něj se silová historie nenačítá, Garmin část běží dál |
 | `COACH_BRIEFING_TIME` | `06:30` | kdy plánovač začne (`HH:MM`, časové pásmo `TZ`) |
 | `COACH_BRIEFING_CUTOFF` | `09:30` | nejpozdější čas odeslání, i s chybějícími daty (pozdější než čas začátku) |
 | `COACH_BRIEFING_RETRY_MINUTES` | `15` | pauza mezi pokusy, když chybí spánek nebo HRV (1 až 180) |
-| `COACH_HISTORY_ENABLED` | `true` | noční historie z Garminu (`true` / `false`) |
+| `COACH_HISTORY_ENABLED` | `true` | noční historie z Garminu a Hevy (`true` / `false`) |
 | `COACH_HISTORY_TIME` | `03:30` | kdy (`HH:MM`, `TZ`); čas uvnitř okna briefingu posune běh na cutoff |
 | `COACH_HISTORY_BACKFILL_DAYS` | `90` | kolik dní zpět načíst (1 až 366) |
-| `COACH_HISTORY_CALL_DELAY_SECONDS` | `15` | pauza mezi voláními `garmin-mcp` (1 až 600 s) |
+| `COACH_HISTORY_CALL_DELAY_SECONDS` | `15` | pauza mezi voláními `garmin-mcp` a `hevy-mcp` (1 až 600 s) |
 
 Neplatná hodnota ukončí start s chybou (kontejner se nespustí) místo pozdějšího selhání v nástroji.
 

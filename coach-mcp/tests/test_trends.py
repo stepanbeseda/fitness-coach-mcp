@@ -5,7 +5,20 @@ from datetime import date, timedelta
 from typing import Any
 
 import pytest
-from history_helpers import seed_activities, seed_day, sport
+from fakes import FakeHistorySource, FakeStrengthSource
+from hevy_payloads import day_workout, events_page, hevy_template, updated
+from history_helpers import (
+    exercise,
+    local,
+    make_job,
+    run_first,
+    seed_activities,
+    seed_day,
+    seed_strength,
+    seed_sync,
+    seed_template,
+    sport,
+)
 from mcp.server.mcpserver.exceptions import ToolError
 
 from conftest import TODAY
@@ -264,7 +277,7 @@ def test_trends_only_include_rows_inside_the_range(store):
 W36, W37, W38, W39, W40, W41 = (d("2026-08-31") + timedelta(days=7 * n) for n in range(6))
 BASELINES = [W36, W37, W38, W39]
 BASELINE_LABELS = ["2026-W36", "2026-W37", "2026-W38", "2026-W39"]
-STRENGTH_OFF = {"available": False, "reason": "strength history from Hevy is not stored yet; read Hevy directly"}
+STRENGTH_NONE = {"available": False, "reason": "no strength history from Hevy covers this week"}
 
 
 def report(store, today=TODAY, week=None):
@@ -325,7 +338,7 @@ def test_weekly_report_every_section_from_seeded_db(store):
     out = report(store)
     assert out["week"] == {"start": "2026-09-28", "end": "2026-10-04", "iso_week": "2026-W40", "partial": False}
     assert out["baseline_weeks"] == BASELINE_LABELS
-    assert out["strength"] == STRENGTH_OFF
+    assert out["strength"] == STRENGTH_NONE
     assert out["endurance"] == {
         "activity_days": 7,
         "total": {
@@ -452,7 +465,7 @@ def test_weekly_report_marks_sections_without_data(store):
         "week": {"start": "2026-09-28", "end": "2026-10-04", "iso_week": "2026-W40", "partial": False},
         "baseline_weeks": BASELINE_LABELS,
         "endurance": {"available": False},
-        "strength": STRENGTH_OFF,
+        "strength": STRENGTH_NONE,
         "sleep": {"available": False},
         "hrv": {"available": False},
         "resting_hr": {"available": False},
@@ -757,3 +770,206 @@ def test_trends_days_with_data_excludes_failure_only_rows(store):
     out = get_trends(store, metrics=["readiness"], start_date="2026-10-01", end_date="2026-10-06", period="day")
     assert out["days_with_data"] == 3
     assert [b["period"] for b in out["metrics"]["readiness"]["buckets"]] == ["2026-10-01", "2026-10-02", "2026-10-03"]
+
+
+# ------------------------------------------------------ weekly report: strength
+
+W41_END = d("2026-10-11")
+
+
+def lift(store, day: str, tid: str, sets: int, volume: float, best: tuple[float, int, float] | None = None) -> None:
+    seed_strength(store, f"{tid}-{day}", d(day), [exercise(tid, sets, volume, best)])
+
+
+def covered(store, first: str = "2026-08-31", synced_on: date = TODAY) -> None:
+    """The Hevy history covers ``first`` .. the day before ``synced_on`` (default: W36 up to yesterday)."""
+    seed_sync(store, d(first), synced_on)
+
+
+def test_weekly_strength_unavailable_without_a_hevy_sync(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    lift(store, "2026-09-29", "T1", 3, 1500.0, (100, 5, 116.7))  # workouts stored, but nothing says they are complete
+    out = report(store)
+    assert out["strength"] == STRENGTH_NONE
+    assert not [b for b in out["new_bests"] if b["metric"] == "e1rm_kg"] and "strength_volume_up" not in flags_of(out)
+
+
+def test_week_outside_the_coverage_is_unavailable(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    lift(store, "2026-09-29", "T1", 3, 1500.0)
+    covered(store, first="2026-10-05")  # the history starts in W41
+    assert report(store)["strength"] == STRENGTH_NONE  # W40 is before it
+    assert report(store, week="2026-10-07")["strength"]["days"] == 2  # W41: Monday and Tuesday are covered
+
+
+def test_weekly_strength_section_against_four_weeks(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    seed_template(store, "T2", "quadriceps", title="Squat")
+    covered(store)
+    # chest: sets 3, 4, 3, 2 and volume 1500, 2000, 1500, 1000 (means 3.0 and 1500.0); squat 4 sets, 3200 kg each week
+    for monday, sets, volume in ((W36, 3, 1500.0), (W37, 4, 2000.0), (W38, 3, 1500.0), (W39, 2, 1000.0)):
+        lift(store, (monday + timedelta(days=1)).isoformat(), "T1", sets, volume)
+        lift(store, (monday + timedelta(days=3)).isoformat(), "T2", 4, 3200.0)
+    lift(store, "2026-09-29", "T1", 3, 1800.0)
+    lift(store, "2026-10-01", "T2", 5, 4000.0)
+    assert report(store)["strength"] == {
+        "days": 7,
+        "workouts": 2,
+        "volume_kg": {"week": 5800.0, "baseline": 4700.0, "baseline_weeks": 4, "change": 1100.0, "change_pct": 23.4},
+        "sets": {"week": 8.0, "baseline": 7.0, "baseline_weeks": 4, "change": 1.0, "change_pct": 14.3},
+        "by_muscle_group": {
+            "chest": {"sets": 3, "baseline_sets": 3.0, "volume_kg": 1800.0, "baseline_volume_kg": 1500.0},
+            "quadriceps": {"sets": 5, "baseline_sets": 4.0, "volume_kg": 4000.0, "baseline_volume_kg": 3200.0},
+        },
+    }
+
+
+def test_group_trained_only_in_the_baseline_is_listed_and_an_idle_one_is_not(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    seed_template(store, "T2", "lats", title="Row")
+    seed_template(store, "T3", "calves", title="Calf raise")
+    covered(store)
+    lift(store, "2026-09-01", "T2", 4, 200.0)  # W36 only: baseline mean of sets 1.0
+    lift(store, "2026-09-29", "T1", 3, 900.0)
+    lift(store, "2026-09-29", "T3", 0, 0.0)  # zero sets everywhere: not listed
+    assert report(store)["strength"]["by_muscle_group"] == {
+        "chest": {"sets": 3, "baseline_sets": 0.0, "volume_kg": 900.0, "baseline_volume_kg": 0.0},
+        "lats": {"sets": 0, "baseline_sets": 1.0, "volume_kg": 0.0, "baseline_volume_kg": 50.0},
+    }
+
+
+@pytest.mark.anyio
+async def test_weekly_strength_counts_sets_for_the_primary_muscle_group(store):
+    """Through the job: a template's secondary groups are read, but only the primary one is stored and counted."""
+    template = hevy_template("T1", "Bench Press (Barbell)", "chest")
+    template["secondary_muscle_groups"] = ["triceps", "shoulders"]
+    source = FakeStrengthSource(
+        events=lambda page, since, index: ("ok", events_page([updated(day_workout("W1", "2026-10-05"))], page, 1)),
+        template=lambda tid, index: ("ok", {"exercise_template": template}),
+    )
+    job, clock = make_job(store, FakeHistorySource(), local(TODAY, 10, 0), strength=source, history_backfill_days=5)
+    await run_first(job, clock)
+    assert store.hevy_templates()["T1"]["primary_muscle_group"] == "chest"
+    assert report(store, week="2026-10-05")["strength"] == {
+        "days": 2,
+        "workouts": 1,
+        "volume_kg": {"week": 1500.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
+        "sets": {"week": 3.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
+        "by_muscle_group": {"chest": {"sets": 3, "baseline_sets": None, "volume_kg": 1500.0, "baseline_volume_kg": None}},
+    }
+
+
+def test_partly_covered_week_reports_its_covered_days(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    covered(store, first="2026-09-30")  # Wednesday of W40
+    lift(store, "2026-09-29", "T1", 9, 9000.0)  # before the coverage: not part of the section
+    lift(store, "2026-10-01", "T1", 3, 1500.0)
+    out = report(store)
+    assert out["strength"] == {
+        "days": 5,
+        "workouts": 1,
+        "volume_kg": {"week": 1500.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
+        "sets": {"week": 3.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
+        "by_muscle_group": {"chest": {"sets": 3, "baseline_sets": None, "volume_kg": 1500.0, "baseline_volume_kg": None}},
+    }
+    assert "strength_volume_up" not in flags_of(out)
+
+
+def seed_volumes(store, week_volumes: dict[date, float]) -> None:
+    """One chest workout on the Tuesday of every week with the given volume (10 sets)."""
+    for monday, volume in week_volumes.items():
+        lift(store, (monday + timedelta(days=1)).isoformat(), "T1", 10, volume)
+
+
+def volume_flag(out) -> list[dict[str, Any]]:
+    return [f for f in out["flags"] if f["flag"] == "strength_volume_up"]
+
+
+def test_strength_volume_up_flag(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    covered(store)
+    seed_volumes(store, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1310.0})
+    assert volume_flag(report(store)) == [
+        {"flag": "strength_volume_up", "week": 1310.0, "baseline": 1000.0, "change": 310.0, "change_pct": 31.0}
+    ]
+
+
+def test_strength_volume_flag_needs_more_than_30_percent(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    covered(store)
+    seed_volumes(store, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1300.0})
+    out = report(store)
+    assert out["strength"]["volume_kg"]["change_pct"] == 30.0 and volume_flag(out) == []
+
+
+def test_strength_volume_flag_needs_two_complete_baseline_weeks(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    covered(store, first="2026-09-21")  # only W39 is fully covered before W40
+    seed_volumes(store, {W38: 1000.0, W39: 1000.0, W40: 2000.0})
+    out = report(store)
+    assert out["strength"]["volume_kg"]["baseline_weeks"] == 1 and volume_flag(out) == []
+    # a baseline week that is only partly covered does not count either
+    covered(store, first="2026-09-17")  # Thursday of W38
+    out = report(store)
+    assert out["strength"]["volume_kg"]["baseline_weeks"] == 1 and volume_flag(out) == []
+
+
+def test_strength_volume_flag_needs_a_complete_week(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    covered(store, synced_on=d("2026-10-03"))  # covered through Friday 10-02: five days of W40
+    seed_volumes(store, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 2000.0})
+    out = report(store)
+    assert out["strength"]["days"] == 5 and out["strength"]["volume_kg"]["change_pct"] == 100.0
+    assert volume_flag(out) == []
+
+
+def test_strength_volume_flag_needs_a_final_week(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    covered(store, synced_on=d("2026-10-20"))  # (artificial) the history claims to cover all of the current week
+    seed_volumes(store, {W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1000.0, W41: 2000.0})
+    out = report(store, week="2026-10-07")
+    assert out["week"]["partial"] is True and out["strength"]["days"] == 7
+    assert out["strength"]["volume_kg"]["change_pct"] == 100.0 and volume_flag(out) == []
+    done = report(store, today=d("2026-10-12"), week="2026-10-07")  # the same week once it is over
+    assert done["week"]["partial"] is False and len(volume_flag(done)) == 1
+
+
+def e1rm_bests(out) -> list[dict[str, Any]]:
+    return [b for b in out["new_bests"] if b["metric"] == "e1rm_kg"]
+
+
+def test_new_e1rm_best(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    seed_template(store, "T2", "lats", title="Row")
+    seed_template(store, "T3", "lats", title="Assisted pull-up", type_="bodyweight_assisted_reps")
+    seed_template(store, "T4", "chest", title="Fly")
+    seed_template(store, "T5", "shoulders", title="Arnold Press")
+    covered(store)
+    lift(store, "2026-09-15", "T1", 3, 1500.0, (100, 5, 100.0))
+    lift(store, "2026-09-22", "T1", 3, 1500.0, (90, 5, 90.0))
+    lift(store, "2026-09-15", "T2", 3, 900.0, (80, 5, 80.0))
+    lift(store, "2026-09-15", "T3", 3, 0.0, (30, 5, 85.0))
+    lift(store, "2026-09-15", "T5", 3, 900.0, (50, 5, 60.0))
+    lift(store, "2026-09-29", "T1", 3, 1500.0, (105, 5, 105.0))  # above the previous best 100
+    lift(store, "2026-10-01", "T1", 3, 1500.0, (102, 5, 102.0))  # the week's best counts, not the last session
+    lift(store, "2026-09-30", "T2", 3, 900.0, (80, 5, 80.0))  # equal: not a new best
+    lift(store, "2026-09-30", "T3", 3, 0.0, (40, 5, 95.0))  # assisted: no e1RM at all
+    lift(store, "2026-09-30", "T4", 3, 600.0, (60, 5, 70.0))  # first trained this week
+    lift(store, "2026-10-02", "T5", 3, 900.0, (60, 5, 70.0))
+    assert e1rm_bests(report(store)) == [
+        {"metric": "e1rm_kg", "exercise": "Arnold Press", "template_id": "T5", "value": 70.0, "previous_best": 60.0, "date": "2026-10-02"},
+        {"metric": "e1rm_kg", "exercise": "Bench", "template_id": "T1", "value": 105.0, "previous_best": 100.0, "date": "2026-09-29"},
+    ]
+
+
+def test_new_e1rm_best_is_reported_for_a_partial_week_and_after_the_other_bests(store):
+    seed_template(store, "T1", "chest", title="Bench")
+    covered(store)
+    lift(store, "2026-09-29", "T1", 3, 1500.0, (105, 5, 105.0))
+    lift(store, "2026-10-06", "T1", 3, 1500.0, (110, 5, 110.0))
+    out = report(store, week="2026-10-07")
+    assert out["week"]["partial"] is True
+    assert e1rm_bests(out) == [
+        {"metric": "e1rm_kg", "exercise": "Bench", "template_id": "T1", "value": 110.0, "previous_best": 105.0, "date": "2026-10-06"}
+    ]
+    assert out["new_bests"][-1]["metric"] == "e1rm_kg"

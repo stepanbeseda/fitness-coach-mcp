@@ -8,6 +8,7 @@ transaction. Nothing in this module deletes rows.
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime
@@ -128,6 +129,34 @@ CREATE TABLE session_suggestions (
   CHECK ((result = 'matched') = (evidence IS NOT NULL))
 );
 """,
+    """
+CREATE TABLE strength_workouts (
+  workout_id      TEXT PRIMARY KEY CHECK (length(workout_id) BETWEEN 1 AND 64),
+  date            TEXT,
+  deleted         INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+  hevy_updated_at TEXT CHECK (hevy_updated_at IS NULL OR length(hevy_updated_at) <= 40),
+  exercises       TEXT NOT NULL DEFAULT '[]',
+  updated_at      TEXT NOT NULL,
+  CHECK (deleted = 1 OR date IS NOT NULL)
+);
+CREATE INDEX strength_workouts_date ON strength_workouts(date);
+CREATE TABLE hevy_templates (
+  template_id          TEXT PRIMARY KEY CHECK (length(template_id) BETWEEN 1 AND 64),
+  found                INTEGER CHECK (found IS NULL OR found IN (0, 1)),
+  title                TEXT CHECK (title IS NULL OR length(title) <= 200),
+  type                 TEXT CHECK (type IS NULL OR length(type) <= 40),
+  primary_muscle_group TEXT CHECK (primary_muscle_group IS NULL OR length(primary_muscle_group) <= 40),
+  attempted_on         TEXT,
+  updated_at           TEXT NOT NULL
+);
+CREATE TABLE hevy_sync (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  covered_from TEXT NOT NULL,
+  synced_at    TEXT NOT NULL,
+  synced_on    TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -151,6 +180,7 @@ HISTORY_COLUMNS: tuple[str, ...] = (
     "vo2max_cycling",
 )
 HISTORY_PARTS = ("recovery", "activities")
+STRENGTH_TABLES = ("strength_workouts", "hevy_templates", "hevy_sync")
 
 GOAL_FIELDS = frozenset({"title", "target", "target_date", "target_result", "status"})
 CONSTRAINT_FIELDS = frozenset({"kind", "title", "details", "status"})
@@ -472,6 +502,112 @@ class Store:
                     f"ON CONFLICT(date) DO UPDATE SET {column} = {column} + 1, updated_at = excluded.updated_at",
                     (day.isoformat(), now),
                 )
+
+    # ------------------------------------------------------------ strength
+
+    def apply_strength_events(
+        self, updates: Mapping[str, tuple[date, str | None, str]], deletes: Sequence[str]
+    ) -> None:
+        """Upsert the workouts of ``updates`` (id -> (day, hevy_updated_at, exercises JSON)) and tombstone ``deletes``,
+        in one transaction. A tombstone is never revived; an older ``hevy_updated_at`` never overwrites a newer one."""
+        now = _now()
+        with self._conn() as conn, conn:
+            for workout_id, (day, hevy_updated_at, exercises) in updates.items():
+                conn.execute(
+                    "INSERT INTO strength_workouts (workout_id, date, deleted, hevy_updated_at, exercises, updated_at) "
+                    "VALUES (?, ?, 0, ?, ?, ?) "
+                    "ON CONFLICT(workout_id) DO UPDATE SET date = excluded.date, "
+                    "hevy_updated_at = excluded.hevy_updated_at, exercises = excluded.exercises, "
+                    "updated_at = excluded.updated_at "
+                    "WHERE strength_workouts.deleted = 0 "
+                    "AND (excluded.hevy_updated_at IS NULL OR strength_workouts.hevy_updated_at IS NULL "
+                    "OR excluded.hevy_updated_at >= strength_workouts.hevy_updated_at)",
+                    (workout_id, day.isoformat(), hevy_updated_at, exercises, now),
+                )
+            for workout_id in deletes:
+                conn.execute(
+                    "INSERT INTO strength_workouts (workout_id, date, deleted, hevy_updated_at, exercises, updated_at) "
+                    "VALUES (?, NULL, 1, NULL, '[]', ?) "
+                    "ON CONFLICT(workout_id) DO UPDATE SET deleted = 1, exercises = '[]', "
+                    "updated_at = excluded.updated_at",
+                    (workout_id, now),
+                )
+
+    def strength_workout_rows(self, start: date | None, end: date) -> list[dict[str, Any]]:
+        """Live (not deleted) workouts dated up to ``end`` (and from ``start`` when given), by date then id."""
+        sql, params = "SELECT * FROM strength_workouts WHERE deleted = 0 AND date <= ?", [end.isoformat()]
+        if start is not None:
+            sql += " AND date >= ?"
+            params.append(start.isoformat())
+        return self._all(sql + " ORDER BY date, workout_id", tuple(params))
+
+    def strength_template_ids(self) -> set[str]:
+        """Template ids referenced by live workouts (parsed from their exercises JSON; invalid JSON is skipped)."""
+        ids: set[str] = set()
+        for row in self._all("SELECT exercises FROM strength_workouts WHERE deleted = 0"):
+            try:
+                entries = json.loads(row["exercises"])
+            except ValueError:
+                continue
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                template_id = entry.get("template_id") if isinstance(entry, dict) else None
+                if isinstance(template_id, str) and 1 <= len(template_id) <= 64:
+                    ids.add(template_id)
+        return ids
+
+    def hevy_templates(self) -> dict[str, dict[str, Any]]:
+        return {row["template_id"]: row for row in self._all("SELECT * FROM hevy_templates")}
+
+    def upsert_hevy_template(
+        self,
+        template_id: str,
+        *,
+        found: bool,
+        title: str | None,
+        type_: str | None,
+        group: str | None,
+        attempted_on: date,
+    ) -> None:
+        with self._conn() as conn, conn:
+            conn.execute(
+                "INSERT INTO hevy_templates (template_id, found, title, type, primary_muscle_group, attempted_on, "
+                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(template_id) DO UPDATE SET found = excluded.found, title = excluded.title, "
+                "type = excluded.type, primary_muscle_group = excluded.primary_muscle_group, "
+                "attempted_on = excluded.attempted_on, updated_at = excluded.updated_at",
+                (template_id, int(found), title, type_, group, attempted_on.isoformat(), _now()),
+            )
+
+    def record_hevy_template_failure(self, template_id: str, attempted_on: date) -> None:
+        """Remember a failed attempt; a resolved template (found 0 or 1) is not changed."""
+        with self._conn() as conn, conn:
+            conn.execute(
+                "INSERT INTO hevy_templates (template_id, found, attempted_on, updated_at) VALUES (?, NULL, ?, ?) "
+                "ON CONFLICT(template_id) DO UPDATE SET attempted_on = excluded.attempted_on, "
+                "updated_at = excluded.updated_at WHERE hevy_templates.found IS NULL",
+                (template_id, attempted_on.isoformat(), _now()),
+            )
+
+    def hevy_sync_state(self) -> dict[str, Any] | None:
+        rows = self._all("SELECT covered_from, synced_at, synced_on FROM hevy_sync WHERE id = 1")
+        return rows[0] if rows else None
+
+    def record_hevy_sync(self, covered_from: date, synced_at: datetime, synced_on: date) -> None:
+        """Remember the complete event listing that started at ``synced_at`` (a UTC instant) on ``synced_on``."""
+        with self._conn() as conn, conn:
+            conn.execute(
+                "INSERT INTO hevy_sync (id, covered_from, synced_at, synced_on, updated_at) VALUES (1, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET covered_from = excluded.covered_from, "
+                "synced_at = excluded.synced_at, synced_on = excluded.synced_on, updated_at = excluded.updated_at",
+                (
+                    covered_from.isoformat(),
+                    synced_at.astimezone(UTC).isoformat(timespec="seconds"),
+                    synced_on.isoformat(),
+                    _now(),
+                ),
+            )
 
     # --------------------------------------------------------------- notes
 

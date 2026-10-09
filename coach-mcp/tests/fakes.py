@@ -12,6 +12,7 @@ import anyio
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult, TextContent
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -26,6 +27,7 @@ from garmin_payloads import (
     activities_payload,
     history_snapshot,
 )
+from hevy_payloads import events_page, hevy_template
 
 
 class RawText(str):
@@ -225,3 +227,124 @@ async def fake_garmin_running(app: BearerAuthMiddleware) -> AsyncIterator[None]:
     inner = app.app
     async with inner.router.lifespan_context(inner):  # type: ignore[attr-defined]
         yield
+
+
+class FakeStrengthSource:
+    """A ``StrengthSource``: ``events(page, since, index)`` and ``template(template_id, index)`` return ``(outcome, payload)``.
+
+    ``index`` counts every Hevy call so far (0 for the first). Defaults: an empty events page and a template
+    ``T <id>`` of the muscle group chest. ``calls`` records ``(name, args)``, ``times`` the clock reading.
+    """
+
+    def __init__(
+        self,
+        *,
+        events: Callable[[int, str, int], HistoryOutcome] | None = None,
+        template: Callable[[str, int], HistoryOutcome] | None = None,
+        clock: FakeClock | None = None,
+    ) -> None:
+        self._events = events or (lambda page, since, index: ("ok", events_page([], 1, 0)))
+        self._template = template or (
+            lambda tid, index: ("ok", {"exercise_template": hevy_template(tid, f"T {tid}", "chest")})
+        )
+        self.clock = clock
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.times: list[datetime | None] = []
+
+    async def history_call(self, name: str, args: dict[str, Any]) -> HistoryOutcome:
+        if name not in ("get-workout-events", "get-exercise-template"):
+            raise ValueError(f"tool {name!r} is not allowed")
+        index = len(self.calls)
+        self.calls.append((name, dict(args)))
+        self.times.append(self.clock.now() if self.clock else None)
+        if name == "get-workout-events":
+            return self._events(args["page"], args["since"], index)
+        return self._template(args["exercise_template_id"], index)
+
+    @property
+    def pages(self) -> list[int]:
+        return [a["page"] for n, a in self.calls if n == "get-workout-events"]
+
+    @property
+    def template_ids(self) -> list[str]:
+        return [a["exercise_template_id"] for n, a in self.calls if n == "get-exercise-template"]
+
+
+def fake_hevy_app(
+    token: str,
+    *,
+    events: Any = None,
+    template: Any = None,
+    errors: dict[str, str | tuple[str, dict[str, Any]]] | None = None,
+    hang: frozenset[str] = frozenset(),
+) -> tuple[BearerAuthMiddleware, list[tuple[str, dict[str, Any]]]]:
+    """A hevy-mcp look-alike (Streamable HTTP behind the bearer check) and its call log.
+
+    Like hevy-mcp it answers with the bare JSON list (or a sentence) as text and the dict as structured
+    content; ``events`` / ``template`` are the structured dicts (a ``RawText`` is sent as text only). An entry
+    of ``errors`` is an error text, or a ``(text, structured)`` tuple for hevy-mcp's structured error shape.
+    ``create-workout``, ``update-workout`` and ``feedback`` are canaries that must never be called.
+    """
+    errors = errors or {}
+    calls: list[tuple[str, dict[str, Any]]] = []
+    server = MCPServer("fake-hevy")
+    events_payload = events if events is not None else events_page([], 1, 0)
+    template_payload = template if template is not None else {"exercise_template": hevy_template("T1", "T 1", "chest")}
+
+    async def respond(name: str, arguments: dict[str, Any], payload: Any) -> CallToolResult:
+        calls.append((name, {k: v for k, v in arguments.items() if v is not None}))
+        if name in hang:
+            await anyio.sleep(5)
+            raise ToolError("hang ended without cancellation")
+        if name in errors:
+            entry = errors[name]
+            text, structured = (entry, None) if isinstance(entry, str) else entry
+            return CallToolResult(
+                content=[TextContent(type="text", text=text)], structured_content=structured, is_error=True
+            )
+        if isinstance(payload, RawText):
+            return CallToolResult(content=[TextContent(type="text", text=str(payload))])
+        if name == "get-workout-events":
+            text = (
+                json.dumps(payload["events"])
+                if payload.get("events")
+                else f"No workout events found for the specified parameters since {arguments.get('since')}"
+            )
+        else:
+            text = json.dumps(payload.get("exercise_template"))
+        return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=payload)
+
+    async def get_workout_events(page: int = 1, page_size: int = 10, since: str | None = None) -> CallToolResult:
+        return await respond("get-workout-events", {"page": page, "page_size": page_size, "since": since}, events_payload)
+
+    async def get_exercise_template(exercise_template_id: str) -> CallToolResult:
+        return await respond("get-exercise-template", {"exercise_template_id": exercise_template_id}, template_payload)
+
+    async def create_workout() -> CallToolResult:
+        return await respond("create-workout", {}, {"created": True})
+
+    async def update_workout() -> CallToolResult:
+        return await respond("update-workout", {}, {"updated": True})
+
+    async def feedback() -> CallToolResult:
+        return await respond("feedback", {}, {"sent": True})
+
+    for name, fn in (
+        ("get-workout-events", get_workout_events),
+        ("get-exercise-template", get_exercise_template),
+        ("create-workout", create_workout),
+        ("update-workout", update_workout),
+        ("feedback", feedback),
+    ):
+        server.add_tool(fn, name=name, description=name)
+
+    app = server.streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=True,
+        stateless_http=True,
+        host="0.0.0.0",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False, allowed_hosts=[], allowed_origins=[]
+        ),
+    )
+    return BearerAuthMiddleware(app, _StaticToken(token), prefix="/mcp"), calls  # type: ignore[arg-type]
