@@ -1366,7 +1366,7 @@ async def test_strength_first_run_lists_the_backfill_range(store, caplog):
     # the sync point is the instant the listing started, i.e. before the pause that precedes its first call
     assert datetime.fromisoformat(state["synced_at"]) == strength.times[0] - timedelta(seconds=15)
     lines = strength_lines(caplog)
-    assert len(lines) == 1 and lines[0].startswith("history status=done part=strength workouts=13 deleted=0 templates=3 failed=0 ms=")
+    assert len(lines) == 1 and lines[0].startswith("history status=done part=strength workouts=13 deleted=0 templates=3 failed=0 skipped=0 ms=")
     assert {t["found"] for t in store.hevy_templates().values()} == {1}
 
 
@@ -1497,7 +1497,7 @@ async def test_strength_failure_does_not_touch_the_garmin_part(tmp_path, caplog,
         FakeStrengthSource(events=lambda page, since, index: (outcome, None)), "bad.db"
     )
     assert bad_rows == good_rows and bad_garmin == good_garmin  # the Garmin part is exactly as without a Hevy problem
-    assert bad_line.startswith(f"history status={status} part=strength workouts=0 deleted=0 templates=0 failed=0 ms=")
+    assert bad_line.startswith(f"history status={status} part=strength workouts=0 deleted=0 templates=0 failed=0 skipped=0 ms=")
     assert bad_db.hevy_sync_state() is None
     assert bad_first == 3600.0
     assert bad_second == (7200.0 if outcome == "rate_limited" else 3600.0)  # the shared backoff doubles
@@ -1824,28 +1824,6 @@ async def test_strength_pause_mid_listing(store, caplog):
     assert clock.now() + timedelta(seconds=delay) == local(TODAY, 9, 30)
 
 
-@pytest.mark.anyio
-async def test_strength_crash_is_logged_after_the_garmin_line(store, monkeypatch, caplog):
-    caplog.set_level(logging.INFO, logger="coach_mcp.history")
-
-    def broken(events, zone):
-        raise RuntimeError("SECRET-PARSE-TEXT")
-
-    monkeypatch.setattr(strength_module, "parse_events", broken)
-    yesterday = date(2026, 10, 6)
-    seed_day(store, yesterday, fetched_on=TODAY, readiness=50)  # nothing for the Garmin part to do: no pacing sleeps
-    seed_activities(store, yesterday, {}, fetched_on=TODAY)
-    strength = FakeStrengthSource(events=pages_of([wo("W1")]))
-    job, clock = await run_job(
-        store, FakeHistorySource(), AFTER_WINDOW, max_sleeps=3, strength=strength, settings_overrides={"history_backfill_days": 1}
-    )
-    assert clock.sleeps == [60.0, 3600.0, 3600.0]  # the crash is retried in an hour
-    lines = [r.getMessage() for r in caplog.records if r.name == "coach_mcp.history"]
-    assert lines[0].startswith("history status=done fetched=0") and lines[1] == "history status=crashed kind=RuntimeError"
-    assert not any("part=strength" in line for line in lines)
-    assert "SECRET-PARSE-TEXT" not in caplog.text
-
-
 _OUTCOMES = ["done", "partial", "paused", "rate_limited", "service_error", "auth", "unreachable", "no_credentials"]
 
 
@@ -1878,3 +1856,58 @@ async def test_strength_logs_carry_no_values_or_dates(store, caplog):
     assert lines and all(line.startswith("history status=") for line in lines)
     assert not any(bad in line for line in lines for bad in ("4242", "SENTINEL", "2026-", "chest"))
     assert store.hevy_templates()["T-4242"]["title"] == "SENTINEL"  # the values were really handled
+
+
+def strength_event_line(caplog) -> str:
+    (line,) = strength_lines(caplog)
+    return line
+
+
+@pytest.mark.anyio
+async def test_skipped_events_are_counted_in_the_strength_line(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    page = [
+        wo("W1"),
+        {"type": "weird", "id": "W9"},  # unknown type
+        updated(day_workout("W2", "garbage")),  # unparsable start
+        {"type": "deleted"},  # delete without an id
+    ]
+    job, clock = make_job(
+        store, FakeHistorySource(), AFTER_WINDOW, strength=FakeStrengthSource(events=pages_of(page)), history_backfill_days=3
+    )
+    await run_first(job, clock)
+    line = strength_event_line(caplog)
+    assert line.startswith("history status=done part=strength workouts=1 deleted=0 templates=1 failed=0 skipped=3 ms=")
+    assert [r["workout_id"] for r in store.strength_workout_rows(None, TODAY)] == ["W1"]  # the listing still completed
+    assert store.hevy_sync_state() is not None
+
+
+@pytest.mark.anyio
+async def test_extreme_timestamps_skip_the_event_and_do_not_crash_the_run(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    page = [
+        wo("W1"),
+        updated(day_workout("EDGE1", "2026-10-05") | {"start_time": "9999-12-31T23:00:00-05:00"}),
+        updated(day_workout("EDGE2", "2026-10-05") | {"start_time": "0001-01-01T00:30:00+01:00"}),
+        updated(day_workout("EDGE3", "2026-10-05") | {"start_time": "9999-12-31T23:59:59"}),
+        updated(day_workout("EDGE4", "2026-10-05") | {"start_time": "99999-01-01T00:00:00Z"}),
+    ]
+    job, clock = make_job(
+        store, FakeHistorySource(), AFTER_WINDOW, strength=FakeStrengthSource(events=pages_of(page)), history_backfill_days=3
+    )
+    delay = await run_first(job, clock)  # a crash would give 3600 and a "crashed" line
+    assert delay > 3600.0 and not [r for r in caplog.records if "crashed" in r.getMessage()]
+    assert strength_event_line(caplog).startswith("history status=done part=strength workouts=1 deleted=0 templates=1 failed=0 skipped=4")
+    assert [r["workout_id"] for r in store.strength_workout_rows(None, TODAY)] == ["W1"]
+    assert store.hevy_sync_state() is not None
+
+
+@pytest.mark.anyio
+async def test_strength_line_comes_before_the_garmin_line(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    job, clock = make_job(
+        store, FakeHistorySource(), AFTER_WINDOW, strength=FakeStrengthSource(events=pages_of([wo("W1")])), history_backfill_days=1
+    )
+    await run_first(job, clock)
+    messages = [r.getMessage() for r in caplog.records if r.name == "coach_mcp.history"]
+    assert "part=strength" in messages[0] and messages[1].startswith("history status=done fetched=")

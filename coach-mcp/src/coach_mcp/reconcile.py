@@ -40,12 +40,27 @@ def _positive(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
+count_of = _count  # the validity rule for a stored count, shared with the history job's Hevy merge
+
+
+def _finite(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _evidence(sport: str, entry: Mapping[str, Any], count: int) -> dict[str, Any]:
-    evidence: dict[str, Any] = {"source": "garmin", "sport": sport, "count": count}
+    # A day's totals come from the Garmin history; the history job replaces the strength entry by Hevy's own
+    # (``"source": "hevy"``, with the working sets and volume) when a Hevy workout covers the day.
+    source = entry.get("source")
+    evidence: dict[str, Any] = {"source": source if source in ("garmin", "hevy") else "garmin", "sport": sport, "count": count}
     for field in ("duration_min", "distance_km"):
         # activity_totals stores 0.0 for a missing value (e.g. the distance of strength); 0 is not a measurement.
         if _positive(entry.get(field)):
             evidence[field] = entry[field]
+    sets = entry.get("sets")
+    if isinstance(sets, int) and not isinstance(sets, bool):
+        evidence["sets"] = sets
+    if _finite(entry.get("volume_kg")):
+        evidence["volume_kg"] = entry["volume_kg"]
     return evidence
 
 

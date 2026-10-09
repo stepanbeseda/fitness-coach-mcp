@@ -28,7 +28,7 @@ from . import strength
 from .config import Settings
 from .garmin import HistorySource, exception_kind
 from .hevy import StrengthSource
-from .reconcile import RECONCILE_DAYS, DayActivities, suggest
+from .reconcile import RECONCILE_DAYS, DayActivities, count_of, suggest
 from .store import Store
 
 log = logging.getLogger("coach_mcp.history")
@@ -192,6 +192,41 @@ def activities_settled(day: date, fetched_on: date, failures: int) -> bool:
     return fetched_on >= day + timedelta(days=REFETCH_DAYS) or failures >= MAX_FAILURES
 
 
+def with_hevy_strength(
+    days: Mapping[str, DayActivities], hevy: Mapping[date, strength.DayStrength], cov: strength.Coverage | None
+) -> dict[str, DayActivities]:
+    """Garmin day totals with Hevy strength workouts merged in (pure).
+
+    Only days whose Garmin activities were fetched are in ``days`` and none is added, so the other sports of a
+    day never get a false ``no_activity``. A day the Hevy history does not cover keeps its Garmin totals. On a
+    covered day Hevy's workouts replace the strength entry when there is at least one and not fewer than the
+    watch recorded (two watch sessions against one Hevy workout stay as Garmin evidence). Such a day is final
+    only when the Garmin side is final and the day lies outside the 3-day re-read of the Hevy listing.
+    """
+    out = dict(days)
+    if cov is None:
+        return out
+    for day_text, activities in days.items():
+        day = date.fromisoformat(day_text)
+        if not cov.covers(day):
+            continue
+        hevy_day = hevy.get(day)
+        count = hevy_day.workouts if hevy_day is not None else 0
+        if hevy_day is None or count == 0 or count < count_of(activities.totals.get("strength")):
+            continue
+        entry = {
+            "count": count,
+            "source": "hevy",
+            "sets": hevy_day.sets,
+            "volume_kg": round(hevy_day.volume_kg, 1),
+        }
+        out[day_text] = DayActivities(
+            {**activities.totals, "strength": entry},
+            activities.final and (cov.through - day).days >= strength.OVERLAP.days,
+        )
+    return out
+
+
 def _fetched_on(value: Any) -> date | None:
     try:
         return date.fromisoformat(value) if isinstance(value, str) else None
@@ -271,6 +306,7 @@ class _StrengthRun:
     def __init__(self) -> None:
         self.workouts = 0  # updated events applied
         self.deleted = 0  # delete events applied
+        self.skipped = 0  # events that could not be used (no valid id, unparsable start time, unknown type)
         self.templates = 0  # templates resolved (found or not found)
         self.failed = 0  # failed listings and failed template calls
 
@@ -363,9 +399,10 @@ class HistoryJob:
     # ------------------------------------------------------------------ run
 
     async def run_once(self) -> str:
-        """One collection run plus the reconcile step; returns its outcome word.
+        """One collection run, the Hevy part and the reconcile step; returns its outcome word.
 
-        Logs one line for the Garmin part and, with a strength source, one line for the Hevy part.
+        Logs one line for the Hevy part (with a strength source) and one for the Garmin part and the reconcile
+        step. The Hevy part runs before the reconcile step, so last night's workouts are used by the matching.
         """
         started = time.monotonic()
         run = _Run()
@@ -374,6 +411,16 @@ class HistoryJob:
         except _Stop as stop:
             outcome = stop.outcome  # the held errors of the run are dropped, not charged
         level = logging.WARNING if outcome in _WARNING_OUTCOMES else logging.INFO
+        strength_outcome: str | None = None
+        strength_crash: Exception | None = None
+        strength_seconds = 0.0
+        if self._strength is not None:
+            strength_started = time.monotonic()
+            try:
+                strength_outcome = await self._run_strength(run)  # logs its own line
+            except Exception as exc:  # BaseException (cancellation) propagates at once
+                strength_crash = exc
+            strength_seconds = time.monotonic() - strength_started
         # The step needs only the store, so it runs after every run, also after an early return or a stop.
         try:
             matched, no_activity = self._reconcile(self._today(self._now()))
@@ -389,12 +436,12 @@ class HistoryJob:
             run.failed,
             len(run.pending),
             run.given_up,
-            (time.monotonic() - started) * 1000,
+            (time.monotonic() - started - strength_seconds) * 1000,
             step,
         )
-        if self._strength is not None:
-            outcome = combined_outcome(outcome, await self._run_strength(run))
-        return outcome
+        if strength_crash is not None:
+            raise strength_crash  # after the reconcile step and the Garmin line: run() logs "crashed" and retries
+        return outcome if strength_outcome is None else combined_outcome(outcome, strength_outcome)
 
     def _reconcile(self, today: date) -> tuple[int, int]:
         """Store a suggestion for every planned session of the last RECONCILE_DAYS days; changes no status.
@@ -402,9 +449,14 @@ class HistoryJob:
         Returns (matched, no_activity).
         """
         first, last = today - timedelta(days=RECONCILE_DAYS), today - timedelta(days=1)
-        found = suggest(
-            self._store.sessions_between(first, last), day_activities(self._store.history_rows(first, last))
+        days = with_hevy_strength(
+            day_activities(self._store.history_rows(first, last)),
+            strength.day_totals(
+                self._store.strength_workout_rows(first, last), strength.Templates(self._store.hevy_templates())
+            ),
+            strength.coverage(self._store.hevy_sync_state()),
         )
+        found = suggest(self._store.sessions_between(first, last), days)
         self._store.upsert_suggestions(
             [
                 (
@@ -578,12 +630,13 @@ class HistoryJob:
             outcome = stop.outcome
         log.log(
             logging.WARNING if outcome in _WARNING_OUTCOMES else logging.INFO,
-            "history status=%s part=strength workouts=%d deleted=%d templates=%d failed=%d ms=%.0f",
+            "history status=%s part=strength workouts=%d deleted=%d templates=%d failed=%d skipped=%d ms=%.0f",
             outcome,
             srun.workouts,
             srun.deleted,
             srun.templates,
             srun.failed,
+            srun.skipped,
             (time.monotonic() - started) * 1000,
         )
         return outcome
@@ -635,6 +688,7 @@ class HistoryJob:
             self._store.apply_strength_events(batch.updates, batch.deletes)
             srun.workouts += len(batch.updates)
             srun.deleted += len(batch.deletes)
+            srun.skipped += batch.skipped
             if step == "complete":
                 return True
             if page >= strength.MAX_EVENT_PAGES:
