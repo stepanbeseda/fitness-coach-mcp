@@ -4,6 +4,11 @@ Tenký MCP server nad [python-garminconnect](https://github.com/cyberjunky/pytho
 s ~21 vybranými nástroji pro kouče. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp`
 v privátní Docker síti; ven se dostane jen přes gateway, která posílá interní bearer token
 (`/run/secrets/garmin_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed).
+Druhý, read-only token (`/run/secrets/garmin_readonly_token`) má `coach-mcp`. S ním server odpoví na
+`tools/list` i na každý čtecí nástroj, ale nástroj, který není označený jako čtecí (`readOnlyHint`), odmítne
+chybou dřív, než se spustí; nástroj bez označení se bere jako zapisovací. Když soubor chybí nebo je prázdný,
+server přijímá jen token gateway a při startu to zaloguje. Tokeny musí být různé: stejná hodnota v obou
+souborech platí jako read-only.
 
 Proč vlastní server: `AbhimanyuV04/garmin-mcp` nemá licenci ani MFA a používá login, který Garmin
 v březnu 2026 rozbil; `Taxuspt/garmin_mcp` má 153 nástrojů a je zaseknutý na garminconnect 0.3.2
@@ -66,6 +71,7 @@ scripts/garmin-login.sh --import /tmp/garmin_tokens.json && shred -u /tmp/garmin
 |---|---|---|
 | `GARMINTOKENS` | `/data/garmin` | adresář s tokeny |
 | `GARMIN_MCP_BEARER_TOKEN_FILE` | `/run/secrets/garmin_backend_token` | interní token od gateway (min. 16 znaků) |
+| `GARMIN_MCP_READONLY_TOKEN_FILE` | `/run/secrets/garmin_readonly_token` | read-only token pro `coach-mcp` (min. 16 znaků; bez něj je read-only přístup vypnutý) |
 | `TZ` | `Europe/Prague` | co znamená „dnes“; v compose se nastavuje přes `ATHLETE_TZ` v `.env` |
 | `GARMIN_KEEPALIVE_HOURS` | `6` | interval keepalive (0 = vypnuto) |
 | `GARMIN_API_SESSION` | `requests` | `curl_cffi` = obejití python-garminconnect #444 (HTTP 403 na datová volání) |

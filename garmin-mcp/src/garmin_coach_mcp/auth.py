@@ -1,4 +1,8 @@
-"""Shared-secret bearer check between the gateway and this backend (fail closed)."""
+"""Shared-secret bearer checks of this backend: the gateway (full access) and coach-mcp (read-only).
+
+Fail closed: without a usable gateway token every MCP request gets 503. coach-mcp keeps a
+single-token copy of this file (coach-mcp/src/coach_mcp/auth.py) for its own inbound check.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,11 @@ from pathlib import Path
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 log = logging.getLogger("garmin_coach_mcp.auth")
+
+# ASGI scope key with the role of the presented token, read by the tool-call guard (access.py).
+ROLE_KEY = "garmin_coach_mcp.role"
+ROLE_FULL = "full"
+ROLE_READ_ONLY = "read_only"
 
 
 class BackendToken:
@@ -37,12 +46,25 @@ class BackendToken:
 
 
 class BearerAuthMiddleware:
-    """Requires ``Authorization: Bearer <token>`` on every path under ``prefix``."""
+    """Requires ``Authorization: Bearer <token>`` on every path under ``prefix``.
 
-    def __init__(self, app: ASGIApp, token: BackendToken, prefix: str = "/mcp") -> None:
+    ``token`` is the gateway's (full access). ``readonly_token`` is optional: while its file is
+    missing or too short it is simply not accepted. The matching role goes into the scope under
+    ``ROLE_KEY``; a value equal to both tokens counts as read-only.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        token: BackendToken,
+        prefix: str = "/mcp",
+        *,
+        readonly_token: BackendToken | None = None,
+    ) -> None:
         self.app = app
         self.token = token
         self.prefix = prefix
+        self.readonly_token = readonly_token
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or not scope["path"].startswith(self.prefix):
@@ -55,10 +77,15 @@ class BearerAuthMiddleware:
             return
         header = next((v for k, v in scope["headers"] if k == b"authorization"), b"")
         scheme, _, presented = header.partition(b" ")
-        if scheme.lower() != b"bearer" or not hmac.compare_digest(presented.strip(), expected):
+        presented = presented.strip()
+        readonly = self.readonly_token.value() if self.readonly_token is not None else None
+        is_readonly = readonly is not None and hmac.compare_digest(presented, readonly)
+        is_full = hmac.compare_digest(presented, expected)
+        if scheme.lower() != b"bearer" or not (is_readonly or is_full):
             await _reject(send, 401, "unauthorized", www_authenticate=True)
             return
-        await self.app(scope, receive, send)
+        role = ROLE_READ_ONLY if is_readonly else ROLE_FULL
+        await self.app({**scope, ROLE_KEY: role}, receive, send)
 
 
 async def _reject(send: Send, status: int, message: str, *, www_authenticate: bool = False) -> None:

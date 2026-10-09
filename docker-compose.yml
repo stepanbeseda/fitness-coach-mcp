@@ -148,6 +148,7 @@ services:
       - /tmp:size=32m
     secrets:
       - garmin_backend_token
+      - garmin_readonly_token
     networks:
       - mcp
     mem_limit: 384m
@@ -183,7 +184,7 @@ services:
       - /tmp:size=16m
     secrets:
       - coach_backend_token
-      - garmin_backend_token
+      - garmin_readonly_token
       - telegram_bot_token
     networks:
       - mcp
@@ -219,6 +220,8 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/hevy_backend_token
   garmin_backend_token:
     file: ${SECRETS_DIR:-./secrets}/garmin_backend_token
+  garmin_readonly_token:
+    file: ${SECRETS_DIR:-./secrets}/garmin_readonly_token
   coach_backend_token:
     file: ${SECRETS_DIR:-./secrets}/coach_backend_token
   telegram_bot_token:

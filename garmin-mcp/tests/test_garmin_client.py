@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
@@ -84,6 +85,8 @@ def test_settings_from_env(tmp_path):
     assert s.tokens_dir == tmp_path and s.api_session == "curl_cffi"
     assert s.allowed_hosts == ["garmin-mcp:8000", "localhost:*"]
     assert s.port == 8000 and s.host == "0.0.0.0"
+    assert s.readonly_token_file == Path("/run/secrets/garmin_readonly_token")
+    assert Settings.from_env({"GARMIN_MCP_READONLY_TOKEN_FILE": "/tmp/ro"}).readonly_token_file == Path("/tmp/ro")
 
 
 @pytest.mark.anyio

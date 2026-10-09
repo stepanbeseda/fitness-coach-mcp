@@ -6,7 +6,7 @@
 #   scripts/setup-secrets.sh ts-authkey      set the Tailscale auth key (first start only)
 #   scripts/setup-secrets.sh password        change the gateway login password
 #   scripts/setup-secrets.sh totp            enrol a new TOTP authenticator
-#   scripts/setup-secrets.sh backend-tokens  rotate the gateway <-> backend secrets (hevy, garmin, coach)
+#   scripts/setup-secrets.sh backend-tokens  rotate the internal tokens (hevy, garmin, coach, garmin read-only)
 #   scripts/setup-secrets.sh telegram-token  set the Telegram bot token (morning briefing), show the chat id
 #   scripts/setup-secrets.sh telegram-chat-id  show the chat id of your chat with the bot again
 #   scripts/setup-secrets.sh fix-perms       re-apply ownership/permissions
@@ -141,6 +141,7 @@ cmd_backend_tokens() {
   new_backend_token hevy_backend_token
   new_backend_token garmin_backend_token
   new_backend_token coach_backend_token
+  new_backend_token garmin_readonly_token
   recreate hevy-mcp garmin-mcp coach-mcp gateway
 }
 
@@ -156,6 +157,17 @@ ensure_backend_tokens() {
   done
   if (( ${#created[@]} > 0 )); then
     recreate "${created[@]}" gateway
+  fi
+  return 0
+}
+
+# The coach's token for garmin-mcp, which refuses it every tool not annotated read-only. Created
+# only when missing or empty, and nothing is recreated: containers of an older version mount no
+# such secret, so the token takes effect with the deploy of garmin-mcp and coach-mcp.
+ensure_garmin_readonly_token() {
+  if ! has_secret garmin_readonly_token; then
+    new_backend_token garmin_readonly_token
+    info "Nový read-only token pro coach-mcp platí po nasazení: docker compose up -d --build garmin-mcp coach-mcp"
   fi
   return 0
 }
@@ -265,6 +277,7 @@ cmd_all() {
   require_env
   ensure_dir
   ensure_backend_tokens
+  ensure_garmin_readonly_token
   ensure_telegram_token
   has_secret ts_authkey || cmd_ts_authkey
   has_secret hevy_api_key || cmd_hevy_key

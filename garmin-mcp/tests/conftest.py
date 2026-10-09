@@ -16,6 +16,7 @@ from garmin_coach_mcp.garmin_client import TOKEN_FILE_NAME, GarminService
 from garmin_coach_mcp.server import create_app
 
 BACKEND_TOKEN = "test-backend-token-0123456789abcdef"
+READONLY_TOKEN = "test-readonly-token-0123456789abcdef"
 TOKENS = {"di_token": "a.b.c", "di_refresh_token": "r", "di_client_id": "cid"}
 
 
@@ -155,8 +156,21 @@ def bearer_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def settings(tokens_dir: Path, bearer_file: Path) -> Settings:
-    return Settings(tokens_dir=tokens_dir, bearer_token_file=bearer_file, keepalive_hours=0, timezone="Europe/Prague")
+def readonly_file(tmp_path: Path) -> Path:
+    f = tmp_path / "garmin_readonly_token"
+    f.write_text(READONLY_TOKEN + "\n", encoding="utf-8")
+    return f
+
+
+@pytest.fixture
+def settings(tokens_dir: Path, bearer_file: Path, readonly_file: Path) -> Settings:
+    return Settings(
+        tokens_dir=tokens_dir,
+        bearer_token_file=bearer_file,
+        readonly_token_file=readonly_file,
+        keepalive_hours=0,
+        timezone="Europe/Prague",
+    )
 
 
 @pytest.fixture

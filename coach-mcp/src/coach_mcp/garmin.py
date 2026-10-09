@@ -1,8 +1,8 @@
 """Read-only client for garmin-mcp: allowlisted read tools over MCP.
 
 The morning briefing calls ``BRIEFING_TOOLS``, the nightly history job ``HISTORY_TOOLS``. The
-coach uses the internal bearer token garmin-mcp already accepts from the gateway and can call
-nothing outside ``ALLOWED_TOOLS``; garmin-mcp's write tools are unreachable from here.
+coach authenticates with its own read-only token (garmin-mcp refuses it every tool not annotated
+read-only) and calls nothing outside ``ALLOWED_TOOLS``.
 Log lines carry outcome words, durations and exception class names only.
 """
 

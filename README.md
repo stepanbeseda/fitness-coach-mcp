@@ -55,7 +55,7 @@ gateway nemusí publikovat žádný port na hostu.
 | Přihlášení | `/authorize` (heslo argon2id + TOTP) jen z tvých zařízení v tailnetu (`Tailscale-User-Login` = `OWNER_TAILSCALE_LOGIN`, ne přes Funnel). Lockout s exponenciálním backoffem, ochrana proti znovupoužití TOTP kódu, CSRF cookie. |
 | OAuth | MCP auth spec 2025-11-25: PKCE S256 povinně, `resource` (RFC 8707), takže každý token platí jen pro jeden endpoint (Hevy token na Garminu nefunguje). `iss` (RFC 9207). Access token 1 h, refresh 90 dní, rotace s detekcí znovupoužití (s oknem 120 s na retry). Revokace (RFC 7009). |
 | Klienti | Žádná otevřená registrace (DCR). Povolení klienti jsou v `gateway/config.toml`: Claude (claude.ai, CIMD), Claude Code (CIMD) a `mcp-remote`. CIMD dokumenty jsou připnuté (žádný runtime fetch, žádné SSRF), `healthcheck.sh` hlídá změny. |
-| Backendy | Klientský token se nikdy nepřeposílá. Gateway posílá vlastní interní token pro každý backend (`secrets/*_backend_token`). Hevy nástroj `feedback` (posílá report autorovi) je zablokovaný. |
+| Backendy | Klientský token se nikdy nepřeposílá. Gateway posílá vlastní interní token pro každý backend (`secrets/*_backend_token`). `coach-mcp` čte `garmin-mcp` vlastním read-only tokenem (`secrets/garmin_readonly_token`): nástroj, který není označený jako čtecí (`create_workout`, `schedule_workout`, `unschedule_workout`, `log_weight`), mu `garmin-mcp` odmítne dřív, než se spustí. Hevy nástroj `feedback` (posílá report autorovi) je zablokovaný. |
 | Tokeny | Opaque 256 bit, v SQLite jen jejich SHA-256 hash. |
 | Kontejnery | Non-root (uid 10001), `read_only`, `cap_drop: ALL`, `no-new-privileges`, limity paměti a procesů, healthchecky, rotace logů. Image pinnuté `tag@sha256`, Python závislosti zamčené s hashi. |
 | Secrets | `secrets/` (0700, soubory 0640 se skupinou 10001), Docker secrets, nikdy v gitu, env ani logu. |
@@ -125,7 +125,7 @@ scripts/setup-secrets.sh
 
 Skript se zeptá (skrytý vstup) na auth key, Hevy API key (hned ho ověří proti Hevy API), heslo pro
 gateway a nastaví TOTP (QR kód v terminálu + ověření kódem). Interní tokeny mezi gateway a backendy
-vygeneruje sám.
+a read-only token, kterým `coach-mcp` čte `garmin-mcp`, vygeneruje sám.
 
 ### 5. Start
 
@@ -235,7 +235,7 @@ Konektory z claude.ai fungují v Desktopu samy. Pokud chceš spojení čistě p�
 | Odpojit klienta | `scripts/admin.sh grants revoke <id>` (nebo `--all`) |
 | Rotace Hevy klíče | vygeneruj nový v Hevy → `scripts/setup-secrets.sh hevy-key` (ověří a restartuje hevy-mcp) |
 | Změna hesla / nový TOTP | `scripts/setup-secrets.sh password` / `scripts/setup-secrets.sh totp` |
-| Rotace interních tokenů | `scripts/setup-secrets.sh backend-tokens` |
+| Rotace interních tokenů | `scripts/setup-secrets.sh backend-tokens` (včetně read-only tokenu `coach-mcp` pro `garmin-mcp`) |
 | Ranní briefing ručně | `docker compose exec coach-mcp python -m coach_mcp send-briefing` |
 | Noční historie (průběh) | `docker compose logs coach-mcp` (řádky `history status=…`) |
 | Záloha | `scripts/backup.sh` (pro cron: `--quiet`, exit 1 = archiv nevznikl) |
@@ -366,9 +366,16 @@ Nic se neaktualizuje samo. Postup:
 2. Uprav pin (`tailscale/Dockerfile`, `hevy-mcp/Dockerfile` včetně digestu, nebo `pyproject.toml`) a
    pro Python spusť `scripts/lock-deps.sh` (případně `--upgrade`).
 3. `scripts/e2e-test.sh` (build + testy + celý OAuth/MCP flow bez dopadu na provoz).
-4. `scripts/setup-secrets.sh`: doplní chybějící secrets nové verze (třeba prázdný `secrets/telegram_bot_token`); bez
-   nich se služba, která je čte, nespustí. U kompletní instalace nic nemění.
+4. `scripts/setup-secrets.sh`: doplní chybějící secrets nové verze (třeba `secrets/garmin_readonly_token` nebo
+   prázdný `secrets/telegram_bot_token`); bez nich se služba, která je čte, nespustí. U kompletní instalace nic
+   nemění.
 5. `docker compose up -d --build` → `scripts/smoke-test.sh` → commit.
+
+Read-only token Garminu (`secrets/garmin_readonly_token`): při přechodu na verzi, která ho zavádí, ho krok 4
+vytvoří a nic nerestartuje. Platit začne až v kroku 5 a `garmin-mcp` a `coach-mcp` se musí nasadit spolu
+(stačí `docker compose up -d --build garmin-mcp coach-mcp`): starší image `garmin-mcp` nový token nezná a
+starší image `coach-mcp` hledá token, který mu nový `docker-compose.yml` už nepřipojí. Druhé spuštění
+`setup-secrets.sh` už nic nemění.
 
 Digest pro nový tag: `docker buildx imagetools inspect <image:tag>` (řádek `Digest`).
 
@@ -486,6 +493,8 @@ načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.
 | `coach-mcp` unhealthy, v logu `database schema version N is newer` | Běží starší image než data: nasaď znovu novější verzi; volume `coach-data` nemaž. |
 | `scripts/backup.sh` končí `Záloha nevytvořena` | Řádky nad tím jmenují část: `is not running` (hláška Compose) = služba neběží (`docker compose ps`); `garmin_tokens.json: chybí` = `scripts/garmin-login.sh`; `database is larger than 32 MiB` / `stayed locked` = nahlas to (limit se zvedá v PR). Archiv nevznikl a starší zůstaly. |
 | `coach-mcp` se nespustí: `bind source path does not exist: …/secrets/telegram_bot_token` | Chybí soubor pro token bota (stačí prázdný) → `scripts/setup-secrets.sh` a `docker compose up -d coach-mcp`. |
+| `garmin-mcp` nebo `coach-mcp` se nespustí: `bind source path does not exist: …/secrets/garmin_readonly_token` | Chybí read-only token kouče → `scripts/setup-secrets.sh` a `docker compose up -d --build garmin-mcp coach-mcp`. |
+| Briefing ani historie nemají data z Garminu, v logu `garmin-mcp` je `read-only token file missing or too short` | Soubor `secrets/garmin_readonly_token` je prázdný → `scripts/setup-secrets.sh` ho doplní; běžící služby si nový token načtou samy. |
 | `coach-mcp` se pořád restartuje, v logu `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | V `.env` je chat id, ale token chybí nebo je poškozený → `scripts/setup-secrets.sh telegram-token`, nebo chat id z `.env` smaž (briefing vypnutý). |
 | `get_trends` / `get_weekly_report` nemají data | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect nebo internet nefungoval, další pokus za 1 až 8 h, dny se nezapočítají; `given_up` > 0 = dny, které třikrát selhaly, i když Garmin jiné dny vracel). |
 | Ranní notifikace nepřišla | `docker compose logs coach-mcp`: `skipped` = služba startovala až po cutoff; `gave_up` = Telegram zprávu odmítl (token, chat id, bot zablokovaný nebo mu ještě nikdo nenapsal) nebo neodpovídal; žádný řádek `briefing` = briefing vypnutý (`healthcheck.sh` to vypíše). |
