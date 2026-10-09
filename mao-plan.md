@@ -74,17 +74,17 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 03 | Coach memory server | — | done |
 | 04 | Morning briefing and alerts | 03 | done |
 | 05 | History store, trends and weekly report | 03 | done |
-| 06 | Weather and calendar | 03 | planned |
+| 06 | Weather and calendar | 03 | done |
 | 07 | Strength workouts on the watch | — | planned |
 | 08 | Daily briefing via Telegram | 04 | done |
-| 09 | Strength history and progress | 05 | planned |
+| 09 | Strength history and progress | 05 | done |
 | 10 | Separate e2e image tags and a configurable time zone | — | done |
-| 11 | Online and scheduled backups | 03 | planned |
-| 12 | Read-only Garmin token for the coach | 04 | planned |
-| 13 | Plan reconciliation | 05 | planned |
+| 11 | Online and scheduled backups | 03 | done |
+| 12 | Read-only Garmin token for the coach | 04 | done |
+| 13 | Plan reconciliation | 05 | done |
 | 14 | Goal progress and the Monday report | 05, 08 | planned |
-| 15 | Searchable coach memory | 03 | planned |
-| 16 | Correlations | 05 | planned |
+| 15 | Searchable coach memory | 03 | done |
+| 16 | Correlations | 05 | done |
 | 17 | Sync-aware briefing | 04 | planned |
 | 18 | History repair | 05 | planned |
 | 19 | More Garmin signals | — | planned |
@@ -544,6 +544,36 @@ any calendar integration inside this repo.
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 7).
 
+**Delivered:** 2026-10-09, PR #20 (`mao/pr06-weather-calendar`), squash-merged
+into `main` as `6fda3f4`. New `coach-mcp/src/coach_mcp/weather.py` and the
+read-only tool `get_weather_forecast` (Open-Meteo, 7 days): per day sunrise,
+sunset, a summary, hourly temperature, apparent temperature, precipitation
+probability and wind, and one best outdoor window; the location comes from
+the arguments or the home location and is rounded to two decimals before the
+request. Safety: 512 KiB response cap, 10 s per read and 20 s overall
+deadline, strict payload validation (years 1900-8999), an in-memory cache
+(30 min, 16 entries, failures never cached, a stale entry never served after
+a failure), short `ToolError` texts, logs without coordinates. New optional
+settings `COACH_HOME_LATITUDE` and `COACH_HOME_LONGITUDE` (both or neither,
+validated at start-up, never echoed); `e2e-test.sh` blanks them, `e2e_flow.py`
+gains `exercise_weather`, `smoke_test.py` prints a `počasí:` line. The
+calendar part is documentation only (Google Calendar connector of claude.ai,
+a section in `docs/coach-instructions.md`). `README.md`, `coach-mcp/README.md`
+and `.env.example` updated. No schema change, no new secret, no new
+dependency (`httpx2` was already direct). Criteria 1-6 met offline
+(`coach-mcp` test build: 987 passed after the rebase, `garmin-mcp` 186,
+`gateway` 80, `E2E OK`). Criterion 7 requires the test host: not deployed in
+this run; the owner sets the two variables (rounded to two decimals), deploys
+`coach-mcp`, runs `scripts/smoke-test.sh` and compares sunrise, sunset and
+temperatures with an Open-Meteo request for the same coordinates. Designer
+decisions: the variable names, two-decimal rounding, 30 min cache, one best
+window per day; the MCP SDK prefixes tool-error text over HTTP, so HTTP tests
+assert "contains" (spec check B1, decision D13). Review took two rounds, both
+APPROVED; the four non-blocking findings of round 1 (an `OverflowError` on
+absurd dates, no overall deadline, JSON `true` accepted as a latitude,
+cosmetics) were fixed in `73fa161` on the rebase. Open follow-ups in
+section 5 ("PR 06 weather").
+
 ### PR 07 — Strength workouts on the watch
 
 `create_workout` in `garmin-mcp/src/garmin_coach_mcp/workouts.py` supports
@@ -749,6 +779,46 @@ write to Hevy, a dashboard or any UI.
 
 **Requested:** 2026-10-07, by the owner, split from PR 05 (PR 05 questions and answers round 1).
 
+**Delivered:** 2026-10-09, PR #17 (`mao/pr09-strength-history`),
+squash-merged into `main` as `4cbf023`, rebased onto PR 11, 12 and 13.
+`coach_mcp/hevy.py` is a read-only client for `hevy-mcp` on the private
+network with the existing secret `hevy_backend_token` (now mounted into
+`coach-mcp`) and an allowlist of two tools (`get-workout-events`,
+`get-exercise-template`; any other name raises before a request); failures
+are soft with an outcome word. `strength.py` holds the workout summaries
+(warm-up sets excluded, a set counts for the primary muscle group), event
+parsing (edit, move, delete; a deletion is a terminal tombstone), Epley e1RM,
+the plateau flag and week totals; only summaries are stored. Schema
+migration 5 adds `strength_workouts`, `hevy_templates` and `hevy_sync`
+(additive; the spec said 4, PR 13 took it first). The nightly job gets a
+strength part after the Garmin part and before PR 13's reconcile step: events
+since a stored sync point with a 3-day overlap, a template cache, the same
+pacing as the Garmin calls (also between the last Garmin and the first Hevy
+call), the briefing-window pause and resume after a restart; a Hevy failure
+never changes what the Garmin part stores; the log line is
+`part=strength status=... workouts=... failed=... skipped=... ms=...`.
+`get_weekly_report` fills its strength section with new e1RM bests and the
+`strength_volume_up` flag (over 30 %); new read-only tool
+`get_strength_progress` (`plateau_weeks` 2-12, default 4); the coach has 11
+tools at this point. Integration with PR 13 (spec section 12, applied on the
+rebase): a Hevy workout of a covered day is evidence (`source: hevy`, `sets`,
+`volume_kg`) for a planned strength session, so a session logged only in Hevy
+stops showing `no_activity`. New settings `COACH_HEVY_MCP_URL` and
+`COACH_HEVY_TOKEN_FILE` have defaults; no `.env` change. Also
+`scripts/e2e_hevy_client.py` (against the real hevy-mcp image) and a strength
+line in `smoke_test.py`. Criteria 1-7 met offline (`coach-mcp` 841 passed,
+`garmin-mcp` 186, `gateway` 80, `E2E OK`; the 5 to 4 downgrade recipe was run
+on scratch volumes, chained before PR 13's 4 to 3). Criterion 8 requires the
+test host: not deployed in this run; the Hevy facts that offline tests cannot
+settle are listed in section 5 ("PR 09 strength history"). Deviations
+accepted: the weekly strength section has no `available` key when data exists
+(spec 4.6 over 6.7, a spec error in 6.7); test names differ from the spec
+list. Review took two rounds, both APPROVED: round 1 findings N1 (skipped
+events invisible) and N2 (an `OverflowError` on an extreme timestamp would
+crash the run every hour) were fixed in the rebase round; round 2 found
+model-facing texts that still said suggestions are Garmin-only (a spec
+error), fixed in `f08bc0c` before the merge.
+
 ### PR 10 — Separate e2e image tags and a configurable time zone
 
 `scripts/e2e-test.sh` builds its images under the live tags
@@ -818,6 +888,38 @@ where to put it), backing up `ts-state` (a new auth key recreates the node),
 
 **Requested:** 2026-10-09, by the owner, from the project review (item U1).
 
+**Delivered:** 2026-10-09, PR #14 (`mao/pr11-online-backups`),
+squash-merged into `main` as `f2f60df`. `python -m coach_mcp backup` and
+`restore` (an online SQLite backup of `coach.db` streamed to stdout, 32 MiB
+cap, 60 s busy deadline; restore validates before replacing, moves the
+previous files aside as `*.pred-obnovou-<UTC>[-journal|-wal|-shm]` and
+refuses a newer schema) and `backup-db` / `restore-db` in `gateway.cli` for
+`/data/gateway.sqlite3`. `scripts/backup.sh` writes one all-or-nothing archive
+`fitness-coach-backup-<UTC>Z.tgz` (mode 0600: `coach.db`, the gateway
+database, the Garmin token file), keeps the newest `BACKUP_KEEP` under
+`flock` and takes `--dir`, `--keep` and `--quiet`; `scripts/e2e_backup.sh`
+runs from `scripts/e2e-test.sh`. New settings `BACKUP_DIR` (no default,
+absolute, outside the repo) and `BACKUP_KEEP` (default 14), read by the
+script from `.env`; no schema, compose, secret or dependency change.
+`README.md` (Zálohy, a cron line next to the healthcheck line, a restore
+recipe per archive part, the way back, troubleshooting), `coach-mcp/README.md`
+and `.env.example` updated; the old stop-and-tar recipe is replaced, not kept.
+Criteria 1-5 met offline (`coach-mcp` 606 passed, `gateway` 80, `E2E OK` and
+`E2E backup OK`); criterion 3 by a restore run on scratch volumes, fresh and
+existing, verdict PASS (run file `PR-11-restore-run.md`). Criterion 6
+requires the test host: not deployed in this run. Designer decisions: three
+parts in one all-or-nothing archive; `audit.jsonl`, `ts-state` and `secrets/`
+are not backed up; archive names use UTC; the Garmin token restore keeps no
+side copy. Deviations accepted: the in-memory guard test uses 3.5x instead of
+3x (CPython `serialize()` alone peaks near 3.15x). Review took two rounds:
+round 1 CHANGES with a spec error (rotation by name could delete the archive
+just written when later-named archives exist, and still report success),
+fixed by Addendum A1 (the new archive is never a candidate, a warning names
+newer archives, success needs the file; the busy wait now covers the size
+probe); round 2 APPROVED, and its one new finding (the clean-up `find` needed
+`-mindepth 1`) was fixed in `68c1a1c`. Open follow-ups in section 5
+("PR 11 backups").
+
 ### PR 12 — Read-only Garmin token for the coach
 
 `coach-mcp` reads `garmin-mcp` with `garmin_backend_token`, the same token the
@@ -851,6 +953,34 @@ bearer token; see section 5), per-tool scopes in the gateway.
    deploy: the morning briefing and the nightly history still run.
 
 **Requested:** 2026-10-09, by the owner, from the project review (item U2).
+
+**Delivered:** 2026-10-09, PR #15 (`mao/pr12-garmin-readonly-token`),
+squash-merged into `main` as `782265d`. `garmin-mcp` accepts a second token
+(secret `garmin_readonly_token`, file path `GARMIN_MCP_READONLY_TOKEN_FILE`)
+next to the gateway token and records the role of the presented token in the
+ASGI scope; the new `access.py` adds `ReadOnlyGuard`, an SDK extension that
+intercepts every `tools/call` and, for the read-only role, refuses any tool
+not annotated read-only before it runs (`READ_ONLY_REFUSAL`, `isError`). A
+tool missing from the map and an unknown name count as writes, an unknown role
+fails closed, the gateway token keeps every tool. `docker-compose.yml` mounts
+`garmin_readonly_token` into `garmin-mcp` and `coach-mcp`; `coach-mcp` no
+longer mounts `garmin_backend_token` and its two config defaults point to the
+new file. `coach-mcp`'s inbound `auth.py` stays single-token (decision D7).
+`scripts/setup-secrets.sh` creates the token for new and existing installs
+(`ensure_garmin_readonly_token`, no service recreate, part of rotation and of
+the full run); the offline harness `scripts/test-setup-secrets.sh` (7 cases)
+runs from `e2e-test.sh`; `scripts/e2e_coach_garmin.py` checks the real coach
+container (mounts, history calls, a refused write probe). `README.md` and
+both service READMEs updated (security model, secrets, upgrade paragraph,
+troubleshooting). No schema change. Criteria 1-5 met offline (`garmin-mcp` 186
+passed with 35 new tests in `test_read_only.py`, `gateway` 80, `coach-mcp` 606,
+`SETUP-SECRETS OK`, `COACH-GARMIN OK`, `E2E OK`); the reviewer's probes (name
+variants, batch calls, spoofed headers, a double `Authorization` header, a
+runtime rewrite of the token file, protocol `2026-07-28`) were all refused.
+Criterion 6 requires the test host: not deployed in this run. Deviations:
+none. Review took one round, APPROVED with no blocking finding; N1-N3 are in
+section 5 ("PR 12 read-only token"). The Garmin part of the open item on
+full-access backend tokens is resolved by this PR; the Hevy part stays open.
 
 ### PR 13 — Plan reconciliation
 
@@ -887,6 +1017,41 @@ time of day, sessions older than seven days.
    agree with Garmin Connect.
 
 **Requested:** 2026-10-09, by the owner, from the project review (feature 1).
+
+**Delivered:** 2026-10-09, PR #16 (`mao/pr13-plan-reconciliation`),
+squash-merged into `main` as `a0a8118`, rebased onto PR 11 and 12. New pure
+module `coach_mcp/reconcile.py` (`suggest`): planned running, cycling,
+swimming and strength sessions of the last 7 days are compared with the
+stored Garmin day totals of the same day and sport and get `matched` with
+evidence or `no_activity`; mobility, other and non-planned sessions get
+nothing, a day whose activities were never fetched gets no suggestion, and
+several sessions of one sport share the day's count. `history.py` gains
+`activities_settled`, `day_activities` and `HistoryJob._reconcile`, which runs
+after every run (also with nothing pending, with Garmin not logged in and
+after a stopped run) and appends `matched=N no_activity=M` or
+`reconcile=error kind=<Class>` to the one log line; a failing step never
+changes the job's outcome or scheduling. Schema migration 4 rebuilds
+`alert_state` with all its rows so the CHECK accepts `missed_planned_session`
+and creates `session_suggestions` (upserted nightly, never deleted).
+`get_plan` and `get_coach_context` show `suggestion` on planned sessions only
+(a session the coach marked keeps its status and drops it);
+`get_coach_context` adds `to_confirm`. A new event alert
+`missed_planned_session` joins the morning briefing, de-duplicated by the day.
+No new tool, config value, secret or dependency; the server never changes a
+session status and stays read-only toward Garmin. `README.md`,
+`coach-mcp/README.md` (including a 4 to 3 downgrade recipe) and
+`docs/coach-instructions.md` updated. Criteria 1-5 met offline (`coach-mcp`
+664 passed after the rebase, `garmin-mcp` 186, `gateway` 80, `E2E OK`; the
+downgrade recipe was run on scratch volumes by the implementer and the
+reviewer, fresh volume included). Criterion 6 requires the test host: not
+deployed in this run; sessions older than 7 days at the first run never get a
+suggestion. Here strength sessions match only Garmin `strength_training`
+totals; PR 09 added Hevy evidence on its rebase. Designer decision 7: the
+morning alert reads the provisional suggestion of the 03:30 fetch (see
+section 5, "PR 13 plan reconciliation"). The spec check found a blocking name
+clash (`yesterday` in `alert_conditions`), fixed in the spec. Review took one
+round, APPROVED with no blocking finding and four non-blocking ones, two of
+them fixed on the rebase.
 
 ### PR 14 — Goal progress and the Monday report
 
@@ -956,6 +1121,28 @@ notes.
 
 **Requested:** 2026-10-09, by the owner, from the project review (feature 5).
 
+**Delivered:** 2026-10-09, PR #18 (`mao/pr15-searchable-memory`),
+squash-merged into `main` as `57b5854`, rebased after PR 09. Schema migration
+6 creates `notes_fts` (FTS5, external content, `unicode61 remove_diacritics
+2`), indexes the existing notes with a `rebuild` and keeps the index current
+with an `AFTER INSERT` trigger (notes are never deleted); the spec said 4 and
+was renumbered on the rebase. New read-only tools: `search_notes` (raw FTS5
+query syntax, optional date range and session, newest first, limit 20
+default and 50 maximum, `more` from a `limit + 1` probe), `list_goals` (every
+status) and `list_constraints` (active and resolved). A malformed query
+becomes a fixed `ToolError` without SQLite text (only `SQLITE_ERROR` is
+wrapped, a locked database stays a database error, raised `from None`).
+`INSTRUCTIONS`, `coach-mcp/README.md` (section Hledání v poznámkách and a
+6 to 5 downgrade recipe, run verbatim on scratch volumes including a fresh
+volume), `docs/coach-instructions.md` (search before asking again) and
+`README.md` updated. No config value, secret, compose, script or dependency
+change. All criteria met offline (`coach-mcp` 876 passed, `garmin-mcp` 186,
+`gateway` 80, `E2E OK`; about 21 reviewer mutations red); no criterion needs
+the test host. Deviations: none. Review took one round, APPROVED with no
+blocking finding; the misleading Czech sentence about declension and the
+untested `from None` were fixed on the rebase. Not verified: how the coach
+behaves with the real model in claude.ai (it needs a deploy).
+
 ### PR 16 — Correlations
 
 The history holds 90 days or more of daily values, enough to ask whether
@@ -980,6 +1167,34 @@ analysis, strength metrics before PR 09.
 4. The four-command check is green.
 
 **Requested:** 2026-10-09, by the owner, from the project review (feature 6).
+
+**Delivered:** 2026-10-09, PR #19 (`mao/pr16-correlations`), squash-merged
+into `main` as `85dcfb5`, rebased after PR 15. New `coach_mcp/correlations.py`
+and the read-only tool `get_correlations`: 2 to 6 metrics of the `get_trends`
+catalogue (46 names), a date range (default 90 days ending yesterday, at most
+731) and `lag_days` 0 to 3; for every pair Pearson and Spearman coefficients
+(stdlib `statistics.correlation`, average ranks for ties, 3 decimals) and
+`n_pairs`, plus a fixed "correlation is not a cause" caveat. Below 14 paired
+days the pair is `available: false, reason: too_few_pairs`, a series that does
+not change on the paired days is `reason: constant`; days without a value are
+skipped, never counted as zero. No schema change, config value, secret or
+dependency. `INSTRUCTIONS`, `coach-mcp/README.md`, `README.md` and
+`docs/coach-instructions.md` (how to word a correlation, Czech) updated;
+`scripts/e2e_flow.py` calls the tool on the empty store. All criteria met
+offline (`coach-mcp` 902 passed, `garmin-mcp` 186, `gateway` 80, `E2E OK`; 12
+own mutants and the reviewer's extra ones red; the reviewer recomputed the
+reference values independently); none needs the test host. Designer
+decisions: `lag_days = k` pairs the first listed metric on day d with the
+second on day d + k (both days inside the range); the minimum of 14 pairs is
+fixed and returned as `min_pairs`; the four Garmin-watch `strength_*` totals
+stay in the catalogue, Hevy strength metrics (volume, sets, e1RM) are not
+offered. Deviation accepted: section 5 had no "correlation analysis" item, so
+"replace" became removing the pointer "Correlation analysis is PR 16". Review
+took two rounds: round 1 CHANGES with one blocking finding (a partial spec
+error: the prescribed HTTP test used a lag and a range equal to the defaults,
+so a server that dropped `lag_days` and the dates stayed green; fixed with one
+more call, both mutants red) and four cosmetic items, all fixed; round 2
+APPROVED.
 
 ### PR 17 — Sync-aware briefing
 
@@ -1159,18 +1374,21 @@ from Telegram, media messages.
   rest_seconds, weight_kg)`; the bundled catalogue of the chapter can be this
   one. Whether Garmin accepts the uploaded payload and keeps the exercise
   names is still unverified, so the spike stays.
-- **The coach's backend tokens have full access.** `coach-mcp` reads
-  `garmin-mcp` with the gateway's own token (PR 12 adds a read-only one).
-  PR 09 mounts `hevy_backend_token` the same way, and `hevy-mcp` is an
-  upstream image with one bearer token, so a read-only Hevy role would need
-  a filtering proxy; until then only the code allowlist protects Hevy
-  writes.
+  Postponed by the owner on 2026-10-09 (no spike on the real Garmin
+  account); the row stays planned.
+- **The coach's backend tokens have full access.** Garmin part resolved by PR 12
+  (2026-10-09): `coach-mcp` reads `garmin-mcp` with the read-only token
+  `garmin_readonly_token`, and `garmin-mcp` refuses every tool not annotated
+  read-only for it. Hevy part open: PR 09 mounts `hevy_backend_token` into
+  `coach-mcp`, and `hevy-mcp` is an upstream image with one bearer token, so a
+  read-only Hevy role would need a filtering proxy; until then only the code
+  allowlist of two read tools in `hevy.py` protects Hevy writes.
 - **Cycling power target.** `garmin-mcp/README.md` notes that a custom power
   range is sent as `power.zone` with two target values and still needs a
   visual check in Garmin Connect.
 - **PR 05 history job, non-blocking review findings.** Recorded 2026-10-07
   (review round 2, owner's decision: ship PR 05); a follow-up candidate for
-  PR 09 or a later chapter. N5: a snapshot with one section in error is
+  PR 09 or a later chapter (PR 09 did not take them). N5: a snapshot with one section in error is
   stored as ok, so a transient error of one Garmin endpoint during the first
   backfill leaves that metric NULL for every backfill day older than three
   days for good (spec-accepted; a risk to PR 05 Done-when 8 on the test
@@ -1181,6 +1399,89 @@ from Telegram, media messages.
   (nothing is lost). N8: two guard branches have no failing test, the
   `isinstance(..., list)` check of the activities probe and `given_up`
   counted for activities (`history.py`).
+- **Parallel run of 2026-10-09 is merged but not deployed.** PR 06, 09, 11, 12,
+  13, 15 and 16 were squash-merged on 2026-10-09 with no live deploy; the live
+  stack still runs the pre-run images, and PR 07 was left out. Deploy order
+  matters. (1) Back up `coach-data` and the gateway volume first, in the old way
+  (PR 11 replaced the README recipe, and the new backup commands exist only in
+  the new images). (2) `git pull`, then `scripts/setup-secrets.sh` before any
+  `docker compose up`: PR 12 mounts `garmin_readonly_token`, and `up` without it
+  fails on a missing bind source (the old containers keep running). Run no
+  `backend-tokens` or `telegram-token` rotation between the pull and the deploy
+  (PR 12 N2). (3) Compare the running image IDs with the tags, then deploy
+  `garmin-mcp`, `coach-mcp` and `gateway` together with `docker compose up -d
+  --build`; `coach-mcp` migrates its database from schema 3 to 6 in one start
+  (13, then 09, then 15). Add `BACKUP_DIR` (PR 11) and the optional
+  `COACH_HOME_LATITUDE` / `COACH_HOME_LONGITUDE` (PR 06) to `.env` with an
+  editor. Criteria that still need the test host: PR 06 #7, PR 09 #8, PR 11 #6,
+  PR 12 #6, PR 13 #6; the owner steps are in the PR bodies.
+- **PR 06 weather.** The CC BY 4.0 attribution sentence in the READMEs comes
+  from the designer's knowledge of Open-Meteo's terms; confirm it on
+  open-meteo.com. Open-Meteo's behaviour on DST transition days has not been
+  observed (the code tolerates repeated and missing local hours in canned
+  payloads).
+- **PR 09 strength history, follow-ups.** (a) A strength `no_activity`
+  suggestion can be marked `final` while a late Hevy edit can still change it:
+  the Garmin side is final from D+3, a Hevy day is re-read until D+4 at the
+  earliest and for as long as Hevy fails; the suggestions of the last 7 days are
+  re-evaluated every night, so nothing is lost, but `final` is per day, not per
+  sport (a design change). (b) `get_strength_progress` and the weekly "new best"
+  read every stored row in the range, not only the synced coverage; the result
+  carries `coverage`. (c) The e2e Hevy step cannot tell rejected arguments from
+  an unreachable Hevy API; validating the call arguments against each tool's
+  `input_schema` would close it. (d) A Hevy `rate_limited` or `service_error`
+  doubles the backoff shared with the Garmin part; at 8 h the next run may land
+  in the briefing window and wait for the cutoff (Garmin data is delayed, never
+  given up).
+- **PR 09 Hevy facts unverified offline.** To be settled by the live run
+  (criterion 8): what `since` of `get-workout-events` filters on (event or
+  workout time), whether it is inclusive and which format it accepts; event
+  order across pages while data changes and whether a re-edited workout gives
+  one event or several; the real format of `start_time` and `updated_at`
+  (anything but ISO with `Z` or an offset is skipped and shows in `skipped=`);
+  Hevy's rate limit for the 90-day backfill; that `get-exercise-template`
+  returns `null` for an unknown or deleted custom template; that real account
+  data passes the MCP client's output-schema validation (a mismatch would show
+  as `unreachable` on every run; the Garmin part is unaffected).
+- **PR 11 backups, accepted points.** The in-memory guard allows 3.5x the
+  database size; `backup` and `backup-db` open the live file read-write, so
+  SQLite may drop stale sidecars on open (do not run `backup` on a volume right
+  before a restore if its sidecars matter); archive names use UTC (a 02:47 cron
+  run is named `...T004700Z` in summer); side copies `*.pred-obnovou-*` stay in
+  a volume until the owner deletes them with the README command; `audit.jsonl`,
+  `ts-state` and `secrets/` are not backed up and off-site copies stay the
+  owner's job; the README "Struktura repa" line is 120 characters. PR 20 can
+  read the newest archive's name as the freshness signal of the backup.
+- **PR 12 read-only token, non-blocking findings.** N1: a missing read-only
+  token is signalled only by a start-up WARNING in `garmin-mcp`; `/healthz` and
+  `scripts/healthcheck.sh` do not report it and an emptied file at runtime logs
+  nothing (a `readonly_token` field in the garmin `/healthz` would close it).
+  N2: `setup-secrets.sh backend-tokens` or `telegram-token` run between `git
+  pull` and the deploy recreates the old `coach-mcp` image under the new compose
+  file without a Garmin token mount, so briefing and history report
+  `credentials_missing` until the deploy (no connector goes down). N3:
+  `scripts/e2e_coach_garmin.py` is mode 0644 while the other `scripts/*.py` are
+  0755 (cosmetic).
+- **PR 13 plan reconciliation.** (a) The morning alert `missed_planned_session`
+  reads the provisional suggestion of the 03:30 fetch of the day before; if the
+  watch syncs later, the line can name a session that was in fact done, and the
+  next night corrects the stored suggestion after the push is sent (a follow-up
+  could fire only on `final` suggestions or label the provisional state, if it
+  turns out noisy; PR 17 on sync-aware briefing is the natural place). (b) The
+  real Garmin type keys of the athlete's activities (for example whether indoor
+  strength is `strength_training`) were checked only with canned payloads;
+  criterion 6 on the test host covers it. (c) `final` ignores
+  `COACH_HISTORY_BACKFILL_DAYS` values below 7. (d) The migration CHECK line in
+  `store.py` is longer than 120 characters (spec-prescribed).
+- **PR 15 searchable memory, informational.** A query that starts with `*`
+  followed by a word goes to the FTS5 special-query path (an empty result or the
+  fixed error); `SQLITE_ERROR` is also the code of `no such table: notes_fts`,
+  so a hand-edited database would report a syntax problem (not reachable in
+  normal operation). How the coach uses `search_notes` with the real model in
+  claude.ai is unverified.
+- **PR 16 correlations.** Hevy strength metrics (volume, sets, e1RM) are not in
+  the `get_trends` catalogue, so `get_correlations` cannot pair them; a later
+  chapter can add them if the owner wants strength against recovery.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between
