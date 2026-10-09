@@ -134,21 +134,31 @@ def _instant(value: Any) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value)
-    except ValueError:
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+    except (OverflowError, ValueError):
         return None
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
 def workout_day(start_time: Any, zone: ZoneInfo) -> date | None:
     """Local date of a Hevy ``start_time`` (ISO text; a time without offset counts as UTC); None if unparsable."""
     instant = _instant(start_time)
-    return None if instant is None else instant.astimezone(zone).date()
+    if instant is None:
+        return None
+    try:
+        return instant.astimezone(zone).date()
+    except (OverflowError, ValueError):  # an offset at the edge of the calendar: one bad event is a skip
+        return None
 
 
 def updated_key(value: Any) -> str | None:
     """A fixed-width UTC text of an ``updated_at`` (text order = time order); None when unparsable."""
     instant = _instant(value)
-    return None if instant is None else instant.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    if instant is None:
+        return None
+    try:
+        return instant.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    except (OverflowError, ValueError):
+        return None
 
 
 @dataclass

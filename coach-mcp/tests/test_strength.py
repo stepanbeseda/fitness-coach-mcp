@@ -159,6 +159,32 @@ def test_workout_day_in_the_athletes_zone():
     assert workout_day(20261005, PRAGUE) is None
 
 
+EXTREME = ["9999-12-31T23:00:00-05:00", "0001-01-01T00:30:00+01:00", "9999-12-31T23:59:59", "0001-01-01T00:00:00+14:00"]
+
+
+@pytest.mark.parametrize("text", EXTREME)
+def test_extreme_timestamps_are_unusable_not_a_crash(text):
+    # Converting them to another zone leaves the calendar (OverflowError): a skip, never an exception.
+    assert workout_day(text, PRAGUE) is None
+    if text != "9999-12-31T23:59:59":  # (valid in UTC, only the local day overflows)
+        assert updated_key(text) is None
+
+
+def test_an_extreme_start_time_skips_only_that_event():
+    events = [
+        wk("W1", "2026-10-05T10:00:00Z"),
+        wk("EDGE", "9999-12-31T23:00:00-05:00"),
+        wk("W2", "2026-10-06T10:00:00Z"),
+    ]
+    batch = parse_events(events, PRAGUE)
+    assert list(batch.updates) == ["W1", "W2"] and batch.skipped == 1
+
+
+def test_an_extreme_updated_at_keeps_the_workout_without_a_key():
+    batch = parse_events([wk("W1", "2026-10-05T10:00:00Z", "9999-12-31T23:00:00-05:00")], PRAGUE)
+    assert batch.skipped == 0 and batch.updates["W1"][1] is None and batch.updates["W1"][0] == date(2026, 10, 5)
+
+
 def test_updated_key_is_fixed_width_utc():
     assert updated_key("2026-10-05T10:00:00+02:00") == "2026-10-05T08:00:00.000000Z"
     assert updated_key("2026-10-05T08:00:00.5Z") == "2026-10-05T08:00:00.500000Z"
