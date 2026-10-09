@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
+from .reconcile import RECONCILE_DAYS
 from .store import Store
 
 _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -143,8 +144,20 @@ def note_out(row: dict[str, Any]) -> dict[str, Any]:
     return _compact({"id": row["id"], "date": row["date"], "text": row["text"], "session_id": row["session_id"]})
 
 
+def suggestion_out(row: dict[str, Any]) -> dict[str, Any]:
+    return _compact(
+        {
+            "result": row["result"],
+            "final": bool(row["final"]),
+            "evidence": json.loads(row["evidence"]) if row["evidence"] is not None else None,
+            "evaluated_on": row["evaluated_on"],
+        }
+    )
+
+
 def sessions_out(store: Store, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     moved = store.moved_to([r["id"] for r in rows if r["status"] == "moved"])
+    suggested = store.suggestions_for([r["id"] for r in rows if r["status"] == "planned"])
     out = []
     for r in rows:
         link = moved.get(r["id"]) if r["status"] == "moved" else None
@@ -164,6 +177,11 @@ def sessions_out(store: Store, rows: list[dict[str, Any]]) -> list[dict[str, Any
                     "hevy_routine_id": r["hevy_routine_id"],
                     "moved_from_id": r["moved_from_id"],
                     "moved_to": {"id": link[0], "date": link[1]} if link else None,
+                    "suggestion": (
+                        suggestion_out(suggested[r["id"]])
+                        if r["status"] == "planned" and r["id"] in suggested
+                        else None
+                    ),
                 }
             )
         )
@@ -197,6 +215,14 @@ def get_coach_context(store: Store, today: dt.date) -> dict[str, Any]:
         "goals": [goal_out(g, today) for g in store.list_goals("active")],
         "constraints": [constraint_out(c) for c in store.list_constraints("active")],
         "sessions": sessions_out(store, store.sessions_between(start, end)),
+        "to_confirm": [
+            s
+            for s in sessions_out(
+                store,
+                store.sessions_between(today - dt.timedelta(days=RECONCILE_DAYS), today - dt.timedelta(days=1)),
+            )
+            if "suggestion" in s
+        ],
         "notes": [note_out(n) for n in store.latest_notes(LATEST_NOTES)],
     }
 

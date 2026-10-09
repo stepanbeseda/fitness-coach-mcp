@@ -35,8 +35,9 @@ def test_empty_file_gets_schema_and_version(db_path):
         "briefing_runs",
         "alert_state",
         "history_days",
+        "session_suggestions",
     } <= _tables(db_path)
-    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == 3
+    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == 4
     assert s.check() == SCHEMA_VERSION
 
 
@@ -194,7 +195,7 @@ def test_record_briefing_sent_and_alert_state_upsert(store):
     # The failed call rolled back as a whole.
     assert store.alert_states() == states
 
-    # Every alert key the code knows is accepted by the CHECK in migration 2.
+    # Every alert key the code knows is accepted by the CHECK (rebuilt in migration 4).
     store.record_briefing_sent(date(2026, 10, 10), "green", {key: (True, True) for key in ALERT_KEYS})
     assert set(store.alert_states()) == set(ALERT_KEYS)
 
@@ -239,7 +240,7 @@ def test_migration_3_upgrades_a_version_2_file_with_data(db_path, monkeypatch):
         assert _user_version(db_path) == 2
         assert "history_days" not in _tables(db_path)
     new = Store(db_path)
-    assert _user_version(db_path) == 3 == SCHEMA_VERSION
+    assert _user_version(db_path) == SCHEMA_VERSION
     goal = new.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Keep me"
     session = new.get_session(session_id)
@@ -268,7 +269,7 @@ def test_migration_3_upgrades_a_version_1_file_with_data(db_path, monkeypatch):
         assert _user_version(db_path) == 1
         assert not {"briefing_runs", "alert_state", "history_days"} & _tables(db_path)
     new = Store(db_path)
-    assert _user_version(db_path) == 3 == SCHEMA_VERSION
+    assert _user_version(db_path) == SCHEMA_VERSION
     assert {"briefing_runs", "alert_state", "history_days"} <= _tables(db_path)
     goal = new.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Keep me"
@@ -285,10 +286,14 @@ DOWNGRADE_3_SQL = "BEGIN IMMEDIATE; DROP TABLE history_days; PRAGMA user_version
 
 
 def test_downgrade_3_sql_returns_to_a_version_2_file(db_path, monkeypatch):
-    new = Store(db_path)
-    goal_id = new.insert_goal({"title": "Keep me"})
-    new.upsert_history_recovery(date(2026, 10, 6), {"readiness": 70}, date(2026, 10, 7))
-    assert len(new.history_rows(None, date(2026, 10, 7))) == 1
+    # It is a 3 -> 2 recipe: the file is built at version 3 (a version 4 file must first go 4 -> 3).
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:3])
+        new = Store(db_path)
+        goal_id = new.insert_goal({"title": "Keep me"})
+        new.upsert_history_recovery(date(2026, 10, 6), {"readiness": 70}, date(2026, 10, 7))
+        assert len(new.history_rows(None, date(2026, 10, 7))) == 1
+        assert _user_version(db_path) == 3
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(DOWNGRADE_3_SQL)
@@ -300,6 +305,152 @@ def test_downgrade_3_sql_returns_to_a_version_2_file(db_path, monkeypatch):
     old = Store(db_path)
     goal = old.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Keep me"
+
+
+def _one_session(store, day=date(2026, 10, 6)):
+    (session_id,) = store.replace_planned(
+        date(2026, 10, 5),
+        date(2026, 10, 11),
+        date(2026, 10, 5),
+        [{"date": day, "type": "running", "description": "Easy run"}],
+    )[1]
+    return session_id
+
+
+def test_migration_4_upgrades_a_version_3_file_with_data(db_path, monkeypatch):
+    old_keys = ("hrv_below_baseline", "resting_hr_elevated", "acwr_out_of_range", "missed_workout", "garmin_auth")
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:3])
+        old = Store(db_path)
+        goal_id = old.insert_goal({"title": "Keep me"})
+        session_id = _one_session(old)
+        old.upsert_history_recovery(date(2026, 10, 5), {"readiness": 70}, date(2026, 10, 6))
+        old.record_briefing_sent(
+            date(2026, 10, 7), "yellow", {key: (i % 2 == 0, i % 3 == 0) for i, key in enumerate(old_keys)}
+        )
+        before = old.alert_states()
+        assert set(before) == set(old_keys)
+        assert any(row["fired_on"] for row in before.values()) and any(not row["fired_on"] for row in before.values())
+        assert _user_version(db_path) == 3
+        assert "session_suggestions" not in _tables(db_path)
+    new = Store(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION
+    assert new.alert_states() == before
+    goal = new.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    session = new.get_session(session_id)
+    assert session is not None and session["description"] == "Easy run"
+    assert len(new.history_rows(None, date(2030, 1, 1))) == 1
+    assert "session_suggestions" in _tables(db_path)
+    assert new.suggestions_for([session_id]) == {}
+    new.record_briefing_sent(date(2026, 10, 8), "green", {"missed_planned_session": (True, True)})
+    assert new.alert_states()["missed_planned_session"] == {
+        "value": 1,
+        "evaluated_on": "2026-10-08",
+        "fired_on": "2026-10-08",
+    }
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO alert_state (key, value, evaluated_on) VALUES ('bogus', 1, 'a')")
+    finally:
+        conn.close()
+
+
+# Keep in sync with the 4 -> 3 downgrade command in coach-mcp/README.md.
+DOWNGRADE_4_SQL = "BEGIN IMMEDIATE; DROP TABLE session_suggestions; PRAGMA user_version = 3; COMMIT;"
+
+
+def test_downgrade_4_sql_returns_to_a_version_3_file(db_path, monkeypatch):
+    new = Store(db_path)
+    goal_id = new.insert_goal({"title": "Keep me"})
+    session_id = _one_session(new)
+    new.upsert_suggestions([(session_id, "no_activity", False, None)], date(2026, 10, 7))
+    new.record_briefing_sent(
+        date(2026, 10, 7), "green", {"garmin_auth": (False, False), "missed_planned_session": (True, True)}
+    )
+    assert _user_version(db_path) == 4
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_4_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == 3
+    assert "session_suggestions" not in _tables(db_path)
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:3])
+        old = Store(db_path)
+        goal = old.get_goal(goal_id)
+        assert goal is not None and goal["title"] == "Keep me"
+        assert set(old.alert_states()) == {"garmin_auth", "missed_planned_session"}  # the old code ignores the new key
+    again = Store(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION == 4
+    assert set(again.alert_states()) == {"garmin_auth", "missed_planned_session"}
+    assert again.alert_states()["missed_planned_session"]["value"] == 1
+    assert "session_suggestions" in _tables(db_path)
+    assert again.suggestions_for([session_id]) == {}
+
+
+def test_suggestion_checks_in_schema(store, db_path):
+    session_id = _one_session(store)
+    cols = "(session_id, result, final, evidence, evaluated_on, updated_at)"
+    ok_evidence = '{"count":1}'
+    bad = [
+        f"INSERT INTO session_suggestions {cols} VALUES ({session_id}, 'done', 0, NULL, 'a', 'a')",
+        f"INSERT INTO session_suggestions {cols} VALUES ({session_id}, 'matched', 0, NULL, 'a', 'a')",
+        f"INSERT INTO session_suggestions {cols} VALUES ({session_id}, 'no_activity', 0, '{ok_evidence}', 'a', 'a')",
+        f"INSERT INTO session_suggestions {cols} VALUES ({session_id}, 'matched', 0, '{{not json', 'a', 'a')",
+        f"INSERT INTO session_suggestions {cols} VALUES ({session_id}, 'matched', 0, "
+        f"'{{\"x\":\"{'y' * 3000}\"}}', 'a', 'a')",
+        f"INSERT INTO session_suggestions {cols} VALUES ({session_id}, 'matched', 2, '{ok_evidence}', 'a', 'a')",
+    ]
+    for sql in bad:
+        conn = sqlite3.connect(db_path)
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(sql)
+        finally:
+            conn.close()
+    # The foreign key: a fresh connection whose first statement switches the PRAGMA on.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(f"INSERT INTO session_suggestions {cols} VALUES (999, 'matched', 0, '{ok_evidence}', 'a', 'a')")
+    finally:
+        conn.close()
+    assert store.suggestions_for([session_id]) == {}
+    # The valid shapes are accepted.
+    store.upsert_suggestions([(session_id, "matched", True, ok_evidence)], date(2026, 10, 7))
+    assert store.suggestions_for([session_id])[session_id]["result"] == "matched"
+
+
+def test_upsert_suggestions_and_suggestions_for(store):
+    first, second = _one_session(store), _one_session(store, date(2026, 10, 5))
+    evidence = '{"count":1,"sport":"running"}'
+    store.upsert_suggestions([(first, "matched", False, evidence), (second, "no_activity", True, None)], D3)
+    got = store.suggestions_for([first, second, 999])
+    assert got == {
+        first: {"session_id": first, "result": "matched", "final": 0, "evidence": evidence, "evaluated_on": "2026-10-07"},
+        second: {"session_id": second, "result": "no_activity", "final": 1, "evidence": None, "evaluated_on": "2026-10-07"},
+    }
+    store.upsert_suggestions([(first, "no_activity", True, None)], date(2026, 10, 8))
+    got = store.suggestions_for([first, second])
+    assert got[first] == {
+        "session_id": first,
+        "result": "no_activity",
+        "final": 1,
+        "evidence": None,
+        "evaluated_on": "2026-10-08",
+    }
+    assert got[second]["evaluated_on"] == "2026-10-07"
+    conn = sqlite3.connect(store.path)
+    try:
+        assert conn.execute("SELECT count(*) FROM session_suggestions").fetchone()[0] == 2
+    finally:
+        conn.close()
+    assert store.suggestions_for([]) == {}
+    assert store.suggestions_for([999]) == {}
 
 
 D1, D2, D3 = date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7)

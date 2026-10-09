@@ -50,7 +50,11 @@ INSTRUCTIONS = (
     "data; still read fresh Garmin data before planning. "
     "get_trends returns the stored daily Garmin history (collected nightly) aggregated by day, week or month: "
     "use it for anything older than 28 days. get_weekly_report compares one ISO week with the previous four: "
-    "use it for weekly reviews. Strength history from Hevy is not stored yet."
+    "use it for weekly reviews. Strength history from Hevy is not stored yet. "
+    "Past planned sessions carry a suggestion from the stored Garmin activities (matched with the day's totals "
+    "of that sport, or no_activity; final false while a late watch sync can still change it); "
+    "get_coach_context lists those of the last 7 days in to_confirm. A suggestion never changes a status: "
+    "check it with the athlete and confirm it with update_session."
 )
 
 GoalStatus = Literal["active", "achieved", "abandoned"]
@@ -166,7 +170,8 @@ def build_server(
     async def get_coach_context() -> Any:
         """Everything the coach should remember, in one call: active goals with days remaining, active
         constraints (injuries, limitations, availability, equipment), this week's planned and completed
-        sessions and the latest 10 notes. Call it first in every planning conversation."""
+        sessions, the planned sessions of the last 7 days that carry a suggestion (to_confirm) and the
+        latest 10 notes. Call it first in every planning conversation."""
         return tools.get_coach_context(store, today())
 
     @tool("get_plan", _read("Training plan"))
@@ -177,7 +182,9 @@ def build_server(
     ) -> Any:
         """Planned sessions in a date range (default: this ISO week, max 92 days) with an adherence
         summary: planned, done, skipped and moved counts, overdue planned sessions and the completion rate
-        done / (done + skipped). Superseded sessions are hidden unless include_superseded is true."""
+        done / (done + skipped). Superseded sessions are hidden unless include_superseded is true. Past planned
+        sessions carry a suggestion (matched or no_activity, from the nightly Garmin history); confirm it with
+        update_session."""
         return tools.get_plan(
             store, today(), start_date=start_date, end_date=end_date, include_superseded=include_superseded
         )
@@ -261,8 +268,9 @@ def build_server(
         data: a green / yellow / red verdict from deterministic rules (readiness, last night's HRV vs.
         baseline, sleep, Body Battery at wake), the numbers behind it, what is missing, today's planned
         sessions and the alerts (HRV below baseline 3+ nights, resting HR 5+ bpm above its 7-day average,
-        load ratio outside Garmin's optimal range, yesterday's scheduled workout not completed, Garmin
-        login). Reads Garmin through garmin-mcp; changes nothing."""
+        load ratio outside Garmin's optimal range, yesterday's scheduled workout not completed,
+        yesterday's planned session without a recorded activity, Garmin login). Reads Garmin through
+        garmin-mcp; changes nothing."""
         return (await compose_briefing(store, garmin, today())).payload
 
     @tool("get_trends", _read("Trends"))

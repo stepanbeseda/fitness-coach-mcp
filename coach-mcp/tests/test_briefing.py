@@ -216,8 +216,23 @@ def test_nights_below_baseline_missing_baseline_ends_the_streak():
 
 
 def conditions(**overrides: Any) -> dict[str, bool | None]:
+    yesterday_sessions = overrides.pop("yesterday_sessions", ())
     data = garmin_data(**overrides)
-    return alert_conditions(DAY, data, nights_below_baseline(data.hrv_trend, DAY))
+    return alert_conditions(DAY, data, nights_below_baseline(data.hrv_trend, DAY), yesterday_sessions)
+
+
+def ys(type_="running", status="planned", result=None, description="Intervaly 6×800 m", id_=1) -> dict[str, Any]:
+    """A ``sessions_out``-like dict dated yesterday, with a suggestion when ``result`` is given."""
+    out: dict[str, Any] = {
+        "id": id_,
+        "date": YESTERDAY,
+        "type": type_,
+        "description": description,
+        "status": status,
+    }
+    if result is not None:
+        out["suggestion"] = {"result": result, "final": False, "evaluated_on": "2026-10-07"}
+    return out
 
 
 ALERT_CASES = [
@@ -281,6 +296,22 @@ ALERT_CASES = [
     ),
     ("missed_workout", {"scheduled": None}, None),
     ("missed_workout", {"scheduled": {"count": 0}}, None),
+    # missed_planned_session: yesterday's planned running / cycling / swimming / strength sessions
+    ("missed_planned_session", {"yesterday_sessions": [ys(result="no_activity")]}, True),
+    (
+        "missed_planned_session",
+        {"yesterday_sessions": [ys(result="matched"), ys("strength", result="no_activity", id_=2)]},
+        True,
+    ),
+    ("missed_planned_session", {"yesterday_sessions": []}, False),
+    ("missed_planned_session", {}, False),
+    ("missed_planned_session", {"yesterday_sessions": [ys(result="matched")]}, False),
+    ("missed_planned_session", {"yesterday_sessions": [ys("mobility")]}, False),  # type filter
+    ("missed_planned_session", {"yesterday_sessions": [ys(status="done", result="no_activity")]}, False),
+    ("missed_planned_session", {"yesterday_sessions": [ys()]}, None),
+    ("missed_planned_session", {"yesterday_sessions": [ys(result="matched"), ys("cycling", id_=2)]}, None),
+    # Garmin's calendar unknown does not make this condition unknown (it reads the store)
+    ("missed_planned_session", {"scheduled": None, "yesterday_sessions": [ys(result="no_activity")]}, True),
     # garmin_auth
     ("garmin_auth", {"auth": "missing"}, True),
     ("garmin_auth", {"auth": "error"}, True),
@@ -371,6 +402,30 @@ YELLOW_ROWS = {
 }
 
 
+def test_missed_planned_session_on_consecutive_days_is_reported_each_day():
+    rows = {"missed_planned_session": {"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}}
+    b = build_briefing(DAY, garmin_data(), [], rows, yesterday_sessions=[ys(result="no_activity")])
+    alert = next(a for a in b.payload["alerts"] if a["key"] == "missed_planned_session")
+    assert alert == {"key": "missed_planned_session", "holds": True, "new": True}
+    assert "- Včera v plánu bez aktivity v Garminu: běh – Intervaly 6×800 m." in b.message.body.splitlines()
+
+
+def test_render_missed_planned_session_text_exact():
+    sched = scheduled([{"date": YESTERDAY, "name": "Tempo", "completed": False}])
+    sessions = [
+        ys(result="no_activity"),
+        ys("strength", result="no_activity", description="Celé tělo", id_=2),
+        ys("cycling", result="matched", id_=3),
+    ]
+    b = build_briefing(DAY, garmin_data(scheduled=sched), [], {}, yesterday_sessions=sessions)
+    tail = b.message.body.split("Upozornění:\n")[1].splitlines()
+    assert tail == [
+        "- Včera naplánovaný trénink nebyl splněn: Tempo.",
+        "- Včera v plánu bez aktivity v Garminu: běh – Intervaly 6×800 m; síla – Celé tělo.",
+    ]
+    assert "\u26a0\ufe0f" in b.message.title
+
+
 def test_render_green_exact():
     b = build_briefing(DAY, garmin_data(), [GREEN_SESSION], {})
     assert b.verdict == "green"
@@ -408,6 +463,7 @@ def test_render_yellow_with_missing_and_alerts_exact():
             {"key": "resting_hr_elevated", "holds": True, "new": True},
             {"key": "acwr_out_of_range", "holds": True, "new": False},
             {"key": "missed_workout", "holds": True, "new": True},
+            {"key": "missed_planned_session", "holds": False, "new": False},
             {"key": "garmin_auth", "holds": False, "new": False},
         ],
         "garmin": {
@@ -421,6 +477,7 @@ def test_render_yellow_with_missing_and_alerts_exact():
         "resting_hr_elevated": (True, True),
         "acwr_out_of_range": (True, False),
         "missed_workout": (True, True),
+        "missed_planned_session": (False, False),
         "garmin_auth": (False, False),
     }
 
@@ -697,8 +754,9 @@ def test_build_briefing_payload_shape():
     # all conditions known and false: updates carry every key with (False, False)
     assert b.alert_updates == dict.fromkeys(ALERT_KEYS, (False, False))
     unknown = build_briefing(DAY, garmin_data(auth=None, snapshot=None, hrv_trend=None, scheduled=None), [], {})
-    assert unknown.alert_updates == {}
-    assert all(a["holds"] is None for a in unknown.payload["alerts"])
+    assert unknown.alert_updates == {"missed_planned_session": (False, False)}
+    # the new condition reads the coach store, not Garmin, so it is known even when Garmin is not
+    assert all(a["holds"] is None for a in unknown.payload["alerts"] if a["key"] != "missed_planned_session")
 
 
 def test_green_scheduled_fixture_has_no_missed_workout():

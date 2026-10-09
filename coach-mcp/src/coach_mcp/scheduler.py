@@ -30,7 +30,9 @@ MAX_SLEEP_SECONDS = 3600.0
 async def compose_briefing(store: Store, garmin: GarminSource, day: date) -> Briefing:
     data = await garmin.fetch(day)
     sessions = tools.sessions_out(store, store.sessions_between(day, day))
-    return build_briefing(day, data, sessions, store.alert_states())
+    before = day - timedelta(days=1)
+    yesterday_sessions = tools.sessions_out(store, store.sessions_between(before, before))
+    return build_briefing(day, data, sessions, store.alert_states(), yesterday_sessions=yesterday_sessions)
 
 
 class BriefingScheduler:
