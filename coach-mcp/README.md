@@ -1,342 +1,381 @@
-# coach-mcp (paměť kouče)
+# coach-mcp (coach memory)
 
-Malý MCP server, který si pamatuje stav kouče mezi konverzacemi: cíle, omezení (zranění, dostupné dny,
-vybavení), tréninkový plán po dnech se stavem a deník poznámek. Data jsou v SQLite souboru na volume
-`coach-data`. Běží jako Streamable HTTP (stateless, JSON) na `:8000/mcp` v privátní Docker síti; MCP klienti
-se k němu dostanou jen přes gateway (`/coach/mcp`), která posílá interní bearer token
-(`/run/secrets/coach_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed). Sám volá
-jen `garmin-mcp` (čtyři čtecí nástroje, read-only token `garmin_readonly_token`), `hevy-mcp` (dva čtecí nástroje,
-interní token `hevy_backend_token`), volitelně Telegram Bot API (ranní briefing) a na požádání Open-Meteo
-(předpověď počasí, jen zaokrouhlené souřadnice). Každou noc si z Garminu ukládá
-denní historii a z Hevy silové tréninky pro trendy, týdenní přehled, korelace a progres síly a podle historie
-navrhne stav minulých plánovaných tréninků. Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená
-a nahrazené tréninky zůstanou jako `superseded`.
+A small MCP server that keeps the coach's state between conversations: goals, constraints (injuries, available
+days, equipment), a day-by-day training plan with status, and a notes log. The data lives in an SQLite file on the
+`coach-data` volume. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp` in a private Docker network; MCP
+clients reach it only through the gateway (`/coach/mcp`), which sends an internal bearer token
+(`/run/secrets/coach_backend_token`). Without the token the server rejects every MCP request (fail closed). The
+only services it calls itself are `garmin-mcp` (four read tools, read-only token `garmin_readonly_token`),
+`hevy-mcp` (two read tools, internal token `hevy_backend_token`), optionally the Telegram Bot API (morning
+briefing) and, on request, Open-Meteo (weather forecast, rounded coordinates only). Every night it stores the
+daily history from Garmin and strength workouts from Hevy for trends, the weekly report, correlations and strength
+progress, and uses that history to suggest a status for past planned sessions. Nothing is deleted: goals are
+closed, constraints are marked as resolved, and replaced sessions stay as `superseded`.
 
-## Nástroje
+## Tools
 
-| Nástroj | Typ | Co dělá |
+| Tool | Type | What it does |
 |---|---|---|
-| `get_coach_context` | čtení | aktivní cíle (s počtem dnů do cíle), aktivní omezení, tréninky tohoto ISO týdne, plánované tréninky posledních 7 dní s návrhem stavu (`to_confirm`) a posledních 10 poznámek jedním voláním |
-| `get_plan` | čtení | tréninky v rozsahu dat (výchozí tento týden, max. 92 dní) a souhrn plnění: počty planned / done / skipped / moved, zpožděné plánované tréninky, `completion_rate`; minulé plánované tréninky mají návrh stavu `suggestion` (viz Sladění plánu) |
-| `set_goal` | zápis | vytvoří cíl, nebo (s `goal_id`) změní zadaná pole; uzavření stavem `achieved` / `abandoned` |
-| `set_constraint` | zápis | vytvoří omezení (`kind` + název + detaily), nebo změní zadaná pole; stav `resolved`, když už neplatí |
-| `save_plan` | zápis | uloží plán jednoho ISO týdne: plánované tréninky od dneška nahradí (staré zůstanou jako `superseded`), splněné, přeskočené, přesunuté a minulé nechá |
-| `update_session` | zápis | nastaví stav tréninku (`planned` / `done` / `skipped` / `moved`); `moved` s `new_date` vytvoří propojenou plánovanou kopii; volitelná poznámka |
-| `add_note` | zápis | přidá datovanou poznámku do deníku, volitelně k tréninku |
-| `get_daily_briefing` | čtení | dnešní ranní briefing: verdikt zelená / žlutá / červená, čísla za ním, co chybí, dnešní plán a upozornění; počítá se stejně jako ranní push, z aktuálních dat |
-| `get_trends` | čtení | uložená denní historie z Garminu (HRV, spánek, klidová tepovka, Body Battery, stres, readiness, zátěž, VO2max, aktivity po sportech) za libovolné období po dnech, týdnech nebo měsících: počet, průměr, minimum, maximum, změna |
-| `get_weekly_report` | čtení | jeden ISO týden proti průměru předchozích čtyř: vytrvalost po sportech, spánek, HRV, klidová tepovka, plnění plánu, silový objem a série po svalových skupinách z Hevy, nová maxima (i odhad 1RM) a varování; sekce bez dat mají `available: false` |
-| `get_strength_progress` | čtení | odhad 1RM (Epley) po cvicích a trénincích z uložené historie Hevy: nejlepší série každého tréninkového dne, nejlepší, první a poslední hodnota a příznak stagnace (`plateau_weeks`, výchozí 4) |
-| `search_notes` | čtení | fulltextové hledání v celém deníku poznámek (`get_coach_context` má jen posledních 10): všechna slova dotazu, nejnovější první, volitelně rozsah dat nebo trénink, max. 50 výsledků a příznak `more` |
-| `list_goals` | čtení | všechny cíle včetně splněných (`achieved`) a opuštěných (`abandoned`), se stavem a časem vytvoření a poslední změny |
-| `list_constraints` | čtení | všechna omezení, aktivní i vyřešená (`resolved`), se stavem a časem vytvoření a poslední změny |
-| `get_correlations` | čtení | korelace mezi 2–6 metrikami z katalogu `get_trends` po dvojicích: Pearson a Spearman a počet spárovaných dní, volitelně s posunem 0–3 dny (metrika `a` v den D proti `b` v den D + posun); pod 14 páry nebo u konstantní řady `available: false`; vždy s upozorněním, že korelace není příčina |
-| `get_weather_forecast` | čtení | předpověď Open-Meteo na 7 dní pro bydliště z `.env` nebo zadané souřadnice: po dnech východ a západ slunce, souhrn a hodinová teplota, pocitová teplota, pravděpodobnost srážek a vítr; na každý den nejlepší okno pro trénink venku; cache 30 min |
+| `get_coach_context` | read | active goals (with days left to the target date), active constraints, sessions of the current ISO week, planned sessions of the last 7 days with a suggested status (`to_confirm`) and the latest 10 notes, in one call |
+| `get_plan` | read | sessions in a date range (default this week, max. 92 days) and a completion summary: counts of planned / done / skipped / moved, overdue planned sessions, `completion_rate`; past planned sessions carry a suggested status `suggestion` (see Plan reconciliation) |
+| `set_goal` | write | creates a goal, or (with `goal_id`) changes the given fields; closed with status `achieved` / `abandoned` |
+| `set_constraint` | write | creates a constraint (`kind` + title + details), or changes the given fields; status `resolved` once it no longer applies |
+| `save_plan` | write | saves the plan for one ISO week: replaces planned sessions from today on (the old ones stay as `superseded`), keeps done, skipped, moved and past ones |
+| `update_session` | write | sets a session's status (`planned` / `done` / `skipped` / `moved`); `moved` with `new_date` creates a linked planned copy; optional note |
+| `add_note` | write | adds a dated note to the log, optionally linked to a session |
+| `get_daily_briefing` | read | today's morning briefing: green / yellow / red verdict, the numbers behind it, what is missing, today's plan and alerts; computed the same way as the morning push, from current data |
+| `get_trends` | read | stored daily Garmin history (HRV, sleep, resting HR, Body Battery, stress, readiness, load, VO2max, activities by sport) for any period by day, week or month: count, mean, minimum, maximum, change |
+| `get_weekly_report` | read | one ISO week against the average of the previous four: endurance by sport, sleep, HRV, resting HR, plan completion, strength volume and sets per muscle group from Hevy, new records (including estimated 1RM) and warnings; sections without data have `available: false` |
+| `get_strength_progress` | read | estimated 1RM (Epley) per exercise and workout from the stored Hevy history: best set of each training day, best, first and latest value and a plateau flag (`plateau_weeks`, default 4) |
+| `search_notes` | read | full-text search in the whole notes log (`get_coach_context` has only the latest 10): all words of the query, newest first, optionally a date range or a session, max. 50 results and a `more` flag |
+| `list_goals` | read | all goals including achieved (`achieved`) and abandoned (`abandoned`) ones, with status and creation and last-change time |
+| `list_constraints` | read | all constraints, active and resolved (`resolved`), with status and creation and last-change time |
+| `get_correlations` | read | pairwise correlations between 2–6 metrics from the `get_trends` catalogue: Pearson and Spearman and the number of paired days, optionally with a lag of 0–3 days (metric `a` on day D against `b` on day D + lag); under 14 pairs or for a constant series `available: false`; always with a caveat that correlation is not causation |
+| `get_weather_forecast` | read | 7-day Open-Meteo forecast for the home location from `.env` or given coordinates: per day sunrise and sunset, a summary and hourly temperature, apparent temperature, precipitation probability and wind; the best window for outdoor training each day; 30 min cache |
 
-Všechny zápisy jsou označené jako ne-read-only a ne-destruktivní; v popisu mají větu „Only after the athlete
-confirmed“, takže je kouč navrhuje a zapisuje až po potvrzení. Data jsou `YYYY-MM-DD` v místním čase
-(`TZ`); „dnes“ a týden (pondělí až neděle, ISO) se počítají z něj.
+All writes are annotated as not read-only and not destructive; their description contains the sentence "Only after
+the athlete confirmed", so the coach proposes them and writes only after confirmation. Dates are `YYYY-MM-DD` in
+local time (`TZ`); "today" and the week (Monday to Sunday, ISO) are computed from it.
 
-## Hledání v poznámkách
+## Searching notes
 
-`search_notes` prohledá celý deník poznámek přes fulltextový index SQLite FTS5 (`notes_fts`), ne jen posledních
-10 poznámek z `get_coach_context`. Všechna slova dotazu musí v poznámce být. Na diakritice a velikosti písmen
-nezáleží (`boli` najde „Bolí“). Hledání nepřevádí české tvary na základní slovo (`bolest` nenajde „bolí“),
-proto hledej začátkem slova: `bol*` najde bolí, bolest i bolelo. Podporované je `"přesná fráze"`, `OR`, `NOT`
-a `prefix*`; slovo s interpunkcí (`-`, `:`, `,`, `.`, `?`, `'`) patří do uvozovek (`"low-carb"`). Chybný dotaz
-vrátí chybu nástroje s touto radou (bez textu z SQLite). Výsledky jdou od nejnovějších: výchozí počet 20, nejvýš
-50, `more: true`, když existují další shody. Volitelně `start_date` a `end_date` (včetně krajních dnů) a
-`session_id`; neznámý trénink je chyba. Dotaz se nikdy nezapisuje do logu.
+`search_notes` searches the whole notes log through an SQLite FTS5 full-text index (`notes_fts`), not just the
+latest 10 notes from `get_coach_context`. Every word of the query must appear in the note. Diacritics and case are
+ignored (`boli` finds "Bolí"). FTS5 does no stemming, so a different word form does not match (`knees` does not
+find "knee", `bolest` does not find "bolí"); search by word prefix instead: `knee*` finds knee and knees, `bol*`
+finds bolí, bolest and bolelo. Supported syntax is `"exact phrase"`, `OR`, `NOT` and `prefix*`; a word with
+punctuation (`-`, `:`, `,`, `.`, `?`, `'`) goes in double quotes (`"low-carb"`). An invalid query returns a tool
+error with this advice (without any text from SQLite). Results are newest first: 20 by default, at most 50,
+`more: true` when there are further matches. Optional `start_date` and `end_date` (both inclusive) and
+`session_id`; an unknown session is an error. The query is never written to the log.
 
-## Ranní briefing
+## Morning briefing
 
-Jednou denně (a na požádání nástrojem `get_daily_briefing`) server přečte z `garmin-mcp` ranní data
-(`get_recovery_snapshot`, `get_hrv_trend`, `list_scheduled_workouts`), přidá
-dnešní plán z vlastní paměti a spočítá verdikt bez LLM. Rozhoduje **nejhorší ukazatel**; chybějící údaj
-nedovolí zelenou (nejvýš žlutá) a je ve zprávě jmenovaný.
+Once a day (and on request through the `get_daily_briefing` tool) the server reads the morning data from
+`garmin-mcp` (`get_recovery_snapshot`, `get_hrv_trend`, `list_scheduled_workouts`), adds today's plan from its own
+memory and computes a verdict without an LLM. The **worst indicator** decides; a missing value rules out green (at
+most yellow) and is named in the message.
 
-| Ukazatel | Zelená | Žlutá | Červená |
+| Indicator | Green | Yellow | Red |
 |---|---|---|---|
-| Readiness (`morning_score`, jinak `score`) | 70 a víc | 40 až 69 | pod 40 |
-| HRV poslední noci vs. spodní hranice baseline | aspoň na hranici | pod hranicí | pod hranicí 3 a více nocí po sobě |
-| Spánek (v celých minutách) | 7 h a víc | 6 až 7 h | pod 6 h |
-| Body Battery po probuzení | 50 a víc | pod 50 | nikdy |
+| Readiness (`morning_score`, otherwise `score`) | 70 or more | 40 to 69 | under 40 |
+| Last night's HRV vs. the lower bound of the baseline | at least at the bound | below the bound | below the bound 3 or more nights in a row |
+| Sleep (in whole minutes) | 7 h or more | 6 to 7 h | under 6 h |
+| Body Battery at wake | 50 or more | under 50 | never |
 
-Upozornění (zpráva je uvádí jen tehdy, když jsou **nová**):
+Alerts (the message lists them only when they are **new**):
 
-- HRV pod baseline 3 a více nocí po sobě;
-- klidová tepovka o 5 a více bpm nad 7denním průměrem;
-- poměr akutní a chronické zátěže mimo optimální rozsah Garminu (stav `LOW`, `HIGH` nebo `VERY_HIGH`);
-- včera naplánovaný trénink v kalendáři Garminu nebyl splněn;
-- včera naplánovaný trénink z plánu kouče bez aktivity stejného sportu v Garminu (podle návrhu ze sladění plánu);
-- Garmin není přihlášený.
+- HRV below baseline 3 or more nights in a row;
+- resting HR 5 or more bpm above the 7-day average;
+- acute to chronic load ratio outside Garmin's optimal range (status `LOW`, `HIGH` or `VERY_HIGH`);
+- a workout scheduled yesterday in the Garmin calendar was not completed;
+- a session planned yesterday in the coach's plan with no activity of the same sport in Garmin (according to the
+  plan reconciliation suggestion);
+- Garmin is not logged in.
 
-Nové = ráno platí a při minulém vyhodnocení neplatilo; stav je v tabulce `alert_state`. Výjimka jsou oba
-nesplněné tréninky (kalendář Garminu i plán kouče): hlásí se každý den, kdy včera nějaký naplánovaný trénink
-nesplněn zůstal (každý den jde o jiný trénink). Neznámá podmínka (chybějící data) stav nemění.
+New = holds this morning and did not hold at the previous evaluation; the state is in the `alert_state` table. The
+exception is both missed-session alerts (Garmin calendar and the coach's plan): they are reported every day on
+which some session planned for yesterday was left undone (it is a different session each day). An unknown
+condition (missing data) does not change the state.
 
-Plánovač běží v `COACH_BRIEFING_TIME` (výchozí 06:30, časové pásmo `TZ`). Když chybí spánek nebo HRV poslední
-noci, zkouší to každých `COACH_BRIEFING_RETRY_MINUTES` minut a nejpozději v `COACH_BRIEFING_CUTOFF` pošle, co
-má. Problém s přihlášením do Garminu znamená, že push jde hned. Když služba nastartuje až po cutoff, ten den
-se nic neposílá. Na chybějící HRV baseline (Garmin ji počítá až po zhruba 3 týdnech nošení) se nečeká, jen se
-pojmenuje. Odeslání se při dočasné chybě Telegramu (5xx, 429, síť) opakuje do cutoffu; při trvalé chybě
-(jiný 4xx, třeba špatný token nebo chat id, bot zablokovaný) se ten den vzdá.
+The scheduler runs at `COACH_BRIEFING_TIME` (default 06:30, time zone `TZ`). When sleep or last night's HRV is
+missing, it retries every `COACH_BRIEFING_RETRY_MINUTES` minutes and at `COACH_BRIEFING_CUTOFF` at the latest it
+sends what it has. A Garmin login problem means the push goes out immediately. When the service starts after the
+cutoff, nothing is sent that day. A missing HRV baseline (Garmin computes it only after about 3 weeks of wearing
+the watch) is not waited for, only named. On a temporary Telegram error (5xx, 429, network) sending is retried
+until the cutoff; on a permanent error (another 4xx, e.g. a wrong token or chat id, bot blocked) it gives up for
+that day.
 
-Zpráva je česky a bez formátování: první řádek je verdikt s barevným kolečkem a datem
-(`🟡 ŽLUTÁ · ranní briefing 7. 10.`, s `⚠️` za kolečkem, když jsou nová upozornění), pak prázdný řádek a text.
-Celá zpráva se ořízne na 4000 bajtů (Telegram bere nejvýš 4096 znaků). Bez `COACH_TELEGRAM_CHAT_ID` se plánovač
-nespustí a `/healthz` hlásí `"scheduler":"off"`. Když plánovač nečekaně skončí, v logu je
-`briefing status=stopped` a `/healthz` hlásí `"scheduler":"stopped"` (`healthcheck.sh` to ohlásí jako problém).
-Ruční odeslání (stav upozornění se nemění):
+The message is plain text: the first line is the verdict with a coloured circle and the date
+(`🟡 YELLOW · morning briefing 7 Oct`, with `⚠️` after the circle when there are new alerts), then an empty line and
+the text. The whole message is truncated to 4000 bytes (Telegram accepts at most 4096 characters). Without
+`COACH_TELEGRAM_CHAT_ID` the scheduler does not start and `/healthz` reports `"scheduler":"off"`. When the
+scheduler stops unexpectedly, the log has `briefing status=stopped` and `/healthz` reports `"scheduler":"stopped"`
+(`healthcheck.sh` reports it as a problem).
+
+The push text is localized: `COACH_LANGUAGE` is `en` (default) or `cs`. Only the words change; the verdict, the
+rules, the numbers and the JSON from `get_daily_briefing` are the same in every language (apart from its `push`
+text). The catalogue is in `src/coach_mcp/messages.py`; adding a language means one more `Texts` instance in
+`LANGUAGES`. Session titles from the plan and Garmin workout names are shown as stored. Example (English):
+
+```text
+🟡 ⚠️ YELLOW · morning briefing 7 Oct
+
+Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7–8, cardio in zone 2.
+Readiness: 61 (yellow)
+HRV: missing
+Sleep: 6 h 15 min, score 70 (yellow)
+Body Battery at wake: missing
+Missing: HRV, Body Battery (the watch may not have synced yet). Without these data the verdict cannot be green.
+For full load: readiness at least 70; sleep at least 7 h.
+Today in Garmin: Easy run 40 min
+Alerts:
+- Resting HR 58 bpm, 6 above the 7-day average of 52 bpm.
+- Yesterday's scheduled workout was not completed: Intervals 6×800 m.
+```
+
+Manual send (the alert state does not change):
 
 ```bash
 docker compose exec coach-mcp python -m coach_mcp send-briefing
 ```
 
-Návratový kód: 0 odesláno, 1 selhalo, 2 push není nastavený nebo špatný argument.
+Exit code: 0 sent, 1 failed, 2 push not configured or wrong argument.
 
-## Noční historie
+## Nightly history
 
-Server si každou noc (`COACH_HISTORY_TIME`, výchozí 03:30, časové pásmo `TZ`) uloží z `garmin-mcp` denní hodnoty
-do tabulky `history_days`, jeden řádek na den: readiness, HRV poslední noci a týdenní průměr, spánek (délka,
-skóre), klidovou tepovku, Body Battery (nejvyšší a nejnižší), stres, akutní a chronickou zátěž, poměr zátěže,
-VO2max a součty aktivit po sportech (počet, délka, vzdálenost, tréninková zátěž). Řádek dne D má spánek a HRV
-noci, která skončila ráno D, a aktivity, které začaly v D. Dnešek se neukládá (není úplný): den se načte poprvé
-den po něm a pak ještě dvakrát v dalších dvou dnech, aby se zachytila pozdní synchronizace hodinek. Nad uloženou
-historií pracují `get_trends`, `get_weekly_report` a `get_correlations`; `get_hrv_trend` sahá jen 28 dní zpět
-a `get_body_battery` 31.
+Every night (`COACH_HISTORY_TIME`, default 03:30, time zone `TZ`) the server stores daily values from `garmin-mcp`
+in the `history_days` table, one row per day: readiness, last night's HRV and the weekly average, sleep (duration,
+score), resting HR, Body Battery (highest and lowest), stress, acute and chronic load, load ratio, VO2max and
+activity totals by sport (count, duration, distance, training load). The row for day D has the sleep and HRV of
+the night that ended on the morning of D, and the activities that started on D. Today is not stored (it is not
+complete): a day is loaded for the first time the day after, and then twice more over the next two days to catch a
+late watch sync. `get_trends`, `get_weekly_report` and `get_correlations` work on the stored history;
+`get_hrv_trend` reaches back only 28 days and `get_body_battery` 31.
 
-Doplňují se jen chybějící dny, takže po restartu se pokračuje tam, kde se skončilo (průběh je daný uloženými
-daty). První běh přijde minutu po startu služby a načte `COACH_HISTORY_BACKFILL_DAYS` dní zpět (výchozí 90):
-asi 470 volání Garmin Connect ve 103 voláních `garmin-mcp`, mezi nimi pauza `COACH_HISTORY_CALL_DELAY_SECONDS`
-(15 s), dohromady zhruba 30 minut. Mezi `COACH_BRIEFING_TIME` a `COACH_BRIEFING_CUTOFF` běh stojí a po cutoff
-pokračuje. Každou další noc je to asi 16 volání.
+Only missing days are filled in, so after a restart it continues where it stopped (progress is given by the stored
+data). The first run comes one minute after the service starts and loads `COACH_HISTORY_BACKFILL_DAYS` days back
+(default 90): about 470 Garmin Connect calls in 103 `garmin-mcp` calls, with a pause of
+`COACH_HISTORY_CALL_DELAY_SECONDS` (15 s) between them, roughly 30 minutes in total. Between
+`COACH_BRIEFING_TIME` and `COACH_BRIEFING_CUTOFF` the run pauses and continues after the cutoff. Every following
+night it is about 16 calls.
 
-- Garmin odpoví 429 (omezení počtu volání): běh se zastaví a zkusí to za hodinu, pak za 2, 4 a nejvýš za 8 hodin.
-- Garmin není přihlášený nebo `garmin-mcp` neodpovídá: žádné volání, další pokus za hodinu (nejpozději
-  v `COACH_HISTORY_TIME`).
-- Garmin Connect nefunguje (výpadek, server bez internetu): `garmin-mcp` vrací chybu u všech dnů. Po třech
-  chybách po sobě se server zeptá na den, který už jednou prošel; když selže i ten, běh skončí jako
-  `service_error`, výpadek dny nezapočítá a další pokus je za 1, 2, 4 a nejvýš 8 hodin.
-- Chyba, která se týká jen jednoho dne (Garmin jiné dny vrací), se tomu dni započítá; den, který takhle selže
-  třikrát, zůstane prázdný (`given_up` v logu). Den, který už data má, se po třech chybách přestane znovu načítat.
-- Na úplně prázdné historii server nemá den na porovnání a tři chyby po sobě bere jako výpadek; vyřeší se,
-  jakmile projde první den (nejpozději s dalším dnem).
+- Garmin answers 429 (rate limit): the run stops and retries in an hour, then in 2, 4 and at most 8 hours.
+- Garmin is not logged in or `garmin-mcp` does not respond: no calls, next attempt in an hour (at the latest at
+  `COACH_HISTORY_TIME`).
+- Garmin Connect is down (outage, server without internet): `garmin-mcp` returns an error for every day. After
+  three errors in a row the server asks for a day that has already succeeded once; when that one fails too, the
+  run ends as `service_error`, the outage is not counted against the days and the next attempt is in 1, 2, 4 and
+  at most 8 hours.
+- An error that concerns only one day (Garmin returns other days) is counted against that day; a day that fails
+  like this three times stays empty (`given_up` in the log). A day that already has data stops being reloaded
+  after three errors.
+- On a completely empty history the server has no day to compare with and treats three errors in a row as an
+  outage; this resolves as soon as the first day succeeds (with the next day at the latest).
 
-Silové tréninky z Hevy: stejný běh si po Garminu přes `hevy-mcp` načte workouty změněné od posledního úplného
-běhu, i upravené a smazané (`get-workout-events`, po 10 na stránku), a ke každému cviku jednou jeho šablonu kvůli
-hlavní svalové skupině (`get-exercise-template`). Ukládá se jen souhrn po cvicích (pracovní série, objem v kg,
-nejlepší série a její odhad 1RM podle Epleyho), ne jednotlivé série; zahřívací série se nepočítají. První běh
-načte stejných `COACH_HISTORY_BACKFILL_DAYS` dní zpět se stejnou pauzou mezi voláními (jedno volání na 10
-workoutů a jedno na každý cvik), další noci obvykle jedno volání. Každý výpis znovu přečte poslední 3 dny, aby
-se zachytily pozdní synchronizace. Když Hevy nebo `hevy-mcp` nefunguje, Garmin část doběhne normálně, silová
-data zůstanou nepokrytá (`available: false`) a další pokus je za hodinu, při omezení počtu volání za 1 až 8
-hodin; nic se nevzdává, neúspěšný výpis se příště zopakuje celý a neúspěšná šablona se zkouší nejvýš jednou
-denně.
+Strength workouts from Hevy: after Garmin, the same run loads through `hevy-mcp` the workouts changed since the
+last complete run, including edited and deleted ones (`get-workout-events`, 10 per page), and for each exercise
+its template once to get the primary muscle group (`get-exercise-template`). Only a per-exercise summary is stored
+(working sets, volume in kg, best set and its estimated 1RM by Epley), not individual sets; warm-up sets are not
+counted. The first run loads the same `COACH_HISTORY_BACKFILL_DAYS` days back with the same pause between calls
+(one call per 10 workouts and one per exercise), the following nights usually one call. Every listing re-reads the
+last 3 days to catch late syncs. When Hevy or `hevy-mcp` is down, the Garmin part finishes normally, the strength
+data stays uncovered (`available: false`) and the next attempt is in an hour, under a rate limit in 1 to 8
+hours; nothing is given up, a failed listing is repeated in full next time and a failed template is retried at
+most once a day.
 
-Z `garmin-mcp` může server volat jen čtyři čtecí nástroje (`get_recovery_snapshot`, `get_hrv_trend`,
-`list_scheduled_workouts`, `list_activities`). Jeho zapisovací nástroje kód kouče nevolá a `garmin-mcp` je
-s read-only tokenem kouče odmítne dřív, než se spustí. Z `hevy-mcp` smí volat jen `get-workout-events`
-a `get-exercise-template`. Log má na každý běh jeden řádek za Garmin:
-`history status=… fetched=… failed=… pending=… given_up=… ms=… matched=… no_activity=…` (`reconcile=error kind=…`,
-když sladění plánu selže, běh historie tím neselže) a jeden za Hevy:
-`history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (bez dat a hodnot;
-`skipped` = události z Hevy, které nešly použít). Hevy část běží před sladěním plánu, její řádek je v logu před
-řádkem za Garmin. Při
-`COACH_HISTORY_TIME` uvnitř okna briefingu je po startu navíc jeden řádek `history status=config_warning`.
-`/healthz` hlásí pole `history`: `on`, `off` (`COACH_HISTORY_ENABLED=false`) nebo `stopped` (úloha nečekaně
-skončila).
+From `garmin-mcp` the server may call only four read tools (`get_recovery_snapshot`, `get_hrv_trend`,
+`list_scheduled_workouts`, `list_activities`). The coach code does not call its write tools, and `garmin-mcp`
+rejects them with the coach's read-only token before they run. From `hevy-mcp` it may call only
+`get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
+`history status=… fetched=… failed=… pending=… given_up=… ms=… matched=… no_activity=…` (`reconcile=error kind=…`
+when plan reconciliation fails; the history run does not fail because of it) and one for Hevy:
+`history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (no data or values;
+`skipped` = events from Hevy that could not be used). The Hevy part runs before plan reconciliation, so its line
+comes before the Garmin line in the log. With `COACH_HISTORY_TIME` inside the briefing window there is also one
+`history status=config_warning` line after startup. `/healthz` reports a `history` field: `on`, `off`
+(`COACH_HISTORY_ENABLED=false`) or `stopped` (the task ended unexpectedly).
 
-## Sladění plánu
+## Plan reconciliation
 
-Po každém běhu noční historie server porovná plánované tréninky posledních 7 dní (bez dneška) s uloženými
-součty aktivit stejného dne a sportu (`running`, `cycling`, `swimming`, `strength`; `mobility` a `other`
-návrh nemají) a uloží návrh do tabulky `session_suggestions`: `matched` s důkazem (sport, počet aktivit, délka
-a vzdálenost toho sportu za den) nebo `no_activity`. Den, jehož aktivity se ještě nenačetly nebo se po třech
-chybách vzdaly, návrh nemá. Víc tréninků stejného sportu v jeden den: aktivity se nejdřív přiřadí tréninkům
-už označeným `done`, zbytek plánovaným v pořadí plánu. Návrh má `final: false`, dokud se den může ještě znovu
-načíst (do třetího dne po něm, pozdní synchronizace hodinek). Stav tréninku server nikdy nemění: `get_plan`
-a `get_coach_context` ukazují návrh jen u tréninků ve stavu `planned`, kouč ho ověří a po potvrzení zapíše
-`update_session`. Silový trénink se páruje se silovým záznamem z hodinek (`strength_training`) nebo s workoutem
-z Hevy téhož dne (důkaz `source: hevy` s počtem sérií a objemem); den, který silová historie z Hevy ještě
-nepokrývá, se páruje jen s hodinkami. Bez noční historie (`COACH_HISTORY_ENABLED=false`) návrhy
-nevznikají. Ranní briefing jmenuje včerejší plánované tréninky s `no_activity` (upozornění výše).
+After every nightly history run the server compares the planned sessions of the last 7 days (excluding today)
+with the stored activity totals of the same day and sport (`running`, `cycling`, `swimming`, `strength`;
+`mobility` and `other` get no suggestion) and stores a suggestion in the `session_suggestions` table: `matched`
+with evidence (sport, number of activities, duration and distance of that sport for the day) or `no_activity`. A
+day whose activities have not been loaded yet, or were given up after three errors, has no suggestion. Several
+sessions of the same sport on one day: activities are first assigned to sessions already marked `done`, the rest
+to planned ones in plan order. A suggestion has `final: false` while the day can still be reloaded (until the third
+day after it, late watch sync). The server never changes a session's status: `get_plan` and `get_coach_context`
+show the suggestion only for sessions in status `planned`, the coach checks it and, after confirmation, writes
+`update_session`. A strength session is matched with a strength record from the watch (`strength_training`) or
+with a Hevy workout on the same day (evidence `source: hevy` with the number of sets and volume); a day not yet
+covered by the Hevy strength history is matched only with the watch. Without the nightly history
+(`COACH_HISTORY_ENABLED=false`) no suggestions are made. The morning briefing names yesterday's planned sessions
+with `no_activity` (alert above).
 
 ## Data
 
-- `goals`: cíl (název, volitelně `target`, `target_date`, `target_result`), stav `active` / `achieved` / `abandoned`.
-- `athlete_constraints`: omezení typu `injury` / `limitation` / `availability` / `equipment` / `other`
-  s názvem a volným textem, stav `active` / `resolved`.
-- `sessions`: trénink s datem, typem (`running`, `cycling`, `swimming`, `strength`, `mobility`, `other`),
-  popisem a volitelně intenzitou, délkou, vzdáleností a odkazem na Garmin workout nebo Hevy rutinu.
-  Stavy: `planned` (naplánováno), `done` (splněno), `skipped` (přeskočeno), `moved` (přesunuto: původní
-  záznam zůstane a kopie na novém datu na něj odkazuje přes `moved_from_id`), `superseded` (nahrazeno
-  novějším plánem týdne; ve výchozím výpisu skryté a nepočítané).
-- `notes`: datované poznámky, volitelně navázané na trénink; fulltextový index `notes_fts` (SQLite FTS5, nezávislý na
-  diakritice a velikosti písmen) se doplňuje triggerem při každém vložení poznámky.
-- `briefing_runs`: den, kdy plánovač úspěšně poslal briefing (verdikt, čas odeslání).
-- `alert_state`: u každého upozornění poslední známý stav, datum vyhodnocení a kdy naposledy přišlo.
-- `session_suggestions`: návrh stavu plánovaného tréninku (`matched` s důkazem nebo `no_activity`, `final`, datum
-  vyhodnocení); jeden řádek na trénink, každou noc se přepíše.
-- `history_days`: jeden řádek na den s hodnotami z Garminu (readiness, HRV, spánek, klidová tepovka, Body Battery,
-  stres, zátěž, VO2max) a součty aktivit po sportech; kdy a s kolika chybami se den naposledy načetl.
-- `strength_workouts`: jeden řádek na workout z Hevy (id, místní datum začátku, čas poslední změny v Hevy) se
-  souhrnem po cvicích (šablona, název, pracovní série, objem v kg, nejlepší série a odhad 1RM); smazaný workout
-  zůstane jako značka `deleted` bez cviků.
-- `hevy_templates`: šablony cviků z Hevy (název, typ, hlavní svalová skupina), nebo že šablona v Hevy není.
-- `hevy_sync`: odkud a do kdy je silová historie úplná (poslední úplný běh).
+- `goals`: a goal (title, optionally `target`, `target_date`, `target_result`), status `active` / `achieved` / `abandoned`.
+- `athlete_constraints`: a constraint of kind `injury` / `limitation` / `availability` / `equipment` / `other`
+  with a title and free text, status `active` / `resolved`.
+- `sessions`: a session with date, type (`running`, `cycling`, `swimming`, `strength`, `mobility`, `other`),
+  description and optionally intensity, duration, distance and a link to a Garmin workout or Hevy routine.
+  Statuses: `planned`, `done`, `skipped`, `moved` (the original record stays and the copy on the new date points
+  to it through `moved_from_id`), `superseded` (replaced by a newer week plan; hidden and not counted in the
+  default listing).
+- `notes`: dated notes, optionally linked to a session; the full-text index `notes_fts` (SQLite FTS5, insensitive
+  to diacritics and case) is filled by a trigger on every note insert.
+- `briefing_runs`: a day on which the scheduler successfully sent the briefing (verdict, send time).
+- `alert_state`: for each alert the last known state, evaluation date and when it last fired.
+- `session_suggestions`: suggested status of a planned session (`matched` with evidence or `no_activity`, `final`,
+  evaluation date); one row per session, rewritten every night.
+- `history_days`: one row per day with values from Garmin (readiness, HRV, sleep, resting HR, Body Battery,
+  stress, load, VO2max) and activity totals by sport; when and with how many errors the day was last loaded.
+- `strength_workouts`: one row per Hevy workout (id, local start date, last-change time in Hevy) with a
+  per-exercise summary (template, title, working sets, volume in kg, best set and estimated 1RM); a deleted
+  workout stays as a `deleted` marker without exercises.
+- `hevy_templates`: Hevy exercise templates (title, type, primary muscle group), or a note that the template does
+  not exist in Hevy.
+- `hevy_sync`: from where and until when the strength history is complete (last complete run).
 
-Verze schématu je v `PRAGMA user_version`, migrace jsou jen dopředné (seřazený seznam SQL skriptů, každý
-v jedné transakci). Starší image odmítne otevřít novější databázi, aby ji nepoškodil. Zálohy za běhu
-(`python -m coach_mcp backup`, volá ho `scripts/backup.sh`) a obnova (`python -m coach_mcp restore`): hlavní
-`README.md` (sekce Zálohy); volume `coach-data` je jediná kopie těchto dat.
+The schema version is in `PRAGMA user_version`; migrations are forward-only (an ordered list of SQL scripts, each
+in one transaction). An older image refuses to open a newer database so that it does not damage it. Online backups
+(`python -m coach_mcp backup`, called by `scripts/backup.sh`) and restore (`python -m coach_mcp restore`): see the
+root `README.md` (section Backups); the `coach-data` volume is the only copy of this data.
 
-Před přechodem na starší verzi spusť `scripts/backup.sh`.
+Run `scripts/backup.sh` before moving to an older version.
 
-**Návrat na verzi bez hledání v poznámkách** (schéma 6 → 5). Starší image databázi se schématem 6
-odmítne (`database schema version 6 is newer`). Před nasazením starší verze proto smaž jen
-fulltextový index poznámek (tabulku `notes_fts` a trigger `notes_fts_insert`); cíle, omezení, plán,
-poznámky, stav briefingu i historie zůstanou a index se po nasazení novější verze znovu vytvoří ze
-všech poznámek. Služba musí stát, příkazy spouštěj po jednom:
+**Going back to a version without note search** (schema 6 → 5). An older image refuses a database with schema 6
+(`database schema version 6 is newer`). Before deploying the older version, drop only the full-text index of the
+notes (the `notes_fts` table and the `notes_fts_insert` trigger); goals, constraints, plan, notes, briefing state
+and history stay, and the index is rebuilt from all notes after the newer version is deployed again. The service
+must be stopped; run the commands one at a time:
 
 ```bash
 docker compose stop coach-mcp
 docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 6 or sys.exit(f"schema version {v}, expected 6: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TRIGGER notes_fts_insert; DROP TABLE notes_fts; PRAGMA user_version = 5; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-Druhý příkaz musí vypsat `schema version 5`. Pak nasaď starší verzi (`git checkout <commit před
-PR 15>` a `docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`,
-databáze schéma 6 nemá a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database
-file` a nic nevytvoří. Návrat na ještě starší verzi je nejdřív tento postup 6 → 5 a potom postupy
-níže.
+The second command must print `schema version 5`. Then deploy the older version (`git checkout <commit before
+PR 15>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
+does not have schema 6 and nothing changed. On an empty volume it ends with the error `unable to open database
+file` and creates nothing. To go back to an even older version, run this 6 → 5 procedure first and then the ones
+below.
 
-**Návrat na verzi bez silové historie** (schéma 5 → 4). Starší image databázi se schématem 5 odmítne
-(`database schema version 5 is newer`). Před nasazením starší verze proto smaž jen tabulky silové historie; cíle,
-omezení, plán, poznámky, stav briefingu i historie z Garminu zůstanou (silovou historii si server po novém
-nasazení znovu načte z Hevy). Služba musí stát, příkazy spouštěj po jednom:
+**Going back to a version without strength history** (schema 5 → 4). An older image refuses a database with
+schema 5 (`database schema version 5 is newer`). Before deploying the older version, drop only the strength
+history tables; goals, constraints, plan, notes, briefing state and Garmin history stay (the server reloads the
+strength history from Hevy after the newer version is deployed again). The service must be stopped; run the
+commands one at a time:
 
 ```bash
 docker compose stop coach-mcp
 docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 5 or sys.exit(f"schema version {v}, expected 5: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE strength_workouts; DROP TABLE hevy_templates; DROP TABLE hevy_sync; PRAGMA user_version = 4; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-Druhý příkaz musí vypsat `schema version 4`. Pak nasaď starší verzi (`git checkout <commit před PR 09>` a
-`docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 5 nemá
-a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří. Návrat na
-starší verze je nejdřív tento postup 5 → 4 a potom následující.
+The second command must print `schema version 4`. Then deploy the older version (`git checkout <commit before
+PR 09>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
+does not have schema 5 and nothing changed. On an empty volume it ends with the error `unable to open database
+file` and creates nothing. To go back further, run this 5 → 4 procedure first and then the following ones.
 
-**Návrat na verzi bez sladění plánu** (schéma 4 → 3). Starší image databázi se schématem 4 odmítne
-(`database schema version 4 is newer`). Před nasazením starší verze proto smaž jen tabulku návrhů; cíle,
-omezení, plán, poznámky, stav briefingu i historie zůstanou. Tabulka `alert_state` si nechá rozšířenou
-kontrolu klíčů (i řádek `missed_planned_session`), starší verze to ignoruje a po novém nasazení migrace 4
-proběhne znovu. Služba musí stát, příkazy spouštěj po jednom:
+**Going back to a version without plan reconciliation** (schema 4 → 3). An older image refuses a database with
+schema 4 (`database schema version 4 is newer`). Before deploying the older version, drop only the suggestions
+table; goals, constraints, plan, notes, briefing state and history stay. The `alert_state` table keeps its
+extended key check (and the `missed_planned_session` row); the older version ignores it and migration 4 runs again
+after the newer version is deployed. The service must be stopped; run the commands one at a time:
 
 ```bash
 docker compose stop coach-mcp
 docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 4 or sys.exit(f"schema version {v}, expected 4: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE session_suggestions; PRAGMA user_version = 3; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-Druhý příkaz musí vypsat `schema version 3`. Pak nasaď starší verzi (`git checkout <commit před PR 13>`
-a `docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 4
-nemá a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří.
-Návrat na ještě starší verzi je nejdřív tento postup 4 → 3 a potom následující.
+The second command must print `schema version 3`. Then deploy the older version (`git checkout <commit before
+PR 13>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
+does not have schema 4 and nothing changed. On an empty volume it ends with the error `unable to open database
+file` and creates nothing. To go back to an even older version, run this 4 → 3 procedure first and then the
+following ones.
 
-**Návrat na verzi bez historie** (schéma 3 → 2). Starší image databázi se schématem 3 odmítne
-(`database schema version 3 is newer`). Před nasazením starší verze proto smaž jen tabulku historie; cíle,
-omezení, plán, poznámky a stav briefingu zůstanou (historii si server po novém nasazení znovu načte z Garminu).
-Služba musí stát, příkazy spouštěj po jednom:
+**Going back to a version without history** (schema 3 → 2). An older image refuses a database with schema 3
+(`database schema version 3 is newer`). Before deploying the older version, drop only the history table; goals,
+constraints, plan, notes and briefing state stay (the server reloads the history from Garmin after the newer
+version is deployed again). The service must be stopped; run the commands one at a time:
 
 ```bash
 docker compose stop coach-mcp
 docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 3 or sys.exit(f"schema version {v}, expected 3: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE history_days; PRAGMA user_version = 2; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-Druhý příkaz musí vypsat `schema version 2`. Pak nasaď starší verzi (`git checkout <commit před PR 05>` a
-`docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 3 nemá
-a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří. Návrat až
-na verzi bez briefingu (schéma 1) je nejdřív tento postup 3 → 2 a potom následující 2 → 1.
+The second command must print `schema version 2`. Then deploy the older version (`git checkout <commit before
+PR 05>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
+does not have schema 3 and nothing changed. On an empty volume it ends with the error `unable to open database
+file` and creates nothing. To go all the way back to the version without the briefing (schema 1), run this 3 → 2
+procedure first and then the following 2 → 1.
 
-**Návrat na verzi bez ranního briefingu** (schéma 2 → 1). Starší image databázi se schématem 2 odmítne
-(`database schema version 2 is newer`). Před nasazením starší verze proto smaž jen tabulky briefingu; cíle,
-omezení, plán a poznámky zůstanou. Služba musí stát, příkazy spouštěj po jednom:
+**Going back to a version without the morning briefing** (schema 2 → 1). An older image refuses a database with
+schema 2 (`database schema version 2 is newer`). Before deploying the older version, drop only the briefing
+tables; goals, constraints, plan and notes stay. The service must be stopped; run the commands one at a time:
 
 ```bash
 docker compose stop coach-mcp
 docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 2 or sys.exit(f"schema version {v}, expected 2: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE alert_state; DROP TABLE briefing_runs; PRAGMA user_version = 1; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-Druhý příkaz musí vypsat `schema version 1`. Pak nasaď starší verzi (`git checkout <starší commit>` a
-`docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 2 nemá
-a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří.
+The second command must print `schema version 1`. Then deploy the older version (`git checkout <older commit>`
+and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database does not
+have schema 2 and nothing changed. On an empty volume it ends with the error `unable to open database file` and
+creates nothing.
 
-## Počasí
+## Weather
 
-`get_weather_forecast` volá `GET https://api.open-meteo.com/v1/forecast` s parametry `latitude`, `longitude`,
-`hourly=temperature_2m,apparent_temperature,precipitation_probability,wind_speed_10m`, `daily=sunrise,sunset`,
-`timezone=auto` (časy jsou místní pro dané místo), `forecast_days=7` a jednotkami °C a km/h. Souřadnice jsou
-z `.env` (`COACH_HOME_LATITUDE`, `COACH_HOME_LONGITUDE`) nebo z argumentů (obě; mají přednost, pro cesty) a před
-odesláním se zaokrouhlí na dvě desetinná místa (asi 1 km); nic jiného se neposílá. Odpověď je omezená na 512 KiB
-a ověřená (tvar, časy, čísla); hodnota, která není konečné číslo, je `null`.
+`get_weather_forecast` calls `GET https://api.open-meteo.com/v1/forecast` with the parameters `latitude`,
+`longitude`, `hourly=temperature_2m,apparent_temperature,precipitation_probability,wind_speed_10m`,
+`daily=sunrise,sunset`, `timezone=auto` (times are local to the location), `forecast_days=7` and units °C and
+km/h. The coordinates come from `.env` (`COACH_HOME_LATITUDE`, `COACH_HOME_LONGITUDE`) or from the arguments (both;
+they take precedence, for travel) and are rounded to two decimal places (about 1 km) before sending; nothing else
+is sent. The response is limited to 512 KiB and validated (shape, times, numbers); a value that is not a finite
+number is `null`.
 
-Nejlepší okno pro trénink venku (`best_outdoor_windows`, nejvýš jedno na den):
+Best window for outdoor training (`best_outdoor_windows`, at most one per day):
 
-| Podmínka | Hranice (včetně) |
+| Condition | Limit (inclusive) |
 |---|---|
-| denní světlo | aspoň 30 minut z hodiny mezi východem a západem slunce |
-| hodina ještě nezačala | začátek hodiny není před aktuálním místním časem |
-| pocitová teplota | −5 až 25 °C |
-| pravděpodobnost srážek | nejvýš 30 % |
-| vítr | nejvýš 25 km/h |
-| výběr | nejdelší souvislý úsek hodin; při shodě nižší nejvyšší pravděpodobnost srážek, pak dřívější |
+| daylight | at least 30 minutes of the hour between sunrise and sunset |
+| hour not started yet | the start of the hour is not before the current local time |
+| apparent temperature | −5 to 25 °C |
+| precipitation probability | at most 30 % |
+| wind | at most 25 km/h |
+| choice | longest continuous run of hours; on a tie the lower maximum precipitation probability, then the earlier one |
 
-Cache: odpověď se drží 30 minut v paměti podle zaokrouhlených souřadnic (nejvýš 16 poloh, nejstarší odpadne),
-chyby se necachují a po 30 minutách se stahuje znovu. Tvar odpovědi (dny od dneška, okna, která ještě nezačala)
-se počítá při každém volání z aktuálního času.
+Cache: the response is kept in memory for 30 minutes per rounded coordinates (at most 16 locations, the oldest is
+dropped); errors are not cached and after 30 minutes it is fetched again. The shape of the answer (days from
+today, windows that have not started yet) is computed on every call from the current time.
 
-Chyby jsou krátké a bez souřadnic: `No home location configured: …` (chybí poloha v `.env` i argumenty),
-`Give both latitude and longitude, or neither.`, `latitude must be between -90 and 90 and longitude between -180 and 180.`
-(jen přímé volání, schéma nástroje to odmítne dřív), `Weather service timed out.` (jedno čtení 10 s, celé volání 20 s),
-`Weather service unreachable (<třída chyby>).`, `Weather service answered HTTP <kód>.` a
-`Weather service returned an unexpected response.` Log má jen řádky `weather status=fetched|error reason=…`
-(výsledek, kód, doba, název třídy chyby), nikdy souřadnice.
+Errors are short and contain no coordinates: `No home location configured: …` (no location in `.env` and no
+arguments), `Give both latitude and longitude, or neither.`, `latitude must be between -90 and 90 and longitude
+between -180 and 180.` (direct calls only; the tool schema rejects it earlier), `Weather service timed out.` (one
+read 10 s, the whole call 20 s), `Weather service unreachable (<error class>).`, `Weather service answered HTTP
+<code>.` and `Weather service returned an unexpected response.` The log has only `weather status=fetched|error
+reason=…` lines (result, code, duration, error class name), never coordinates.
 
-Data o počasí: [Open-Meteo.com](https://open-meteo.com/) (licence CC BY 4.0).
+Weather data: [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0 licence).
 
-## Konfigurace (env)
+## Configuration (env)
 
-| Proměnná | Default | Význam |
+| Variable | Default | Meaning |
 |---|---|---|
-| `COACH_MCP_DB_PATH` | `/data/coach/coach.db` | SQLite soubor (absolutní cesta, adresář musí existovat) |
-| `COACH_MCP_BEARER_TOKEN_FILE` | `/run/secrets/coach_backend_token` | interní token od gateway (min. 16 znaků) |
-| `COACH_MCP_HOST` | `0.0.0.0` | adresa, na které server poslouchá |
-| `COACH_MCP_PORT` | `8000` | port (1 až 65535) |
-| `TZ` | `Europe/Prague` | co znamená „dnes“; v compose se nastavuje přes `ATHLETE_TZ` v `.env` |
-| `COACH_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` nebo `ERROR`; logy: jen název nástroje, výsledek, doba, nikdy argumenty ani uložené texty |
-| `COACH_MCP_ALLOWED_HOSTS` | *(prázdné)* | zapne kontrolu Host hlavičky (např. `coach-mcp:8000`) |
-| `COACH_TELEGRAM_CHAT_ID` | *(prázdné)* | chat id tvého chatu s botem (celé číslo, skupina záporné); zapíná ranní briefing; nikdy se neloguje |
-| `COACH_TELEGRAM_TOKEN_FILE` | `/run/secrets/telegram_bot_token` | token bota od @BotFather; s nastaveným chat id musí mít tvar tokenu, jinak se služba nespustí |
-| `COACH_GARMIN_MCP_URL` | `http://garmin-mcp:8000/mcp` | adresa `garmin-mcp` (končí `/mcp`) |
-| `COACH_GARMIN_TOKEN_FILE` | `/run/secrets/garmin_readonly_token` | read-only token pro `garmin-mcp` (min. 16 znaků); zapisovací nástroje s ním `garmin-mcp` odmítne |
-| `COACH_HEVY_MCP_URL` | `http://hevy-mcp:3000/mcp` | adresa `hevy-mcp` (končí `/mcp`) |
-| `COACH_HEVY_TOKEN_FILE` | `/run/secrets/hevy_backend_token` | interní token pro `hevy-mcp` (min. 16 znaků); bez něj se silová historie nenačítá, Garmin část běží dál |
-| `COACH_BRIEFING_TIME` | `06:30` | kdy plánovač začne (`HH:MM`, časové pásmo `TZ`) |
-| `COACH_BRIEFING_CUTOFF` | `09:30` | nejpozdější čas odeslání, i s chybějícími daty (pozdější než čas začátku) |
-| `COACH_BRIEFING_RETRY_MINUTES` | `15` | pauza mezi pokusy, když chybí spánek nebo HRV (1 až 180) |
-| `COACH_HISTORY_ENABLED` | `true` | noční historie z Garminu a Hevy (`true` / `false`) |
-| `COACH_HISTORY_TIME` | `03:30` | kdy (`HH:MM`, `TZ`); čas uvnitř okna briefingu posune běh na cutoff |
-| `COACH_HISTORY_BACKFILL_DAYS` | `90` | kolik dní zpět načíst (1 až 366) |
-| `COACH_HISTORY_CALL_DELAY_SECONDS` | `15` | pauza mezi voláními `garmin-mcp` a `hevy-mcp` (1 až 600 s) |
-| `COACH_HOME_LATITUDE` | *(prázdné)* | zeměpisná šířka bydliště pro `get_weather_forecast` (desetinné stupně, −90 až 90, zaokrouhlí se na dvě desetinná místa); jen spolu s délkou; nikdy se neloguje |
-| `COACH_HOME_LONGITUDE` | *(prázdné)* | zeměpisná délka (−180 až 180), jinak totéž |
+| `COACH_MCP_DB_PATH` | `/data/coach/coach.db` | SQLite file (absolute path, the directory must exist) |
+| `COACH_MCP_BEARER_TOKEN_FILE` | `/run/secrets/coach_backend_token` | internal token from the gateway (min. 16 characters) |
+| `COACH_MCP_HOST` | `0.0.0.0` | address the server listens on |
+| `COACH_MCP_PORT` | `8000` | port (1 to 65535) |
+| `TZ` | `Europe/Prague` | what "today" means; in compose it is set through `ATHLETE_TZ` in `.env` |
+| `COACH_LANGUAGE` | `en` | language of the morning briefing push text: `en` or `cs` (case-insensitive); see Morning briefing |
+| `COACH_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR`; logs: only the tool name, result and duration, never arguments or stored texts |
+| `COACH_MCP_ALLOWED_HOSTS` | *(empty)* | enables Host header checking (e.g. `coach-mcp:8000`) |
+| `COACH_TELEGRAM_CHAT_ID` | *(empty)* | chat id of your chat with the bot (integer, negative for groups); enables the morning briefing; never logged |
+| `COACH_TELEGRAM_TOKEN_FILE` | `/run/secrets/telegram_bot_token` | bot token from @BotFather; with a chat id set it must look like a token, otherwise the service does not start |
+| `COACH_GARMIN_MCP_URL` | `http://garmin-mcp:8000/mcp` | address of `garmin-mcp` (ends with `/mcp`) |
+| `COACH_GARMIN_TOKEN_FILE` | `/run/secrets/garmin_readonly_token` | read-only token for `garmin-mcp` (min. 16 characters); `garmin-mcp` rejects write tools with it |
+| `COACH_HEVY_MCP_URL` | `http://hevy-mcp:3000/mcp` | address of `hevy-mcp` (ends with `/mcp`) |
+| `COACH_HEVY_TOKEN_FILE` | `/run/secrets/hevy_backend_token` | internal token for `hevy-mcp` (min. 16 characters); without it the strength history is not loaded, the Garmin part keeps running |
+| `COACH_BRIEFING_TIME` | `06:30` | when the scheduler starts (`HH:MM`, time zone `TZ`) |
+| `COACH_BRIEFING_CUTOFF` | `09:30` | latest send time, even with missing data (later than the start time) |
+| `COACH_BRIEFING_RETRY_MINUTES` | `15` | pause between attempts when sleep or HRV is missing (1 to 180) |
+| `COACH_HISTORY_ENABLED` | `true` | nightly history from Garmin and Hevy (`true` / `false`) |
+| `COACH_HISTORY_TIME` | `03:30` | when (`HH:MM`, `TZ`); a time inside the briefing window moves the run to the cutoff |
+| `COACH_HISTORY_BACKFILL_DAYS` | `90` | how many days back to load (1 to 366) |
+| `COACH_HISTORY_CALL_DELAY_SECONDS` | `15` | pause between calls to `garmin-mcp` and `hevy-mcp` (1 to 600 s) |
+| `COACH_HOME_LATITUDE` | *(empty)* | latitude of the home location for `get_weather_forecast` (decimal degrees, −90 to 90, rounded to two decimal places); only together with the longitude; never logged |
+| `COACH_HOME_LONGITUDE` | *(empty)* | longitude (−180 to 180), otherwise the same |
 
-Neplatná hodnota ukončí start s chybou (kontejner se nespustí) místo pozdějšího selhání v nástroji.
+An invalid value stops startup with an error (the container does not start) instead of failing later in a tool.
 
-## Vývoj
+## Development
 
 ```bash
 docker build --target test coach-mcp
 ```
 
-Testy běží při každém buildu (bez sítě, SQLite v dočasném adresáři, pevné datum 2026-10-07 a falešné hodiny
-místo skutečného času; Garmin, Telegram a Open-Meteo nahrazují falešné backendy).
-Zámky závislostí (`requirements.lock`, `requirements-dev.lock`) se přegenerují jen přes `scripts/lock-deps.sh`.
+Tests run on every build (no network, SQLite in a temporary directory, a fixed date 2026-10-07 and a fake clock
+instead of real time; fake backends stand in for Garmin, Telegram and Open-Meteo).
+Dependency locks (`requirements.lock`, `requirements-dev.lock`) are regenerated only through
+`scripts/lock-deps.sh`.

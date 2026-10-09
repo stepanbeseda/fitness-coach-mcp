@@ -121,23 +121,23 @@ def check_gateway(conn: sqlite3.Connection) -> None:
     """Validate that ``conn`` holds a gateway database (the schema is ``CREATE TABLE IF NOT EXISTS``, no versions)."""
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     if not {"grants", "tokens"} <= names:
-        raise SnapshotError("není databáze gateway (chybí tabulka grants/tokens)")
+        raise SnapshotError("not a gateway database (grants/tokens table missing)")
 
 
 def backup_command(db_path: Path) -> int:
     """Write a consistent copy of the database to stdout. Exit codes: 0 ok, 1 failed, 2 refused."""
     if sys.stdout.isatty():
-        print("nepíšu databázi na terminál; přesměruj stdout", file=sys.stderr)
+        print("refusing to write the database to a terminal; redirect stdout", file=sys.stderr)
         return 2
     if not db_path.is_file():
-        print(f"záloha selhala: žádná databáze v {db_path}", file=sys.stderr)
+        print(f"backup failed: no database at {db_path}", file=sys.stderr)
         return 1
     try:
         data, _ = snapshot(db_path, check_gateway)
         write_normalised(data, sys.stdout.buffer)
         sys.stdout.buffer.flush()
     except (SnapshotError, sqlite3.Error, OSError) as exc:
-        print(f"záloha selhala: {exc}", file=sys.stderr)
+        print(f"backup failed: {exc}", file=sys.stderr)
         return 1
     return 0
 
@@ -167,10 +167,10 @@ def _copy_stdin(dest: Path) -> None:
         while chunk := sys.stdin.buffer.read(_CHUNK):
             total += len(chunk)
             if total > MAX_SNAPSHOT_BYTES:
-                raise SnapshotError(f"vstup je větší než {_cap_text()}")
+                raise SnapshotError(f"input is larger than {_cap_text()}")
             out.write(chunk)
     if total == 0:
-        raise SnapshotError("na stdin nic nepřišlo")
+        raise SnapshotError("nothing arrived on stdin")
 
 
 def restore_command(
@@ -179,9 +179,9 @@ def restore_command(
     """Replace the database at ``db_path`` with a validated backup (the service must be stopped).
 
     ``source`` is ``-`` (stdin) or a file. The previous database and its journal/WAL files stay
-    next to it as ``<name>.pred-obnovou-<UTC time>[-journal|-wal|-shm]`` (SQLite pairs a hot
+    next to it as ``<name>.before-restore-<UTC time>[-journal|-wal|-shm]`` (SQLite pairs a hot
     journal or WAL with its database by name, so the side copy is restorable too). Exit codes:
-    0 ok, 1 failed (``nic se nezměnilo`` unless the message says otherwise), 2 refused.
+    0 ok, 1 failed (``nothing changed`` unless the message says otherwise), 2 refused.
     """
     name = db_path.name
     stage_in = db_path.with_name(f"{name}.restore-in")
@@ -201,28 +201,28 @@ def _restore(db_path: Path, source: str, now: Callable[[], datetime], stage_in: 
         _remove(stage_new)
         if source == "-":
             if sys.stdin.isatty():
-                print("nečtu databázi z terminálu; pošli soubor rourou", file=sys.stderr)
+                print("refusing to read the database from a terminal; pipe the file in", file=sys.stderr)
                 return 2
             _copy_stdin(stage_in)
             src_path = stage_in
         else:
             src_path = Path(source)
             if not src_path.is_file():
-                raise SnapshotError(f"zdrojový soubor neexistuje: {source}")
+                raise SnapshotError(f"source file does not exist: {source}")
             if src_path.resolve() == db_path.resolve():
-                raise SnapshotError("zdroj je nahrazovaná databáze")
+                raise SnapshotError("the source is the database being replaced")
         data, _ = snapshot(src_path, check_gateway)
         with _write_new(stage_new) as out:
             write_normalised(data, out)
             out.flush()
             os.fsync(out.fileno())
         del data
-        aside = f"{name}.pred-obnovou-{now().strftime('%Y%m%dT%H%M%SZ')}"
+        aside = f"{name}.before-restore-{now().strftime('%Y%m%dT%H%M%SZ')}"
         if any((parent / f"{aside}{s}").exists() for s in ("", *_SIDECARS)):
-            raise SnapshotError("předchozí soubory z této sekundy už existují; zkus to za sekundu")
+            raise SnapshotError("previous files from this second already exist; try again in a second")
         existing = [s for s in ("", *_SIDECARS) if (parent / f"{name}{s}").exists()]
     except (SnapshotError, sqlite3.Error, OSError) as exc:
-        print(f"obnova selhala: {exc}; nic se nezměnilo", file=sys.stderr)
+        print(f"restore failed: {exc}; nothing changed", file=sys.stderr)
         return 1
 
     moved = False
@@ -233,10 +233,10 @@ def _restore(db_path: Path, source: str, now: Callable[[], datetime], stage_in: 
         os.replace(stage_new, db_path)
         _fsync_dir(parent)
     except OSError as exc:
-        where = f"předchozí soubory jsou v {parent} jako {aside}*" if moved else "nic se nezměnilo"
-        print(f"obnova selhala: {exc}; {where}", file=sys.stderr)
+        where = f"previous files are in {parent} as {aside}*" if moved else "nothing changed"
+        print(f"restore failed: {exc}; {where}", file=sys.stderr)
         return 1
 
-    kept = f"předchozí soubory jsou jako {aside}" if moved else "předchozí databáze neexistovala"
-    print(f"obnoveno {name}; {kept}", file=sys.stderr)
+    kept = f"previous files kept as {aside}" if moved else "there was no previous database"
+    print(f"restored {name}; {kept}", file=sys.stderr)
     return 0

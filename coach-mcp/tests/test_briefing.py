@@ -1,8 +1,11 @@
-"""Pure briefing logic: criteria, verdict, alerts and the exact Czech rendering (day = 2026-10-07)."""
+"""Pure briefing logic: criteria, verdict, alerts and the exact Czech rendering (day = 2026-10-07).
+
+The English catalogue has its own rendering tests in ``test_briefing_en.py``."""
 
 from __future__ import annotations
 
 from datetime import date
+from functools import partial
 from typing import Any
 
 import pytest
@@ -12,13 +15,13 @@ from coach_mcp import briefing
 from coach_mcp.briefing import (
     ALERT_KEYS,
     alert_conditions,
-    build_briefing,
     criteria_from_snapshot,
     decide_verdict,
     is_new,
     nights_below_baseline,
-    nights_cs,
 )
+from coach_mcp.briefing import build_briefing as _build_briefing
+from coach_mcp.messages import CS, EN
 from garmin_payloads import (
     DAY,
     GREEN_SCHEDULED,
@@ -33,6 +36,8 @@ from garmin_payloads import (
 )
 
 YESTERDAY = "2026-10-06"
+# Every rendering assertion in this module is about the Czech catalogue.
+build_briefing = partial(_build_briefing, language="cs")
 
 
 def snapshot(**sections: Any) -> dict[str, Any]:
@@ -726,8 +731,8 @@ def test_message_byte_limit():
 
 
 def test_nights_plural():
-    assert [nights_cs(n) for n in (1, 2, 4, 5)] == ["1 noc", "2 noci", "4 noci", "5 nocí"]
-    assert nights_cs(3) == "3 noci"
+    assert [CS.nights(n) for n in (1, 2, 3, 4, 5)] == ["1 noc", "2 noci", "3 noci", "4 noci", "5 nocí"]
+    assert [EN.nights(n) for n in (1, 2)] == ["1 night", "2 nights"]
 
 
 def test_build_briefing_payload_shape():

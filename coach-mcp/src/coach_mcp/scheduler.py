@@ -19,6 +19,7 @@ from . import tools
 from .briefing import Briefing, build_briefing
 from .config import Settings
 from .garmin import GarminReader, GarminSource, exception_kind
+from .messages import DEFAULT_LANGUAGE
 from .push import PushSender, TelegramPush
 from .store import Store
 
@@ -27,12 +28,16 @@ log = logging.getLogger("coach_mcp.briefing")
 MAX_SLEEP_SECONDS = 3600.0
 
 
-async def compose_briefing(store: Store, garmin: GarminSource, day: date) -> Briefing:
+async def compose_briefing(
+    store: Store, garmin: GarminSource, day: date, language: str = DEFAULT_LANGUAGE
+) -> Briefing:
     data = await garmin.fetch(day)
     sessions = tools.sessions_out(store, store.sessions_between(day, day))
     before = day - timedelta(days=1)
     yesterday_sessions = tools.sessions_out(store, store.sessions_between(before, before))
-    return build_briefing(day, data, sessions, store.alert_states(), yesterday_sessions=yesterday_sessions)
+    return build_briefing(
+        day, data, sessions, store.alert_states(), yesterday_sessions=yesterday_sessions, language=language
+    )
 
 
 class BriefingScheduler:
@@ -116,7 +121,7 @@ class BriefingScheduler:
         retry = min(settings.briefing_retry_minutes * 60.0, max(self._until(cutoff, now), 0.0))
         self._attempts += 1
         try:
-            briefing = await compose_briefing(self._store, self._garmin, day)
+            briefing = await compose_briefing(self._store, self._garmin, day, settings.language)
             if briefing.waiting and not final:
                 log.info("briefing status=waiting attempt=%d", self._attempts)
                 return retry
@@ -166,7 +171,7 @@ async def send_briefing_command(
 
     try:
         briefing = await compose_briefing(
-            store or Store(settings.db_path), garmin or GarminReader(settings), today()
+            store or Store(settings.db_path), garmin or GarminReader(settings), today(), settings.language
         )
         outcome = await (push or TelegramPush(settings)).send(briefing.message)
     except Exception as exc:

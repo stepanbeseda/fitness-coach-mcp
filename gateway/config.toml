@@ -51,7 +51,7 @@ mcp_per_grant = [300, 100]
 # redirect URIs with the live documents. Loopback redirect URIs match any port.
 [[clients]]
 client_id = "https://claude.ai/oauth/mcp-oauth-client-metadata"
-name = "Claude (claude.ai, Desktop, mobil)"
+name = "Claude (claude.ai, Desktop, mobile)"
 redirect_uris = [
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
@@ -67,7 +67,7 @@ redirect_uris = [
 
 [[clients]]
 client_id = "mcp-remote"
-name = "mcp-remote (Claude Desktop přes tailnet)"
+name = "mcp-remote (Claude Desktop via the tailnet)"
 redirect_uris = [
     "http://localhost/oauth/callback",
     "http://127.0.0.1/oauth/callback",

@@ -65,7 +65,7 @@ OLD3='put hevy_backend_token hevy-old-0123456789abcdef0123456789;
       put garmin_backend_token garmin-old-0123456789abcdef012345678;
       put coach_backend_token coach-old-0123456789abcdef0123456789'
 REST='put ts_authkey tskey-x; put hevy_api_key k; put gateway_password_hash h; put gateway_totp_secret t'
-HINT='INFO Nový read-only token pro coach-mcp platí po nasazení: docker compose up -d --build garmin-mcp coach-mcp'
+HINT='INFO The new read-only token for coach-mcp takes effect after a deploy: docker compose up -d --build garmin-mcp coach-mcp'
 
 echo "[fresh install: all four tokens, one recreate as before]"
 run_case fresh ":" "ensure_backend_tokens; ensure_garmin_readonly_token"

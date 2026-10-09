@@ -31,16 +31,16 @@ info() { printf '%s\n' "$*" >&2; }
 ok()   { printf '%s✔%s %s\n' "$C_OK" "$C_OFF" "$*"; }
 warn() { printf '%s!%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
 fail() { printf '%s✘%s %s\n' "$C_ERR" "$C_OFF" "$*"; }
-die()  { printf '%sChyba:%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
+die()  { printf '%sError:%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
 
 require_docker() {
   if ! docker info >/dev/null 2>&1; then
-    die "Docker není dostupný pro uživatele $(id -un). Přihlas se znovu (skupina docker) nebo spusť: sg docker -c \"$0 $*\""
+    die "Docker is not available to user $(id -un). Log in again (docker group) or run: sg docker -c \"$0 $*\""
   fi
 }
 
 dc() { docker compose "$@"; }
 
 require_env() {
-  [[ -n "$PUBLIC_BASE_URL" ]] || die "Chybí .env s PUBLIC_BASE_URL (cp .env.example .env && chmod 600 .env)."
+  [[ -n "$PUBLIC_BASE_URL" ]] || die "Missing .env with PUBLIC_BASE_URL (cp .env.example .env && chmod 600 .env)."
 }

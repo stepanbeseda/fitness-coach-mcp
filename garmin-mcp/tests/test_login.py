@@ -6,7 +6,7 @@ from garmin_coach_mcp import login
 
 def test_check_without_tokens_exits_1(tmp_path, capsys):
     assert login.main(["--check", "--tokens-dir", str(tmp_path / "none")]) == 1
-    assert "CHYBÍ" in capsys.readouterr().out
+    assert "MISSING" in capsys.readouterr().out
 
 
 def test_import_writes_private_token_file(tmp_path):
@@ -29,16 +29,16 @@ def test_import_rejects_garbage(tmp_path, capsys):
 
 def test_input_problem_detection():
     assert login._input_problem("Žluťoučký kůň 123!") is None
-    assert "rozbitý znak" in login._input_problem("heslo\udcc3x")
-    assert "řídicí znak" in login._input_problem("heslo\x7fx")
-    assert "řídicí znak" in login._input_problem("heslo\x08x")
+    assert "broken character" in login._input_problem("heslo\udcc3x")
+    assert "control character" in login._input_problem("heslo\x7fx")
+    assert "control character" in login._input_problem("heslo\x08x")
 
 
 def test_prompt_rejects_corrupted_input_and_asks_again(monkeypatch, capsys):
     answers = iter(["abc\udcc3def", "správné heslo"])
     monkeypatch.setattr(login.getpass, "getpass", lambda prompt: next(answers))
-    assert login._prompt("Garmin heslo", secret=True) == "správné heslo"
-    assert "rozbitý znak" in capsys.readouterr().err
+    assert login._prompt("Garmin password", secret=True) == "správné heslo"
+    assert "broken character" in capsys.readouterr().err
 
 
 def test_login_sends_nothing_after_repeated_corrupted_password(monkeypatch, tmp_path, capsys):
@@ -49,7 +49,7 @@ def test_login_sends_nothing_after_repeated_corrupted_password(monkeypatch, tmp_
 
     monkeypatch.setattr(login, "Garmin", must_not_be_called)
     assert login.interactive_login(tmp_path, "user@example.com") == login.EXIT_FAIL
-    assert "nic neposlal" in capsys.readouterr().err
+    assert "Nothing was sent" in capsys.readouterr().err
 
 
 def test_symlinked_parent_is_resolved_like_macos_tmp(tmp_path):

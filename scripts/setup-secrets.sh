@@ -29,7 +29,7 @@ set_perms() {
   local file="$1"
   chmod 0640 "$file"
   if [[ "$(stat -c %g "$file")" != "$APP_GID" ]]; then
-    sudo chgrp "$APP_GID" "$file" || die "Nepodařilo se nastavit skupinu $APP_GID na $file (potřebuje sudo)."
+    sudo chgrp "$APP_GID" "$file" || die "Could not set group $APP_GID on $file (needs sudo)."
   fi
 }
 
@@ -39,7 +39,7 @@ write_secret() {
   # Write in place (same inode) so running containers never see a half-written file.
   (umask 077 && printf '%s\n' "$value" > "$file")
   set_perms "$file"
-  ok "Uloženo: secrets/$name"
+  ok "Saved: secrets/$name"
 }
 
 has_secret() { [[ -s "$SECRETS_DIR/$1" ]]; }
@@ -53,7 +53,7 @@ read_hidden() {
 
 ensure_gateway_image() {
   if ! docker image inspect "$GATEWAY_IMAGE" >/dev/null 2>&1; then
-    info "Builduju image gateway (poprvé to chvíli trvá)..."
+    info "Building the gateway image (the first build takes a while)..."
     dc build gateway >&2
   fi
 }
@@ -66,22 +66,22 @@ recreate() {
   for svc in "$@"; do
     if grep -qx "$svc" <<<"$running"; then
       dc up -d --force-recreate --no-deps "$svc" >&2
-      ok "Restartováno: $svc"
+      ok "Recreated: $svc"
     fi
   done
 }
 
 cmd_hevy_key() {
   local key code
-  info "Hevy API key: https://hevy.com/settings?developer (web Hevy, vyžaduje PRO)."
+  info "Hevy API key: https://hevy.com/settings?developer (Hevy web app, requires PRO)."
   key="$(read_hidden 'Hevy API key: ')"
-  [[ -n "$key" ]] || die "Prázdný klíč."
+  [[ -n "$key" ]] || die "Empty key."
   code="$(printf 'api-key: %s\n' "$key" | curl -sS -o /dev/null -w '%{http_code}' -H @- \
           https://api.hevyapp.com/v1/user/info || true)"
   case "$code" in
-    200) ok "Hevy API klíč ověřen." ;;
-    401|403) die "Hevy klíč odmítnut (HTTP $code). Nic jsem neuložil." ;;
-    *) warn "Klíč se nepodařilo ověřit (HTTP ${code:-?}); ukládám i tak." ;;
+    200) ok "Hevy API key verified." ;;
+    401|403) die "Hevy rejected the key (HTTP $code). Nothing was saved." ;;
+    *) warn "Could not verify the key (HTTP ${code:-?}); saving it anyway." ;;
   esac
   write_secret hevy_api_key "$key"
   recreate hevy-mcp
@@ -90,22 +90,22 @@ cmd_hevy_key() {
 cmd_ts_authkey() {
   local key
   info "Auth key: Tailscale admin → Settings → Keys → Generate auth key"
-  info "  (Reusable: ne, Ephemeral: ne, Pre-approved: ano, Tags: ${TS_TAG:-tag:fitness-mcp})."
+  info "  (Reusable: no, Ephemeral: no, Pre-approved: yes, Tags: ${TS_TAG:-tag:fitness-mcp})."
   key="$(read_hidden 'Tailscale auth key (tskey-auth-...): ')"
-  [[ "$key" == tskey-* ]] || die "Tohle nevypadá jako Tailscale auth key."
+  [[ "$key" == tskey-* ]] || die "This does not look like a Tailscale auth key."
   write_secret ts_authkey "$key"
-  info "Klíč je potřeba jen pro první přihlášení uzlu; stav se pak drží ve volume ts-state."
+  info "The key is only needed for the node's first login; after that the state is kept in the ts-state volume."
 }
 
 cmd_password() {
   local pw pw2 hash
   ensure_gateway_image
-  info "Heslo pro přihlášení do gateway (aspoň 12 znaků, ideálně passphrase ze 4+ slov)."
-  pw="$(read_hidden 'Nové heslo: ')"
-  pw2="$(read_hidden 'Heslo znovu: ')"
-  [[ "$pw" == "$pw2" ]] || die "Hesla se neshodují."
+  info "Password for the gateway login (at least 12 characters, ideally a passphrase of 4+ words)."
+  pw="$(read_hidden 'New password: ')"
+  pw2="$(read_hidden 'Repeat password: ')"
+  [[ "$pw" == "$pw2" ]] || die "The passwords do not match."
   hash="$(printf '%s\n' "$pw" | docker run --rm -i --network none --entrypoint python "$GATEWAY_IMAGE" \
-          -m gateway.cli hash-password --stdin)" || die "Hash hesla se nepodařil."
+          -m gateway.cli hash-password --stdin)" || die "Hashing the password failed."
   unset pw pw2
   write_secret gateway_password_hash "$hash"
   recreate gateway
@@ -115,25 +115,25 @@ cmd_totp() {
   local secret code attempt
   ensure_gateway_image
   secret="$(docker run --rm -i --network none --entrypoint python "$GATEWAY_IMAGE" \
-            -m gateway.cli new-totp --account "${OWNER_TAILSCALE_LOGIN:-owner}")" || die "Generování TOTP selhalo."
+            -m gateway.cli new-totp --account "${OWNER_TAILSCALE_LOGIN:-owner}")" || die "Generating the TOTP secret failed."
   for attempt in 1 2 3; do
-    IFS= read -rp "Opiš aktuální 6místný kód z autentizátoru: " code </dev/tty
+    IFS= read -rp "Enter the current 6-digit code from your authenticator: " code </dev/tty
     if printf '%s\n%s\n' "$secret" "$code" | docker run --rm -i --network none --entrypoint python \
          "$GATEWAY_IMAGE" -m gateway.cli verify-totp; then
       write_secret gateway_totp_secret "$secret"
       recreate gateway
       return 0
     fi
-    warn "Kód nesedí (pokus $attempt/3). Zkontroluj čas v telefonu."
+    warn "Wrong code (attempt $attempt/3). Check the clock on your phone."
   done
-  die "TOTP neověřeno, nic jsem neuložil."
+  die "TOTP not verified, nothing was saved."
 }
 
 new_backend_token() {
   local value
   value="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
-    || die "Generování interního tokenu $1 selhalo, nic jsem neuložil."
-  [[ ${#value} -ge 32 ]] || die "Generování interního tokenu $1 selhalo, nic jsem neuložil."
+    || die "Generating the internal token $1 failed, nothing was saved."
+  [[ ${#value} -ge 32 ]] || die "Generating the internal token $1 failed, nothing was saved."
   write_secret "$1" "$value"
 }
 
@@ -167,7 +167,7 @@ ensure_backend_tokens() {
 ensure_garmin_readonly_token() {
   if ! has_secret garmin_readonly_token; then
     new_backend_token garmin_readonly_token
-    info "Nový read-only token pro coach-mcp platí po nasazení: docker compose up -d --build garmin-mcp coach-mcp"
+    info "The new read-only token for coach-mcp takes effect after a deploy: docker compose up -d --build garmin-mcp coach-mcp"
   fi
   return 0
 }
@@ -183,7 +183,7 @@ ensure_telegram_token() {
     ensure_dir
     (umask 077 && : > "$file")
     set_perms "$file"
-    ok "Vytvořeno: secrets/telegram_bot_token (prázdný, ranní briefing vypnutý)"
+    ok "Created: secrets/telegram_bot_token (empty, morning briefing off)"
   fi
   return 0
 }
@@ -201,7 +201,7 @@ wait_enter() { IFS= read -r _ </dev/tty; }
 show_telegram_chat_ids() {
   local body code ids
   body="$(mktemp)"
-  info "Pošli teď botovi v Telegramu libovolnou zprávu (třeba /start) a pak tady stiskni Enter."
+  info "Now send the bot any message in Telegram (for example /start), then press Enter here."
   wait_enter
   code="$(telegram_api "$1" getUpdates "$body")"
   ids=""
@@ -230,25 +230,25 @@ PY
   fi
   rm -f "$body"
   if [[ -z "$ids" ]]; then
-    warn "Žádný soukromý chat s botem jsem nenašel (HTTP $code). Napiš botovi a spusť scripts/setup-secrets.sh telegram-chat-id."
+    warn "No private chat with the bot found (HTTP $code). Message the bot and run scripts/setup-secrets.sh telegram-chat-id."
     return 0
   fi
-  ok "Soukromé chaty s botem (chat id a jméno):"
+  ok "Private chats with the bot (chat id and name):"
   printf '%s\n' "$ids" | sed 's/^/  /'
-  info "Do .env přidej řádek COACH_TELEGRAM_CHAT_ID= s číslem svého chatu a spusť docker compose up -d coach-mcp."
+  info "Add the line COACH_TELEGRAM_CHAT_ID= with your chat id to .env and run docker compose up -d coach-mcp."
 }
 
 cmd_telegram_token() {
   local token code
-  info "Token bota od @BotFather v Telegramu (/newbot), tvar 123456789:AA..."
+  info "Bot token from @BotFather in Telegram (/newbot), shaped like 123456789:AA..."
   token="$(read_hidden 'Telegram bot token: ')"
   [[ "$token" =~ $TELEGRAM_TOKEN_RE ]] \
-    || die "Tohle nevypadá jako token Telegram bota (číslo, dvojtečka, znaky). Nic jsem neuložil."
+    || die "This does not look like a Telegram bot token (digits, a colon, characters). Nothing was saved."
   code="$(telegram_api "$token" getMe /dev/null)"
   case "$code" in
-    200) ok "Token bota ověřen." ;;
-    401|404) die "Telegram token odmítl (HTTP $code). Nic jsem neuložil." ;;
-    *) warn "Token se nepodařilo ověřit (HTTP $code); ukládám i tak." ;;
+    200) ok "Bot token verified." ;;
+    401|404) die "Telegram rejected the token (HTTP $code). Nothing was saved." ;;
+    *) warn "Could not verify the token (HTTP $code); saving it anyway." ;;
   esac
   write_secret telegram_bot_token "$token"
   show_telegram_chat_ids "$token"
@@ -257,10 +257,10 @@ cmd_telegram_token() {
 
 cmd_telegram_chat_id() {
   local token
-  has_secret telegram_bot_token || die "Nejdřív ulož token bota: scripts/setup-secrets.sh telegram-token"
+  has_secret telegram_bot_token || die "Save the bot token first: scripts/setup-secrets.sh telegram-token"
   token="$(tr -d '\r\n' < "$SECRETS_DIR/telegram_bot_token")"
   [[ "$token" =~ $TELEGRAM_TOKEN_RE ]] \
-    || die "Soubor secrets/telegram_bot_token nemá tvar tokenu bota. Spusť scripts/setup-secrets.sh telegram-token."
+    || die "The file secrets/telegram_bot_token does not hold a bot token. Run scripts/setup-secrets.sh telegram-token."
   show_telegram_chat_ids "$token"
 }
 
@@ -270,7 +270,7 @@ cmd_fix_perms() {
   for f in "$SECRETS_DIR"/*; do
     [[ -f "$f" ]] && set_perms "$f"
   done
-  ok "Oprávnění nastavena (adresář 0700, soubory 0640, skupina $APP_GID)."
+  ok "Permissions set (directory 0700, files 0640, group $APP_GID)."
 }
 
 cmd_all() {
@@ -284,7 +284,7 @@ cmd_all() {
   has_secret gateway_password_hash || cmd_password
   has_secret gateway_totp_secret || cmd_totp
   cmd_fix_perms
-  ok "Všechny secrets jsou připravené. Rotace: scripts/setup-secrets.sh <hevy-key|password|totp|backend-tokens|telegram-token>"
+  ok "All secrets are in place. Rotation: scripts/setup-secrets.sh <hevy-key|password|totp|backend-tokens|telegram-token>"
 }
 
 require_docker

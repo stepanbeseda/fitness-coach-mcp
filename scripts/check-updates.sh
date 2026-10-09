@@ -7,9 +7,9 @@
 source "$(dirname "$0")/lib.sh"
 
 row() { printf '%-28s %-22s %-22s %s\n' "$1" "$2" "$3" "$4"; }
-status_for() { [[ "$1" == "$2" ]] && echo "aktuální" || echo "${C_WARN}UPDATE${C_OFF}"; }
+status_for() { [[ "$1" == "$2" ]] && echo "current" || echo "${C_WARN}UPDATE${C_OFF}"; }
 
-row "KOMPONENTA" "PINNUTO" "NEJNOVĚJŠÍ" "STAV"
+row "COMPONENT" "PINNED" "LATEST" "STATUS"
 
 # Tailscale (stable releases have an even minor version)
 ts_pin="$(sed -n 's|^FROM tailscale/tailscale:v\([0-9.]*\)@.*|\1|p' tailscale/Dockerfile)"
@@ -41,5 +41,5 @@ for lock in gateway/requirements.lock garmin-mcp/requirements.lock coach-mcp/req
   done < <(sed -n 's/^\([A-Za-z0-9_.-]*\)==\([^ ]*\).*/\1==\2/p' "$lock")
 done
 echo
-echo "Python balíčky vypsané výše mají novější verzi; ostatní jsou aktuální."
-echo "Postup aktualizace: README.md → Aktualizace."
+echo "The Python packages listed above have a newer version; the rest are current."
+echo "How to update: README.md → Updates."

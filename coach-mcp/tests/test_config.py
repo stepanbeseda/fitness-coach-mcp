@@ -40,6 +40,16 @@ def test_empty_tz_falls_back_to_default():
     assert Settings.from_env({"TZ": ""}).timezone == "Europe/Prague"
 
 
+@pytest.mark.parametrize(("raw", "language"), [("", "en"), ("en", "en"), ("cs", "cs"), (" CS ", "cs")])
+def test_language(raw, language):
+    assert Settings.from_env({"COACH_LANGUAGE": raw}).language == language
+
+
+def test_unknown_language_is_rejected():
+    with pytest.raises(ValueError, match="COACH_LANGUAGE must be one of en, cs"):
+        Settings.from_env({"COACH_LANGUAGE": "de"})
+
+
 def test_from_env_overrides():
     s = Settings.from_env(
         {

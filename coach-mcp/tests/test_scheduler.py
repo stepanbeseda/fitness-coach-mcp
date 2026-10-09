@@ -42,6 +42,7 @@ def make_settings(db_path: Path, **overrides: Any) -> Settings:
         "db_path": db_path,
         "timezone": "Europe/Prague",
         "telegram_chat_id": "123456789",
+        "language": "cs",  # the message assertions below are in Czech
     }
     fields.update(overrides)
     return Settings(**fields)
@@ -664,7 +665,7 @@ async def test_send_briefing_command_uses_the_configured_zone_for_today(db_path)
 async def test_send_briefing_command_without_push_config_exits_2(db_path, capsys):
     garmin = FakeGarmin(garmin_data())
     rc = await send_briefing_command(
-        Settings(db_path=db_path), store=Store(db_path), garmin=garmin, push=FakePush(), today=lambda: D
+        Settings(db_path=db_path, language="cs"), store=Store(db_path), garmin=garmin, push=FakePush(), today=lambda: D
     )
     assert rc == 2
     captured = capsys.readouterr()

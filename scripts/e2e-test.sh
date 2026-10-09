@@ -19,8 +19,8 @@ require_docker
 PROJECT="${E2E_PROJECT:-fcm-e2e}"
 export E2E_TAG="${E2E_TAG:-test}"
 [[ "$PROJECT" =~ ^fcm-e2e(-[a-z0-9][a-z0-9_-]*)?$ ]] \
-  || die "E2E_PROJECT musí být fcm-e2e nebo fcm-e2e-<přípona> (malá písmena, číslice, - a _), ne: $PROJECT"
-[[ "$E2E_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "Neplatný E2E_TAG: $E2E_TAG"
+  || die "E2E_PROJECT must be fcm-e2e or fcm-e2e-<suffix> (lowercase letters, digits, - and _), not: $PROJECT"
+[[ "$E2E_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "Invalid E2E_TAG: $E2E_TAG"
 TMP_SECRETS="$(mktemp -d)"
 export SECRETS_DIR="$TMP_SECRETS"
 export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://fitness-mcp.example.ts.net}"
@@ -44,14 +44,14 @@ cleanup() {
 trap cleanup EXIT
 
 info "Offline test of scripts/setup-secrets.sh..."
-bash scripts/test-setup-secrets.sh >&2 || die "Offline test setup-secrets.sh selhal (výpis výše)."
+bash scripts/test-setup-secrets.sh >&2 || die "Offline test of setup-secrets.sh failed (output above)."
 
 info "Build images..."
 # --progress=plain: with stdout redirected, Compose's default (tty) progress renderer fails with
 # "failed to get console: provided file is not a console". The plain log goes to a file and is
 # shown only when the build fails.
 "${compose[@]}" build --progress=plain >/dev/null 2>"$BUILD_LOG" \
-  || { cat "$BUILD_LOG" >&2; die "Build selhal (log výše)."; }
+  || { cat "$BUILD_LOG" >&2; die "Build failed (log above)."; }
 
 info "Throwaway secrets..."
 put() { printf '%s\n' "$2" > "$TMP_SECRETS/$1"; chmod 0644 "$TMP_SECRETS/$1"; }
@@ -79,11 +79,11 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 "${compose[@]}" ps --format 'table {{.Service}}\t{{.Status}}'
-[[ $unhealthy == 0 ]] || { "${compose[@]}" logs --tail 30; die "Služby nejsou healthy."; }
+[[ $unhealthy == 0 ]] || { "${compose[@]}" logs --tail 30; die "Services are not healthy."; }
 
 info "coach-mcp -> garmin-mcp (read-only token)..."
 "${compose[@]}" exec -T coach-mcp python - < scripts/e2e_coach_garmin.py \
-  || { "${compose[@]}" logs --tail 30 garmin-mcp coach-mcp; die "Kontroly read-only tokenu v coach-mcp selhaly (výpis výše)."; }
+  || { "${compose[@]}" logs --tail 30 garmin-mcp coach-mcp; die "Read-only token checks in coach-mcp failed (output above)."; }
 
 status=0
 "${compose[@]}" exec -T coach-mcp python - < scripts/e2e_hevy_client.py || status=1
@@ -91,6 +91,6 @@ status=0
 COMPOSE_PROJECT_NAME="$PROJECT" COMPOSE_FILE="docker-compose.yml:compose.test.yml" scripts/e2e_backup.sh || status=1
 
 echo
-info "Audit log (posledních 12 záznamů):"
+info "Audit log (last 12 records):"
 "${compose[@]}" exec -T gateway tail -n 12 /data/audit.jsonl
 exit "$status"

@@ -3,6 +3,7 @@ name = "fitness-coach-gateway"
 version = "0.1.0"
 description = "Single-user OAuth 2.1 authorization server + reverse proxy for remote MCP servers"
 requires-python = ">=3.13"
+license = "MIT"
 dependencies = [
     "starlette",
     "uvicorn",

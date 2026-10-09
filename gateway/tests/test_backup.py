@@ -17,7 +17,7 @@ from gateway.backup import SnapshotError, check_gateway, restore_command, snapsh
 from gateway.store import Grant, Store, Token
 
 NOW = datetime(2026, 10, 9, 10, 15, 0, tzinfo=UTC)
-ASIDE = "pred-obnovou-20261009T101500Z"
+ASIDE = "before-restore-20261009T101500Z"
 T0 = 1_760_000_000
 
 
@@ -241,7 +241,7 @@ def test_snapshot_deadline_ends_a_backup_that_turns_busy_midway(db):
 def test_check_gateway(tmp_path, db):
     empty = tmp_path / "empty.sqlite3"
     empty.write_bytes(b"")
-    with pytest.raises(SnapshotError, match="chybí tabulka grants/tokens"):
+    with pytest.raises(SnapshotError, match="grants/tokens table missing"):
         snapshot(empty, check_gateway)
 
     coach_like = tmp_path / "coach.db"
@@ -249,7 +249,7 @@ def test_check_gateway(tmp_path, db):
     conn.execute("CREATE TABLE goals (id INTEGER)")
     conn.commit()
     conn.close()
-    with pytest.raises(SnapshotError, match="není databáze gateway"):
+    with pytest.raises(SnapshotError, match="not a gateway database"):
         snapshot(coach_like, check_gateway)
 
     only_grants = tmp_path / "only_grants.sqlite3"
@@ -257,7 +257,7 @@ def test_check_gateway(tmp_path, db):
     conn.execute("CREATE TABLE grants (id TEXT)")
     conn.commit()
     conn.close()
-    with pytest.raises(SnapshotError, match="není databáze gateway"):
+    with pytest.raises(SnapshotError, match="not a gateway database"):
         snapshot(only_grants, check_gateway)
 
     store = Store(str(db))
@@ -295,7 +295,7 @@ def test_cli_backup_db_writes_to_stdout(db, tmp_path, capsysbinary):
 def test_cli_backup_db_refuses_a_terminal_and_a_missing_database(db, tmp_path, monkeypatch, capsys):
     assert cli.main(["backup-db", "--db", str(tmp_path / "gone" / "gateway.sqlite3")]) == 1
     captured = capsys.readouterr()
-    assert captured.err.startswith("záloha selhala: žádná databáze v ")
+    assert captured.err.startswith("backup failed: no database at ")
     assert captured.out == ""
     assert not (tmp_path / "gone").exists()
 
@@ -304,7 +304,7 @@ def test_cli_backup_db_refuses_a_terminal_and_a_missing_database(db, tmp_path, m
     assert cli.main(["backup-db", "--db", str(db)]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "nepíšu databázi na terminál" in captured.err
+    assert "refusing to write the database to a terminal" in captured.err
 
 
 def test_cli_backup_db_does_not_need_the_gateway_configuration(db, monkeypatch, capsysbinary):
@@ -343,7 +343,7 @@ def test_restore_db_moves_stale_wal_aside(tmp_path, capsys):
     assert (vol / f"gateway.sqlite3.{ASIDE}-shm").read_bytes() == b"stale shm"
     assert (vol / f"gateway.sqlite3.{ASIDE}").read_bytes() == old_bytes
     assert grant_ids(target) == ["grant-1", "grant-2"]
-    assert f"obnoveno gateway.sqlite3; předchozí soubory jsou jako gateway.sqlite3.{ASIDE}" in capsys.readouterr().err
+    assert f"restored gateway.sqlite3; previous files kept as gateway.sqlite3.{ASIDE}" in capsys.readouterr().err
 
 
 def test_restore_db_through_the_cli_from_stdin(tmp_path, monkeypatch):
@@ -382,7 +382,7 @@ def test_restore_db_rejects_bad_input_and_changes_nothing(case, tmp_path, monkey
     assert cli.main(["restore-db", "--db", str(target)]) == 1
 
     err = capsys.readouterr().err
-    assert err.startswith("obnova selhala: ") and err.endswith("; nic se nezměnilo\n")
+    assert err.startswith("restore failed: ") and err.endswith("; nothing changed\n")
     assert {p.name: p.read_bytes() for p in vol.iterdir()} == before
 
 
@@ -391,7 +391,7 @@ def test_restore_db_refuses_a_terminal(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys, "stdin", stdin)
     assert cli.main(["restore-db", "--db", str(tmp_path / "gateway.sqlite3")]) == 2
-    assert "nečtu databázi z terminálu" in capsys.readouterr().err
+    assert "refusing to read the database from a terminal" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
 
 
@@ -406,7 +406,7 @@ def test_restore_db_fresh_directory(tmp_path, capsys):
     assert restore_command(target, str(src_path), now=lambda: NOW) == 0
     assert [p.name for p in vol.iterdir()] == ["gateway.sqlite3"]
     assert grant_ids(target) == ["grant-1"]
-    assert "předchozí databáze neexistovala" in capsys.readouterr().err
+    assert "there was no previous database" in capsys.readouterr().err
 
 
 def test_restore_db_refuses_its_own_target_and_same_second_aside(tmp_path, capsys):
@@ -418,13 +418,13 @@ def test_restore_db_refuses_its_own_target_and_same_second_aside(tmp_path, capsy
     store.close()
     before = target.read_bytes()
     assert restore_command(target, str(target), now=lambda: NOW) == 1
-    assert "zdroj je nahrazovaná databáze" in capsys.readouterr().err
+    assert "the source is the database being replaced" in capsys.readouterr().err
 
     src_path = tmp_path / "src.sqlite3"
     Store(str(src_path)).close()
     (vol / f"gateway.sqlite3.{ASIDE}").write_bytes(b"earlier")
     assert restore_command(target, str(src_path), now=lambda: NOW) == 1
-    assert "zkus to za sekundu" in capsys.readouterr().err
+    assert "try again in a second" in capsys.readouterr().err
     assert target.read_bytes() == before
     assert sorted(p.name for p in vol.iterdir()) == ["gateway.sqlite3", f"gateway.sqlite3.{ASIDE}"]
 

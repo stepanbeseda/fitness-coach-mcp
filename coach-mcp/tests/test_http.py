@@ -386,7 +386,7 @@ async def test_daily_briefing_over_http(settings, store):
     ]
     assert briefing["garmin_today"] == ["Lehký běh 40 min"]
     assert list(briefing["push"]) == ["text"]
-    assert briefing["push"]["text"].split("\n")[0] == "\U0001f7e1 \u26a0\ufe0f ŽLUTÁ · ranní briefing 7. 10."
+    assert briefing["push"]["text"].split("\n")[0] == "\U0001f7e1 \u26a0\ufe0f YELLOW · morning briefing 7 Oct"  # English by default
     assert garmin.days == [TODAY]
 
 
@@ -436,7 +436,7 @@ async def test_scheduler_on_sends_from_lifespan(settings, store, caplog):
     # a normal shutdown is a cancellation, not a "stopped" scheduler, and the callback raised nothing
     assert "briefing status=stopped" not in caplog.text and "Exception in callback" not in caplog.text
     assert garmin.days == [TODAY]
-    assert push.sent[0][1].title == "\U0001f7e2 ZELENÁ · ranní briefing 7. 10."
+    assert push.sent[0][1].title == "\U0001f7e2 GREEN · morning briefing 7 Oct"
     assert store.briefing_sent(TODAY)
 
 
@@ -516,7 +516,7 @@ async def test_push_and_tool_report_the_same_briefing(settings, store):
     assert tool["push"] == {"text": sent.text}
     assert tool["verdict"] == "yellow"
     assert [a["key"] for a in tool["alerts"] if a["new"]] == ["resting_hr_elevated", "acwr_out_of_range", "missed_workout"]
-    for text in ("Klidová tepovka 58 bpm", "Poměr akutní a chronické zátěže 1,62", "Intervaly 6×800 m"):
+    for text in ("Resting HR 58 bpm", "acute to chronic load ratio 1.62", "Intervaly 6×800 m"):
         assert text in sent.text
     # the alert state the push wrote keeps the already announced alerts "new" for the day
     assert store.alert_states()["acwr_out_of_range"]["fired_on"] == "2026-10-07"
