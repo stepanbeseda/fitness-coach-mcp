@@ -33,6 +33,16 @@ repeated findings.
 - [ ] The four-command check (`docker build --target test garmin-mcp`,
   `docker build --target test gateway`, `docker build --target test coach-mcp`,
   `scripts/e2e-test.sh`) was run and is green.
+- [ ] Every optional argument of a new tool has a call through the real
+  entry point (HTTP) with a value that differs from the default, and
+  dropping the argument in the wiring turns a test red. The tests accept
+  every limit's maximum and reject maximum + 1; two checks that can both
+  apply have a case where the order decides.
+- [ ] A test that builds a database of version N uses `MIGRATIONS[:N]` for
+  the build and the reopen; the latest version is derived, not hand-pinned.
+- [ ] Parallel or rebased work: docker builds and e2e run under `flock
+  /tmp/fcm-docker.lock` with PR-private image tags, and after a rebase the
+  test stage is forced (`--no-cache-filter test`).
 
 ## Failure
 
@@ -46,6 +56,15 @@ repeated findings.
 - [ ] Retry/give-up logic: run the backend-outage scenario (every call errors
   for N runs, then recovers) and confirm no item is given up permanently and
   nothing is charged for the outage.
+- [ ] A date or timestamp that comes from a backend is bounded by year when
+  parsed or parsed under `except (ValueError, OverflowError)`; a test feeds
+  9999-12-31 and 0001-01-01 through the real path.
+- [ ] A statement in the spec or code about what a library or backend
+  returns (error text, status, output schema, nullability, a shared error
+  code) was checked against the real image; HTTP tests of tool errors assert
+  "contains" because the MCP SDK prefixes the text. A new secret whose
+  absence degrades a service shows in `/healthz` and
+  `scripts/healthcheck.sh`, or the gap is accepted in writing.
 
 ## Configuration and secrets
 
@@ -72,6 +91,12 @@ repeated findings.
   confirmation or a visible warning, and the README describes the way back.
 - [ ] Writes to the athlete's Garmin/Hevy data are explicit write tools
   (annotated as not read-only) and need athlete confirmation.
+- [ ] A rotation or clean-up never makes the item written by this run a
+  candidate and does not report success without it; `find ... -exec rm`
+  meant for children has `-mindepth 1`. A settled/final flag takes the
+  latest settle time of every source that feeds it.
+- [ ] New scripts are committed executable (mode 100755 like the other
+  `scripts/*`), and the spec says `chmod +x`.
 
 ## Documentation
 
@@ -88,3 +113,11 @@ repeated findings.
 - [ ] A recipe that appends to a file (`>> .env`) states the outcome of a
   second run (a duplicate line) and what the user does about it; no step
   that a worker runs opens `.env` or `secrets/*`.
+- [ ] After a rebase onto, or integration with, a merged PR, `INSTRUCTIONS`,
+  tool docstrings and the Czech docs are grepped for claims the other PR
+  made false (a source list, "not stored yet", "Garmin only"), and every
+  negative grep first shows its positive hit on the current tree.
+- [ ] A deploy step states the order (pull, `setup-secrets.sh`, `up --build`
+  of all affected services together) and the commands that must not run in
+  between; none of them recreates a service from the old image under the new
+  compose file.
