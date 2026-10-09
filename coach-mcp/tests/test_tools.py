@@ -706,6 +706,15 @@ def test_search_notes_malformed_query_is_a_tool_error(store, query):
     assert "fts5" not in message and "no such column" not in message and "syntax error" not in message
 
 
+def test_search_notes_query_error_hides_the_sqlite_error(store):
+    """The SQLite message echoes the query; `from None` keeps it out of the exception chain shown by tracebacks."""
+    store.insert_note(date(2026, 10, 1), "Bolí koleno")
+    with pytest.raises(ToolError) as exc:
+        tools.search_notes(store, TODAY, query="PRIVATE-QUERY-TEXT")
+    assert exc.value.__cause__ is None and exc.value.__suppress_context__ is True
+    assert str(exc.value) == tools.SEARCH_QUERY_ERROR
+
+
 def test_search_notes_locked_database_is_not_a_query_error(store, monkeypatch):
     store.insert_note(date(2026, 10, 1), "Bolí koleno")
 
