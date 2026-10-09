@@ -26,6 +26,7 @@ from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminData, GarminReader
 from coach_mcp.server import create_app
 from coach_mcp.store import SCHEMA_VERSION, Store
+from coach_mcp.tools import SEARCH_QUERY_ERROR
 from garmin_payloads import (
     GREEN_SNAPSHOT,
     YELLOW_SNAPSHOT,
@@ -60,6 +61,9 @@ EXPECTED_TOOLS = {
     "get_trends",
     "get_weekly_report",
     "get_strength_progress",
+    "search_notes",
+    "list_goals",
+    "list_constraints",
 }
 WRITE_TOOLS = {"set_goal", "set_constraint", "save_plan", "update_session", "add_note"}
 # Tools that reach an outside service (garmin-mcp); every other tool only touches the local store.
@@ -137,6 +141,8 @@ async def test_initialize_list_and_annotations(app):
         assert "get_trends" in init["instructions"]
         assert "get_weekly_report" in init["instructions"]
         assert "get_strength_progress" in init["instructions"]
+        for name in ("search_notes", "list_goals", "list_constraints"):
+            assert name in init["instructions"]
 
         r = await client.post("/mcp", headers=auth_headers(), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert r.status_code == 202
@@ -210,6 +216,10 @@ async def test_argument_validation_over_http(app, db_path, sessions):
         ("set_constraint", {"kind": "mood", "title": "x"}),
         ("update_session", {"session_id": 1, "status": "superseded"}),
         ("add_note", {"text": "x" * 2001}),
+        ("search_notes", {"query": "knee", "limit": 0}),
+        ("search_notes", {"query": "knee", "limit": 51}),
+        ("search_notes", {"query": "x" * 201}),
+        ("search_notes", {"query": "knee", "session_id": 0}),
     ],
 )
 async def test_shape_errors_are_tool_errors_not_writes(app, name, arguments):
@@ -235,6 +245,33 @@ async def test_write_and_read_round_trip_over_http(app):
         ctx = payload(await call_tool(client, "get_coach_context", {}, id_=4))
         assert ctx["goals"][0]["days_remaining"] == 10
         assert ctx["sessions"][0]["garmin_workout_id"] == "424242" and ctx["sessions"][0]["distance_km"] == 8.5
+
+
+@pytest.mark.anyio
+async def test_search_and_lists_over_http(app):
+    async with running_client(app) as client:
+        added = payload(await call_tool(client, "add_note", {"text": "Bolí mě koleno"}))["note"]
+        found = await call_tool(client, "search_notes", {"query": "boli"}, id_=3)
+        assert found["isError"] is False
+        assert [n["id"] for n in payload(found)["notes"]] == [added["id"]]
+        bad = await call_tool(client, "search_notes", {"query": "low-carb"}, id_=4)
+        assert bad["isError"] is True
+        text = bad["content"][0]["text"]
+        assert SEARCH_QUERY_ERROR in text
+        assert "no such column" not in text and "fts5" not in text
+
+        assert (await call_tool(client, "set_goal", {"title": "Old 10k"}, id_=5))["isError"] is False
+        assert (await call_tool(client, "set_goal", {"goal_id": 1, "status": "achieved"}, id_=6))["isError"] is False
+        result = await call_tool(client, "set_constraint", {"kind": "injury", "title": "Knee"}, id_=7)
+        assert result["isError"] is False
+        result = await call_tool(client, "set_constraint", {"constraint_id": 1, "status": "resolved"}, id_=8)
+        assert result["isError"] is False
+        goals = payload(await call_tool(client, "list_goals", {}, id_=9))["goals"]
+        assert [(g["title"], g["status"]) for g in goals] == [("Old 10k", "achieved")]
+        constraints = payload(await call_tool(client, "list_constraints", {}, id_=10))["constraints"]
+        assert [(c["title"], c["status"]) for c in constraints] == [("Knee", "resolved")]
+        ctx = payload(await call_tool(client, "get_coach_context", {}, id_=11))
+        assert ctx["goals"] == [] and ctx["constraints"] == []
 
 
 @pytest.mark.anyio
@@ -268,8 +305,16 @@ async def test_log_never_contains_arguments_or_stored_text(app, caplog, restore_
         assert failed["isError"] is True and "SECRET-DATE-TEXT" in failed["content"][0]["text"]
         ok = await call_tool(client, "add_note", {"text": "PRIVATE-NOTE-TEXT"}, id_=3)
         assert ok["isError"] is False
+        found = await call_tool(client, "search_notes", {"query": "PRIVATEQUERYWORD"}, id_=4)
+        assert found["isError"] is False
+        bad = await call_tool(client, "search_notes", {"query": "PRIVATE-QUERY-TEXT"}, id_=5)
+        assert bad["isError"] is True
     assert "tool=get_plan status=error" in caplog.text and "tool=add_note status=ok" in caplog.text
+    assert "tool=search_notes status=ok" in caplog.text
+    assert "tool=search_notes status=error kind=ToolError" in caplog.text
     assert "SECRET-DATE-TEXT" not in caplog.text and "PRIVATE-NOTE-TEXT" not in caplog.text
+    for secret in ("PRIVATEQUERYWORD", "PRIVATE-QUERY-TEXT", "no such column", "fts5"):
+        assert secret not in caplog.text
 
 
 # ---------------------------------------------------------- daily briefing

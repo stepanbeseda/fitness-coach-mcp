@@ -17,6 +17,8 @@ from coach_mcp.store import (
 
 # The schema version of the strength tables: the only number that changes when this migration is renumbered.
 STRENGTH_VERSION = 5
+# The latest schema version (the notes full-text index, PR 15); the other number pinned by hand.
+LATEST_VERSION = 6
 
 
 def _tables(path) -> set[str]:
@@ -51,7 +53,7 @@ def test_empty_file_gets_schema_and_version(db_path):
         "hevy_templates",
         "hevy_sync",
     } <= _tables(db_path)
-    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == STRENGTH_VERSION
+    assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == LATEST_VERSION
     assert s.check() == SCHEMA_VERSION
 
 
@@ -472,6 +474,92 @@ def test_upsert_suggestions_and_suggestions_for(store):
     assert store.suggestions_for([999]) == {}
 
 
+# Position of the notes full-text migration (renumbered on rebase without touching these tests).
+NOTES_FTS_VERSION = next(i + 1 for i, script in enumerate(MIGRATIONS) if "notes_fts" in script)
+# Keep in sync with the notes_fts downgrade command in coach-mcp/README.md.
+DOWNGRADE_NOTES_FTS_SQL = (
+    "BEGIN IMMEDIATE; DROP TRIGGER notes_fts_insert; DROP TABLE notes_fts; "
+    f"PRAGMA user_version = {NOTES_FTS_VERSION - 1}; COMMIT;"
+)
+
+
+def _fts_rows(path) -> int:
+    """Rows in the FTS index storage itself (count(*) FROM notes_fts would read the notes table instead)."""
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute("SELECT count(*) FROM notes_fts_docsize").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _trigger_names(path) -> set[str]:
+    conn = sqlite3.connect(path)
+    try:
+        return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
+    finally:
+        conn.close()
+
+
+def test_notes_fts_migration_indexes_existing_notes(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: NOTES_FTS_VERSION - 1])
+        old = Store(db_path)
+        (session_id,) = old.replace_planned(
+            date(2026, 10, 5),
+            date(2026, 10, 11),
+            date(2026, 10, 5),
+            [{"date": date(2026, 10, 7), "type": "running", "description": "Easy run"}],
+        )[1]
+        first = old.insert_note(date(2026, 10, 5), "Bolí mě pravé koleno po běhu")
+        second = old.insert_note(date(2026, 10, 6), "Únava, špatný spánek")
+        _, third = old.update_session_status(session_id, "done", None, (date(2026, 10, 7), "Easy run felt fine"))
+        assert third is not None
+        assert not any(name.startswith("notes_fts") for name in _tables(db_path))
+    new = Store(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION
+    assert _fts_rows(db_path) == 3
+    assert [n["id"] for n in new.search_notes("koleno", None, None, None, 10)] == [first]
+    assert [n["id"] for n in new.search_notes("spanek", None, None, None, 10)] == [second]
+    assert [n["id"] for n in new.search_notes("easy", None, None, None, 10)] == [third]
+
+
+def test_notes_fts_downgrade_sql_returns_to_the_previous_version(db_path, monkeypatch):
+    new = Store(db_path)
+    new.insert_note(date(2026, 10, 6), "Bolí mě pravé koleno po běhu")
+    assert _fts_rows(db_path) == 1
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_NOTES_FTS_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == NOTES_FTS_VERSION - 1
+    assert not any(name.startswith("notes_fts") for name in _tables(db_path))
+    assert "notes_fts_insert" not in _trigger_names(db_path)
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: NOTES_FTS_VERSION - 1])
+        old = Store(db_path)
+        # A leftover trigger would raise "no such table: notes_fts" here.
+        old.insert_note(date(2026, 10, 7), "Nová poznámka po návratu")
+    again = Store(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION
+    assert [n["text"] for n in again.search_notes("navratu", None, None, None, 10)] == ["Nová poznámka po návratu"]
+    assert len(again.search_notes("koleno", None, None, None, 10)) == 1
+    assert _fts_rows(db_path) == 2
+
+
+def test_notes_fts_trigger_and_rebuild_agree(db_path):
+    s = Store(db_path)
+    for i, text in enumerate(["Bolí koleno", "Easy run", "Únava", "Dobrý spánek"]):
+        s.insert_note(date(2026, 10, 1 + i), text)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("INSERT INTO notes_fts(notes_fts) VALUES('integrity-check')")
+        notes = conn.execute("SELECT count(*) FROM notes").fetchone()[0]
+    finally:
+        conn.close()
+    assert notes == 4 == _fts_rows(db_path)
+
+
 D1, D2, D3 = date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7)
 
 
@@ -578,7 +666,7 @@ def test_migration_5_upgrades_a_version_4_file_with_data(db_path, monkeypatch):
         assert _user_version(db_path) == 4 and len(before) == 2 and suggestions
         assert not set(STRENGTH_TABLES) & _tables(db_path)
     new = Store(db_path)
-    assert _user_version(db_path) == 5 == SCHEMA_VERSION == STRENGTH_VERSION
+    assert _user_version(db_path) == SCHEMA_VERSION
     assert new.history_rows(None, D3) == before  # whole rows, every column
     assert new.suggestions_for([session_id]) == suggestions  # PR 13's table is untouched
     goal, constraint = new.get_goal(goal_id), new.get_constraint(constraint_id)
@@ -615,7 +703,10 @@ DOWNGRADE_5_SQL = (
 
 
 def test_downgrade_5_sql_returns_to_a_version_4_file(db_path, monkeypatch):
-    new = Store(db_path)
+    # It is a 5 -> 4 recipe: the file is built at version 5 (a version 6 file must first go 6 -> 5).
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:STRENGTH_VERSION])
+        new = Store(db_path)
     goal_id = new.insert_goal({"title": "Keep me"})
     session_id = _one_session(new)
     new.upsert_suggestions([(session_id, "no_activity", False, None)], D3)

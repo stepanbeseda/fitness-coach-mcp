@@ -634,6 +634,188 @@ def test_add_note_defaults_to_today_and_links_session(store):
     assert count(store, "notes") == count_before
 
 
+# -------------------------------------------------------- search and lists
+
+
+def found(store, **kwargs) -> list[int]:
+    return [n["id"] for n in tools.search_notes(store, TODAY, **kwargs)["notes"]]
+
+
+def test_search_notes_newest_first_with_limit_and_more(store):
+    # The oldest note repeats the word, so bm25 rank order differs from date order.
+    oldest = store.insert_note(date(2026, 9, 1), "koleno koleno koleno")
+    store.insert_note(date(2026, 9, 20), "Easy run, nothing special")
+    a = store.insert_note(date(2026, 10, 1), "Bolí koleno")
+    b = store.insert_note(date(2026, 10, 1), "Koleno po běhu")
+    c = store.insert_note(date(2026, 10, 3), "Koleno už nebolí")
+    newest = store.insert_note(date(2026, 10, 5), "Koleno ok")
+    store.insert_note(date(2026, 10, 6), "Dobrý spánek")
+    newest_first = [newest, c, b, a, oldest]
+    top3 = tools.search_notes(store, TODAY, query="koleno", limit=3)
+    assert [n["id"] for n in top3["notes"]] == newest_first[:3] and top3["more"] is True
+    top5 = tools.search_notes(store, TODAY, query="koleno", limit=5)
+    assert [n["id"] for n in top5["notes"]] == newest_first and top5["more"] is False
+    assert tools.search_notes(store, TODAY, query="koleno", limit=4)["more"] is True
+    default = tools.search_notes(store, TODAY, query="spanek")
+    assert len(default["notes"]) == 1 and default["more"] is False
+    assert tools.search_notes(store, TODAY, query="zzz") == {"notes": [], "more": False}
+    assert top3["notes"][0] == {"id": newest, "date": "2026-10-05", "text": "Koleno ok"}
+
+
+def test_search_notes_filters_by_date_range_and_session(store):
+    sid = seed(store, "2026-10-08")
+    n1 = store.insert_note(date(2026, 9, 30), "koleno před rozsahem")
+    n2 = store.insert_note(date(2026, 10, 1), "koleno na začátku")
+    n3 = store.insert_note(date(2026, 10, 3), "koleno v tréninku", sid)
+    n4 = store.insert_note(date(2026, 10, 5), "koleno na konci")
+    n5 = store.insert_note(date(2026, 10, 6), "koleno po rozsahu")
+    n6 = store.insert_note(date(2026, 10, 2), "koleno v tréninku podruhé", sid)
+    n7 = store.insert_note(date(2026, 10, 4), "kotník v tréninku", sid)
+    assert n7 > n6
+    assert found(store, query="koleno") == [n5, n4, n3, n6, n2, n1]
+    assert found(store, query="koleno", start_date="2026-10-01") == [n5, n4, n3, n6, n2]
+    assert found(store, query="koleno", end_date="2026-10-05") == [n4, n3, n6, n2, n1]
+    assert found(store, query="koleno", start_date="2026-10-01", end_date="2026-10-05") == [n4, n3, n6, n2]
+    assert found(store, query="koleno", start_date="2026-10-03", end_date="2026-10-03") == [n3]
+    assert found(store, query="koleno", session_id=sid) == [n3, n6]
+    assert found(store, query="koleno", session_id=sid, start_date="2026-10-03") == [n3]
+    assert found(store, query="koleno", session_id=sid, end_date="2026-10-02") == [n6]
+
+
+def test_search_notes_rejects_bad_input(store):
+    store.insert_note(date(2026, 10, 1), "koleno")
+    assert err(tools.search_notes, store, TODAY, query="  ") == "query must not be empty"
+    assert err(tools.search_notes, store, TODAY, query="a\x00") == "query must not contain NUL characters"
+    assert (
+        err(tools.search_notes, store, TODAY, query="koleno", start_date="2026-10-05", end_date="2026-10-01")
+        == "start_date must be on or before end_date"
+    )
+    assert "must be YYYY-MM-DD" in err(tools.search_notes, store, TODAY, query="koleno", start_date="yesterday")
+    assert "must be YYYY-MM-DD" in err(tools.search_notes, store, TODAY, query="koleno", end_date="tomorrow")
+    assert err(tools.search_notes, store, TODAY, query="koleno", session_id=999) == "session 999 not found"
+
+
+@pytest.mark.parametrize(
+    "query",
+    ['"unterminated', "knee AND", "(", "low-carb", "foo:bar", "*", "koleno,", "jak se cítím?"],
+)
+def test_search_notes_malformed_query_is_a_tool_error(store, query):
+    store.insert_note(date(2026, 10, 1), "Bolí koleno")
+    message = err(tools.search_notes, store, TODAY, query=query)
+    assert message == tools.SEARCH_QUERY_ERROR
+    assert "fts5" not in message and "no such column" not in message and "syntax error" not in message
+
+
+def test_search_notes_query_error_hides_the_sqlite_error(store):
+    """The SQLite message echoes the query; `from None` keeps it out of the exception chain shown by tracebacks."""
+    store.insert_note(date(2026, 10, 1), "Bolí koleno")
+    with pytest.raises(ToolError) as exc:
+        tools.search_notes(store, TODAY, query="PRIVATE-QUERY-TEXT")
+    assert exc.value.__cause__ is None and exc.value.__suppress_context__ is True
+    assert str(exc.value) == tools.SEARCH_QUERY_ERROR
+
+
+def test_search_notes_locked_database_is_not_a_query_error(store, monkeypatch):
+    store.insert_note(date(2026, 10, 1), "Bolí koleno")
+
+    def connect_without_wait() -> sqlite3.Connection:
+        conn = sqlite3.connect(store.path, timeout=0)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    locker = sqlite3.connect(store.path, isolation_level=None)
+    try:
+        locker.execute("BEGIN EXCLUSIVE")
+        monkeypatch.setattr(store, "_connect", connect_without_wait)
+        with pytest.raises(sqlite3.OperationalError) as exc:
+            tools.search_notes(store, TODAY, query="koleno")
+        assert exc.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+    finally:
+        locker.execute("ROLLBACK")
+        locker.close()
+
+
+def test_search_notes_operators(store):
+    first = store.insert_note(date(2026, 10, 1), "Bolí koleno, low-carb dieta")
+    second = store.insert_note(date(2026, 10, 2), "Běh v pohodě")
+    assert found(store, query="koleno OR beh") == [second, first]
+    assert found(store, query="koleno NOT beh") == [first]
+    assert found(store, query="koleno beh") == []
+    assert found(store, query='"low-carb"') == [first]
+    assert found(store, query="bol*") == [first]
+    assert found(store, query='"bolí koleno"') == [first]
+    assert found(store, query='"koleno boli"') == []
+    assert found(store, query="bolest") == []
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("koleno", {1}),
+        ("KOLENO", {1}),
+        ("bolí", {1}),
+        ("boli", {1}),
+        ("běhu", {1, 2}),
+        ("behu", {1, 2}),
+        ('"prave koleno"', {1}),
+        ("únava", {2}),
+        ("unava", {2}),
+        ("Únava", {2}),
+    ],
+)
+def test_search_ignores_diacritics_and_case(store, query, expected):
+    assert store.insert_note(date(2026, 10, 1), "Bolí mě pravé koleno po běhu") == 1
+    assert store.insert_note(date(2026, 10, 2), "Unava po behu bez diakritiky") == 2
+    assert set(found(store, query=query)) == expected
+
+
+def test_new_note_is_found_at_once(store):
+    sid = seed(store, "2026-10-08")
+    added = tools.add_note(store, TODAY, text="Kotník oteklý")["note"]
+    assert tools.search_notes(store, TODAY, query="kotnik")["notes"] == [added]
+    result = tools.update_session(store, TODAY, session_id=sid, status="done", note="Lýtko tuhé")
+    hit = tools.search_notes(store, TODAY, query="lytko")["notes"]
+    assert hit == [result["note"]] and hit[0]["session_id"] == sid
+
+
+def test_list_goals_returns_every_status(store):
+    assert tools.list_goals(store, TODAY) == {"goals": []}
+    active = tools.set_goal(store, TODAY, title="Half marathon", target_date="2026-10-17")["goal"]["id"]
+    achieved = tools.set_goal(store, TODAY, title="First 10k", target_date="2026-09-01")["goal"]["id"]
+    abandoned = tools.set_goal(store, TODAY, title="Sub 20 5k")["goal"]["id"]
+    later = tools.set_goal(store, TODAY, title="Marathon", target_date="2026-12-01")["goal"]["id"]
+    tools.set_goal(store, TODAY, goal_id=achieved, status="achieved")
+    tools.set_goal(store, TODAY, goal_id=abandoned, status="abandoned")
+    goals = tools.list_goals(store, TODAY)["goals"]
+    assert [(g["id"], g["title"], g["status"]) for g in goals] == [
+        (achieved, "First 10k", "achieved"),
+        (active, "Half marathon", "active"),
+        (later, "Marathon", "active"),
+        (abandoned, "Sub 20 5k", "abandoned"),
+    ]
+    assert all(g["created_at"] and g["updated_at"] and g["updated_at"] >= g["created_at"] for g in goals)
+    assert goals[0]["days_remaining"] == -36 and goals[1]["days_remaining"] == 10
+    assert "days_remaining" not in goals[3] and "target_date" not in goals[3]
+    context = tools.get_coach_context(store, TODAY)["goals"]
+    assert [g["title"] for g in context] == ["Half marathon", "Marathon"]
+
+
+def test_list_constraints_returns_active_and_resolved(store):
+    assert tools.list_constraints(store, TODAY) == {"constraints": []}
+    active = tools.set_constraint(store, TODAY, kind="limitation", title="Travel", details="no gym")["constraint"]["id"]
+    resolved = tools.set_constraint(store, TODAY, kind="injury", title="Knee")["constraint"]["id"]
+    tools.set_constraint(store, TODAY, constraint_id=resolved, status="resolved")
+    items = tools.list_constraints(store, TODAY)["constraints"]
+    assert [(c["id"], c["title"], c["status"]) for c in items] == [
+        (active, "Travel", "active"),
+        (resolved, "Knee", "resolved"),
+    ]
+    assert items[0]["kind"] == "limitation" and items[0]["details"] == "no gym" and items[1]["kind"] == "injury"
+    assert all(c["created_at"] and c["updated_at"] for c in items)
+    assert items[1]["updated_at"] >= items[1]["created_at"]
+    assert [c["title"] for c in tools.get_coach_context(store, TODAY)["constraints"]] == ["Travel"]
+
+
 # ------------------------------------------------------------- no hard delete
 
 

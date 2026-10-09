@@ -157,6 +157,18 @@ CREATE TABLE hevy_sync (
   updated_at   TEXT NOT NULL
 );
 """,
+    """
+-- Full-text index of notes.text (PR 15). External content: the text lives only in notes; 'rebuild'
+-- indexes the existing rows and the trigger indexes every new one. Notes are never updated or deleted;
+-- a change that allows that must add matching triggers.
+CREATE VIRTUAL TABLE notes_fts USING fts5(
+  text, content='notes', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
+);
+INSERT INTO notes_fts(notes_fts) VALUES ('rebuild');
+CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN
+  INSERT INTO notes_fts(rowid, text) VALUES (new.id, new.text);
+END;
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -620,6 +632,28 @@ class Store:
 
     def get_note(self, note_id: int) -> dict[str, Any] | None:
         return self._get("notes", note_id)
+
+    def search_notes(
+        self, query: str, start: date | None, end: date | None, session_id: int | None, limit: int
+    ) -> list[dict[str, Any]]:
+        """Notes whose text matches the FTS5 ``query``, newest first.
+
+        Raises sqlite3.OperationalError (SQLITE_ERROR) for a malformed query.
+        """
+        sql = "SELECT n.* FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid WHERE notes_fts MATCH ?"
+        params: list[Any] = [query]
+        if start is not None:
+            sql += " AND n.date >= ?"
+            params.append(start.isoformat())
+        if end is not None:
+            sql += " AND n.date <= ?"
+            params.append(end.isoformat())
+        if session_id is not None:
+            sql += " AND n.session_id = ?"
+            params.append(session_id)
+        sql += " ORDER BY n.date DESC, n.id DESC LIMIT ?"
+        params.append(limit)
+        return self._all(sql, tuple(params))
 
     # ------------------------------------------------------------- helpers
 

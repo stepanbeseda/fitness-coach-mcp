@@ -14,6 +14,7 @@ Self-hosted MCP servery pro osobního fitness kouče v Claude:
   Volitelně ráno pošle briefing s verdiktem a upozorněními do tvého chatu s Telegram botem (viz Provoz).
   Každou noc ukládá denní historii z Garminu a silové tréninky z Hevy pro trendy delší než 28 dní,
   týdenní přehled a progres síly (odhad 1RM).
+  Celý deník poznámek jde prohledávat a uzavřené cíle i vyřešená omezení zůstávají dohledatelné.
 
 Všechny tři běží za jednou OAuth 2.1 gateway a ven jsou vystavené jen přes **vlastní Tailscale uzel**:
 Funnel na portu 443 pro claude.ai (web, mobil, Desktop) a tailnet pro Claude Code / lokální Claude Desktop.

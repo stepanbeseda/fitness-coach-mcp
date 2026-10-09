@@ -26,10 +26,24 @@ tréninky zůstanou jako `superseded`.
 | `get_trends` | čtení | uložená denní historie z Garminu (HRV, spánek, klidová tepovka, Body Battery, stres, readiness, zátěž, VO2max, aktivity po sportech) za libovolné období po dnech, týdnech nebo měsících: počet, průměr, minimum, maximum, změna |
 | `get_weekly_report` | čtení | jeden ISO týden proti průměru předchozích čtyř: vytrvalost po sportech, spánek, HRV, klidová tepovka, plnění plánu, silový objem a série po svalových skupinách z Hevy, nová maxima (i odhad 1RM) a varování; sekce bez dat mají `available: false` |
 | `get_strength_progress` | čtení | odhad 1RM (Epley) po cvicích a trénincích z uložené historie Hevy: nejlepší série každého tréninkového dne, nejlepší, první a poslední hodnota a příznak stagnace (`plateau_weeks`, výchozí 4) |
+| `search_notes` | čtení | fulltextové hledání v celém deníku poznámek (`get_coach_context` má jen posledních 10): všechna slova dotazu, nejnovější první, volitelně rozsah dat nebo trénink, max. 50 výsledků a příznak `more` |
+| `list_goals` | čtení | všechny cíle včetně splněných (`achieved`) a opuštěných (`abandoned`), se stavem a časem vytvoření a poslední změny |
+| `list_constraints` | čtení | všechna omezení, aktivní i vyřešená (`resolved`), se stavem a časem vytvoření a poslední změny |
 
 Všechny zápisy jsou označené jako ne-read-only a ne-destruktivní; v popisu mají větu „Only after the athlete
 confirmed“, takže je kouč navrhuje a zapisuje až po potvrzení. Data jsou `YYYY-MM-DD` v místním čase
 (`TZ`); „dnes“ a týden (pondělí až neděle, ISO) se počítají z něj.
+
+## Hledání v poznámkách
+
+`search_notes` prohledá celý deník poznámek přes fulltextový index SQLite FTS5 (`notes_fts`), ne jen posledních
+10 poznámek z `get_coach_context`. Všechna slova dotazu musí v poznámce být. Na diakritice a velikosti písmen
+nezáleží (`boli` najde „Bolí“). Hledání nepřevádí české tvary na základní slovo (`bolest` nenajde „bolí“),
+proto hledej začátkem slova: `bol*` najde bolí, bolest i bolelo. Podporované je `"přesná fráze"`, `OR`, `NOT`
+a `prefix*`; slovo s interpunkcí (`-`, `:`, `,`, `.`, `?`, `'`) patří do uvozovek (`"low-carb"`). Chybný dotaz
+vrátí chybu nástroje s touto radou (bez textu z SQLite). Výsledky jdou od nejnovějších: výchozí počet 20, nejvýš
+50, `more: true`, když existují další shody. Volitelně `start_date` a `end_date` (včetně krajních dnů) a
+`session_id`; neznámý trénink je chyba. Dotaz se nikdy nezapisuje do logu.
 
 ## Ranní briefing
 
@@ -154,7 +168,8 @@ nevznikají. Ranní briefing jmenuje včerejší plánované tréninky s `no_act
   Stavy: `planned` (naplánováno), `done` (splněno), `skipped` (přeskočeno), `moved` (přesunuto: původní
   záznam zůstane a kopie na novém datu na něj odkazuje přes `moved_from_id`), `superseded` (nahrazeno
   novějším plánem týdne; ve výchozím výpisu skryté a nepočítané).
-- `notes`: datované poznámky, volitelně navázané na trénink.
+- `notes`: datované poznámky, volitelně navázané na trénink; fulltextový index `notes_fts` (SQLite FTS5, nezávislý na
+  diakritice a velikosti písmen) se doplňuje triggerem při každém vložení poznámky.
 - `briefing_runs`: den, kdy plánovač úspěšně poslal briefing (verdikt, čas odeslání).
 - `alert_state`: u každého upozornění poslední známý stav, datum vyhodnocení a kdy naposledy přišlo.
 - `session_suggestions`: návrh stavu plánovaného tréninku (`matched` s důkazem nebo `no_activity`, `final`, datum
@@ -173,6 +188,23 @@ v jedné transakci). Starší image odmítne otevřít novější databázi, aby
 `README.md` (sekce Zálohy); volume `coach-data` je jediná kopie těchto dat.
 
 Před přechodem na starší verzi spusť `scripts/backup.sh`.
+
+**Návrat na verzi bez hledání v poznámkách** (schéma 6 → 5). Starší image databázi se schématem 6
+odmítne (`database schema version 6 is newer`). Před nasazením starší verze proto smaž jen
+fulltextový index poznámek (tabulku `notes_fts` a trigger `notes_fts_insert`); cíle, omezení, plán,
+poznámky, stav briefingu i historie zůstanou a index se po nasazení novější verze znovu vytvoří ze
+všech poznámek. Služba musí stát, příkazy spouštěj po jednom:
+
+```bash
+docker compose stop coach-mcp
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 6 or sys.exit(f"schema version {v}, expected 6: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TRIGGER notes_fts_insert; DROP TABLE notes_fts; PRAGMA user_version = 5; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+Druhý příkaz musí vypsat `schema version 5`. Pak nasaď starší verzi (`git checkout <commit před
+PR 15>` a `docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`,
+databáze schéma 6 nemá a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database
+file` a nic nevytvoří. Návrat na ještě starší verzi je nejdřív tento postup 6 → 5 a potom postupy
+níže.
 
 **Návrat na verzi bez silové historie** (schéma 5 → 4). Starší image databázi se schématem 5 odmítne
 (`database schema version 5 is newer`). Před nasazením starší verze proto smaž jen tabulky silové historie; cíle,

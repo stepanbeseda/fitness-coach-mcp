@@ -58,6 +58,9 @@ INSTRUCTIONS = (
     "of that sport, or no_activity; final false while a late watch sync can still change it); "
     "get_coach_context lists those of the last 7 days in to_confirm. A suggestion never changes a status: "
     "check it with the athlete and confirm it with update_session."
+    " search_notes searches the whole notes log (get_coach_context has only the latest 10 notes); "
+    "list_goals and list_constraints include achieved, abandoned and resolved entries. Search there "
+    "before asking the athlete about something they may already have told the coach."
 )
 
 GoalStatus = Literal["active", "achieved", "abandoned"]
@@ -346,6 +349,44 @@ def build_server(
             plateau_weeks=plateau_weeks,
             limit=limit,
         )
+
+    @tool("search_notes", _read("Search notes"))
+    async def search_notes(
+        query: Annotated[
+            str,
+            Field(max_length=200, description='Words to find (all must match); also "exact phrase", OR, NOT, prefix*.'),
+        ],
+        start_date: Annotated[str | None, Field(description="YYYY-MM-DD, inclusive; default no lower bound.")] = None,
+        end_date: Annotated[str | None, Field(description="YYYY-MM-DD, inclusive; default no upper bound.")] = None,
+        session_id: Annotated[int | None, Field(gt=0, description="Only notes linked to this session.")] = None,
+        limit: Annotated[
+            int, Field(ge=1, le=tools.SEARCH_LIMIT_MAX, description="Maximum notes returned, 1-50.")
+        ] = tools.SEARCH_LIMIT,
+    ) -> Any:
+        """Full-text search in the whole coach notes log (get_coach_context shows only the latest 10 notes):
+        notes containing every word of the query, newest first, optionally within a date range or linked to
+        one session; more is true when further matches exist. Accents and case are ignored (boli finds
+        bolí). Czech words are not stemmed: search by prefix, e.g. bol* finds bolí, bolest and bolelo.
+        Syntax: plain words, "exact phrase", OR, NOT, prefix*; put a word with punctuation in double
+        quotes, e.g. "low-carb". Search here before asking the athlete about something they may already
+        have told the coach."""
+        return tools.search_notes(
+            store, today(), query=query, start_date=start_date, end_date=end_date, session_id=session_id, limit=limit
+        )
+
+    @tool("list_goals", _read("All goals"))
+    async def list_goals() -> Any:
+        """Every goal ever set, including achieved and abandoned ones (get_coach_context lists only active
+        goals): status, target, target date, days remaining (negative once the date has passed) and
+        created_at / updated_at in UTC; for a closed goal updated_at is when it was closed or last changed."""
+        return tools.list_goals(store, today())
+
+    @tool("list_constraints", _read("All constraints"))
+    async def list_constraints() -> Any:
+        """Every constraint ever recorded, active and resolved (get_coach_context lists only active ones):
+        kind, title, details, status and created_at / updated_at in UTC; for a resolved constraint (e.g. a
+        past injury) updated_at is when it was resolved or last changed."""
+        return tools.list_constraints(store, today())
 
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Request) -> JSONResponse:
