@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # Full-stack test without real secrets and without touching the live deployment:
-# builds the images under their own fcm-e2e/*:test tags (the live tags stay
-# untouched), starts them as a separate compose project with the
+# builds the images under their own fcm-e2e/*:$E2E_TAG tags (the live tags stay
+# untouched), starts them as a separate compose project ($E2E_PROJECT) with the
 # compose.test.yml overlay (no Tailscale login, no internet), runs the OAuth +
 # MCP flow from scripts/e2e_flow.py and tears everything down again.
 # Before the build it runs the offline test of setup-secrets.sh; once the stack is healthy it
 # checks coach-mcp's read-only Garmin token from inside coach-mcp (scripts/e2e_coach_garmin.py).
 #
 #   scripts/e2e-test.sh
+#   E2E_PROJECT=fcm-e2e-pr07 E2E_TAG=pr07 scripts/e2e-test.sh   parallel-safe run (scripts/check.sh)
+#
+# E2E_PROJECT: compose project, "fcm-e2e" or "fcm-e2e-<suffix>" (default fcm-e2e).
+# E2E_TAG: tag of the fcm-e2e/<svc> images (default test). Two runs with different values of both
+# share nothing: compose prefixes networks and volumes with the project and no service publishes a port.
 source "$(dirname "$0")/lib.sh"
 require_docker
 
-PROJECT="fcm-e2e"
+PROJECT="${E2E_PROJECT:-fcm-e2e}"
+export E2E_TAG="${E2E_TAG:-test}"
+[[ "$PROJECT" =~ ^fcm-e2e(-[a-z0-9][a-z0-9_-]*)?$ ]] \
+  || die "E2E_PROJECT musí být fcm-e2e nebo fcm-e2e-<přípona> (malá písmena, číslice, - a _), ne: $PROJECT"
+[[ "$E2E_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "Neplatný E2E_TAG: $E2E_TAG"
 TMP_SECRETS="$(mktemp -d)"
 export SECRETS_DIR="$TMP_SECRETS"
 export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://fitness-mcp.example.ts.net}"
@@ -47,7 +56,7 @@ info "Build images..."
 info "Throwaway secrets..."
 put() { printf '%s\n' "$2" > "$TMP_SECRETS/$1"; chmod 0644 "$TMP_SECRETS/$1"; }
 put gateway_password_hash "$(printf '%s\n' "$E2E_PASSWORD" | docker run --rm -i --network none \
-  --entrypoint python fcm-e2e/gateway:test -m gateway.cli hash-password --stdin)"
+  --entrypoint python "fcm-e2e/gateway:$E2E_TAG" -m gateway.cli hash-password --stdin)"
 put gateway_totp_secret "$(python3 -c 'import base64, os; print(base64.b32encode(os.urandom(20)).decode())')"
 put hevy_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 put garmin_backend_token "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
@@ -57,7 +66,7 @@ put telegram_bot_token ""
 put hevy_api_key "00000000-0000-0000-0000-000000000000"
 put ts_authkey "tskey-auth-unused-in-e2e"
 
-info "Start stack ($PROJECT)..."
+info "Start stack ($PROJECT, images fcm-e2e/*:$E2E_TAG)..."
 "${compose[@]}" up -d >/dev/null
 for _ in $(seq 1 60); do
   unhealthy=0
