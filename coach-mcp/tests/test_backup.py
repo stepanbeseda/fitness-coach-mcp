@@ -256,17 +256,20 @@ def test_check_coach(tmp_path, db_path):
 def test_snapshot_memory_peak(tmp_path):
     """Guard against extra copies of the database: peak RSS grows by < 3.5 x the database size.
 
-CPython's ``serialize()`` itself holds three copies for a moment (the ``:memory:`` pages, SQLite's
-buffer and the ``bytes`` object); measured 3.2 x. One more copy anywhere in the production path
-(``bytes(data)``, a ``data[:18] + ... + data[20:]`` header fix, a second ``deserialize``) goes above 4 x.
-"""
+    CPython's ``serialize()`` itself holds three copies for a moment (the ``:memory:`` pages, SQLite's
+    buffer and the ``bytes`` object); measured 3.2 x. One more copy held anywhere in the production path
+    (a retained ``bytes(data)``, a second ``deserialize``) goes above 4 x. The peak is read from VmHWM of
+    a fresh process after resetting it (``ru_maxrss`` of a child would inherit the parent's high-water mark).
+    """
     script = textwrap.dedent(
         """
-        import resource, sqlite3, sys
-        from datetime import UTC, date, datetime
+        import re, sqlite3, sys
         from pathlib import Path
         from coach_mcp.backup import check_coach, snapshot, write_normalised
         from coach_mcp.store import Store
+
+        def hwm():
+            return int(re.search(r"VmHWM:\\s+(\\d+) kB", Path("/proc/self/status").read_text()).group(1)) * 1024
 
         class Sink:
             n = 0
@@ -284,20 +287,21 @@ buffer and the ``bytes`` object); measured 3.2 x. One more copy anywhere in the 
         conn.execute("PRAGMA journal_mode=WAL")
         conn.close()
         size = path.stat().st_size
-        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        Path("/proc/self/clear_refs").write_text("5")  # reset the peak to the current RSS
+        before = hwm()
         data, _ = snapshot(path, check_coach)
         sink = Sink()
         write_normalised(data, sink)
-        after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        print(size, (after - before) * 1024, sink.n)
+        print(size, hwm() - before, sink.n)
         """
     )
     src = Path(backup.__file__).parent.parent
     env = {"PYTHONPATH": str(src), "PATH": "/usr/local/bin:/usr/bin:/bin"}
     result = subprocess.run(
         [sys.executable, "-c", script, str(tmp_path / "big.db")],
-        capture_output=True, text=True, check=True, env=env,
+        capture_output=True, text=True, env=env,
     )
+    assert result.returncode == 0, result.stderr
     size, growth, written = (int(x) for x in result.stdout.split())
     assert size > 8 * 1024 * 1024
     assert written == size
