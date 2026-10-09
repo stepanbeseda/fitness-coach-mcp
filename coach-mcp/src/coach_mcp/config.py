@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -73,6 +74,27 @@ def _int_in(env: dict[str, str], name: str, default: str, low: int, high: int) -
     return value
 
 
+def round_coordinate(value: float) -> float:
+    """Two decimals (about 1 km); -0.0 becomes 0.0 so a request never says -0.00."""
+    return round(value, 2) + 0.0
+
+
+def _coordinate(env: dict[str, str], name: str, low: int, high: int) -> float | None:
+    """A decimal-degree coordinate rounded to two decimals; None when unset. Errors never echo the value."""
+    raw = _opt(env, name, "")
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a number in decimal degrees, e.g. 51.48")
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be between {low} and {high}")
+    return round_coordinate(value)
+
+
 def read_bot_token(path: Path) -> str | None:
     """The token from ``path`` when the file holds one in bot-token shape, else None.
 
@@ -110,6 +132,9 @@ class Settings:
     history_time: dt.time = dt.time(3, 30)
     history_backfill_days: int = 90
     history_call_delay_seconds: int = 15
+    # Home location for get_weather_forecast (rounded to two decimals; personal: never in a repr or a log).
+    home_latitude: float | None = field(default=None, repr=False)
+    home_longitude: float | None = field(default=None, repr=False)
 
     @property
     def push_enabled(self) -> bool:
@@ -179,6 +204,14 @@ class Settings:
         backfill_days = _int_in(env, "COACH_HISTORY_BACKFILL_DAYS", "90", 1, 366)
         call_delay = _int_in(env, "COACH_HISTORY_CALL_DELAY_SECONDS", "15", 1, 600)
 
+        # Rule 1 of the spec: both or neither. Checked before the values so a lone value is named as such.
+        has_lat = bool(_opt(env, "COACH_HOME_LATITUDE", ""))
+        has_lon = bool(_opt(env, "COACH_HOME_LONGITUDE", ""))
+        if has_lat != has_lon:
+            raise ValueError("COACH_HOME_LATITUDE and COACH_HOME_LONGITUDE must be set together")
+        home_latitude = _coordinate(env, "COACH_HOME_LATITUDE", -90, 90)
+        home_longitude = _coordinate(env, "COACH_HOME_LONGITUDE", -180, 180)
+
         return cls(
             db_path=db_path,
             bearer_token_file=Path(_text(env, "COACH_MCP_BEARER_TOKEN_FILE", "/run/secrets/coach_backend_token")),
@@ -200,4 +233,6 @@ class Settings:
             history_time=history_time,
             history_backfill_days=backfill_days,
             history_call_delay_seconds=call_delay,
+            home_latitude=home_latitude,
+            home_longitude=home_longitude,
         )

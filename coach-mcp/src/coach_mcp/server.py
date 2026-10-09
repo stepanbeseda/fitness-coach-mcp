@@ -14,6 +14,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
+import httpx2
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
@@ -33,6 +34,7 @@ from .push import PushSender, TelegramPush
 from .scheduler import BriefingScheduler, compose_briefing
 from .store import Store
 from .tools import PlannedSession, to_json
+from .weather import WeatherService
 
 log = logging.getLogger("coach_mcp.tools")
 briefing_log = logging.getLogger("coach_mcp.briefing")
@@ -64,6 +66,8 @@ INSTRUCTIONS = (
     "before asking the athlete about something they may already have told the coach."
     " get_correlations returns Pearson and Spearman coefficients between stored history metrics "
     "(optionally a few days apart); a correlation is not a cause, say so when you use it."
+    " get_weather_forecast returns the 7-day forecast and each day's best outdoor window at the athlete's home "
+    "(or given coordinates): check it before placing outdoor sessions."
 )
 
 GoalStatus = Literal["active", "achieved", "abandoned"]
@@ -77,7 +81,7 @@ def _read(title: str) -> ToolAnnotations:
 
 
 def _read_open(title: str) -> ToolAnnotations:
-    """A read-only tool that reaches an outside service (here: garmin-mcp)."""
+    """A read-only tool that reaches an outside service (garmin-mcp or Open-Meteo)."""
     return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=True)
 
 
@@ -116,6 +120,7 @@ def build_server(
     garmin: GarminSource,
     scheduler: BriefingScheduler | None,
     history: HistoryJob | None = None,
+    weather: WeatherService,
 ) -> MCPServer:
     state = {"scheduler": "on" if scheduler is not None else "off", "history": "on" if history is not None else "off"}
 
@@ -416,6 +421,31 @@ def build_server(
             store, today(), metrics=metrics, start_date=start_date, end_date=end_date, lag_days=lag_days
         )
 
+    @tool("get_weather_forecast", _read_open("Weather forecast"))
+    async def get_weather_forecast(
+        latitude: Annotated[
+            float | None,
+            Field(
+                strict=True,  # a JSON true is not 1.0
+                ge=-90,
+                le=90,
+                allow_inf_nan=False,
+                description="Decimal degrees; with longitude, overrides the home location (travel).",
+            ),
+        ] = None,
+        longitude: Annotated[
+            float | None,
+            Field(strict=True, ge=-180, le=180, allow_inf_nan=False, description="Decimal degrees; with latitude."),
+        ] = None,
+    ) -> Any:
+        """Weather forecast from Open-Meteo for the next 7 days at the athlete's home (configured in .env) or,
+        for travel, at the given latitude and longitude (both; rounded to two decimals before the request, the
+        only data sent). Per day: sunrise, sunset, a min/max summary and hourly temperature, feels-like
+        temperature, precipitation probability and wind speed (°C, %, km/h; times local to the location).
+        best_outdoor_windows lists each day's best window: daylight, not yet started, feels-like -5 to 25 °C,
+        precipitation probability at most 30 %, wind at most 25 km/h. Cached for 30 minutes; changes nothing."""
+        return await weather.forecast(latitude, longitude)
+
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Request) -> JSONResponse:
         try:
@@ -448,6 +478,7 @@ def create_app(
     history_source: HistorySource | None = None,
     history_sleep: Callable[[float], Awaitable[None]] | None = None,
     strength_source: StrengthSource | None = None,
+    weather_transport: httpx2.AsyncBaseTransport | None = None,
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     store = store or Store(settings.db_path)
@@ -482,7 +513,8 @@ def create_app(
         scheduler = BriefingScheduler(
             settings, store, garmin, push or TelegramPush(settings), now=now, sleep=sleep or asyncio.sleep
         )
-    server = build_server(store, settings, today, garmin=garmin, scheduler=scheduler, history=history)
+    weather = WeatherService(settings, now=now, transport=weather_transport)
+    server = build_server(store, settings, today, garmin=garmin, scheduler=scheduler, history=history, weather=weather)
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=bool(settings.allowed_hosts),
         allowed_hosts=settings.allowed_hosts,

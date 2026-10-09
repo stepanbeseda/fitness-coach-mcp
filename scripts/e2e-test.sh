@@ -20,6 +20,9 @@ export OWNER_TAILSCALE_LOGIN="e2e-owner@test"
 export COACH_TELEGRAM_CHAT_ID=""
 # The nightly history job stays off too: no Garmin login and no internet in the e2e stack.
 export COACH_HISTORY_ENABLED="false"
+# No home location in the e2e stack either: get_weather_forecast must answer with its "no location" error.
+export COACH_HOME_LATITUDE=""
+export COACH_HOME_LONGITUDE=""
 E2E_PASSWORD="e2e-$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
 compose=(docker compose -p "$PROJECT" -f docker-compose.yml -f compose.test.yml)
 

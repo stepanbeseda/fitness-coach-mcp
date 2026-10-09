@@ -139,6 +139,20 @@ def tool_result(body: dict | None) -> tuple[bool, object]:
     return not is_error, payload
 
 
+def tool_error_text(body: dict | None) -> str | None:
+    """The first text content of a tools/call result with isError true, else None (also for malformed bodies)."""
+    if not isinstance(body, dict) or not isinstance(body.get("result"), dict):
+        return None
+    result = body["result"]
+    if result.get("isError") is not True:
+        return None
+    try:
+        text = result["content"][0]["text"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return text if isinstance(text, str) else None
+
+
 def exercise_coach_memory(client: httpx.Client, token: str) -> None:
     """Round trip on throwaway data: set_goal, then get_coach_context returns the goal."""
     _, body = rpc(client, "/coach/mcp", token, "tools/call", {
@@ -211,6 +225,23 @@ def exercise_history(client: httpx.Client, token: str) -> None:
           "coach get_correlations answers from the empty history with the caveat")
 
 
+def exercise_weather(client: httpx.Client, token: str) -> None:
+    """get_weather_forecast fails cleanly: no home location configured, and no internet in the e2e stack."""
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_weather_forecast", "arguments": {}},
+                  msg_id=14)
+    check("No home location configured" in (tool_error_text(body) or ""),
+          "coach get_weather_forecast without a location: clear tool error")
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {
+        "name": "get_weather_forecast", "arguments": {"latitude": 51.48, "longitude": 0.0}}, msg_id=15)
+    text = tool_error_text(body) or ""
+    check("Weather service unreachable" in text or "Weather service timed out" in text,
+          "coach get_weather_forecast without internet: short tool error")
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_coach_context", "arguments": {}},
+                  msg_id=16)
+    ok, _ = tool_result(body)
+    check(ok, "coach still answers after the weather error")
+
+
 def main() -> int:
     with httpx.Client(timeout=60, follow_redirects=False) as client:
         public = client.get(f"{GW}/authorize", headers=FUNNEL)
@@ -227,6 +258,7 @@ def main() -> int:
         exercise_coach_memory(client, coach)
         exercise_daily_briefing(client, coach)
         exercise_history(client, coach)
+        exercise_weather(client, coach)
         cross = client.post(f"{GW}/coach/mcp", headers={**FUNNEL, "authorization": f"Bearer {garmin}"},
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         check(cross.status_code == 401, "Garmin token rejected by the coach endpoint (audience)")

@@ -6,7 +6,8 @@ vybavení), tréninkový plán po dnech se stavem a deník poznámek. Data jsou 
 se k němu dostanou jen přes gateway (`/coach/mcp`), která posílá interní bearer token
 (`/run/secrets/coach_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed). Sám volá
 jen `garmin-mcp` (čtyři čtecí nástroje, read-only token `garmin_readonly_token`), `hevy-mcp` (dva čtecí nástroje,
-interní token `hevy_backend_token`) a volitelně Telegram Bot API (ranní briefing). Každou noc si z Garminu ukládá
+interní token `hevy_backend_token`), volitelně Telegram Bot API (ranní briefing) a na požádání Open-Meteo
+(předpověď počasí, jen zaokrouhlené souřadnice). Každou noc si z Garminu ukládá
 denní historii a z Hevy silové tréninky pro trendy, týdenní přehled, korelace a progres síly a podle historie
 navrhne stav minulých plánovaných tréninků. Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená
 a nahrazené tréninky zůstanou jako `superseded`.
@@ -30,6 +31,7 @@ a nahrazené tréninky zůstanou jako `superseded`.
 | `list_goals` | čtení | všechny cíle včetně splněných (`achieved`) a opuštěných (`abandoned`), se stavem a časem vytvoření a poslední změny |
 | `list_constraints` | čtení | všechna omezení, aktivní i vyřešená (`resolved`), se stavem a časem vytvoření a poslední změny |
 | `get_correlations` | čtení | korelace mezi 2–6 metrikami z katalogu `get_trends` po dvojicích: Pearson a Spearman a počet spárovaných dní, volitelně s posunem 0–3 dny (metrika `a` v den D proti `b` v den D + posun); pod 14 páry nebo u konstantní řady `available: false`; vždy s upozorněním, že korelace není příčina |
+| `get_weather_forecast` | čtení | předpověď Open-Meteo na 7 dní pro bydliště z `.env` nebo zadané souřadnice: po dnech východ a západ slunce, souhrn a hodinová teplota, pocitová teplota, pravděpodobnost srážek a vítr; na každý den nejlepší okno pro trénink venku; cache 30 min |
 
 Všechny zápisy jsou označené jako ne-read-only a ne-destruktivní; v popisu mají větu „Only after the athlete
 confirmed“, takže je kouč navrhuje a zapisuje až po potvrzení. Data jsou `YYYY-MM-DD` v místním čase
@@ -267,6 +269,39 @@ Druhý příkaz musí vypsat `schema version 1`. Pak nasaď starší verzi (`git
 `docker compose up -d --build --no-deps coach-mcp`). Když vypíše `… nothing changed`, databáze schéma 2 nemá
 a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open database file` a nic nevytvoří.
 
+## Počasí
+
+`get_weather_forecast` volá `GET https://api.open-meteo.com/v1/forecast` s parametry `latitude`, `longitude`,
+`hourly=temperature_2m,apparent_temperature,precipitation_probability,wind_speed_10m`, `daily=sunrise,sunset`,
+`timezone=auto` (časy jsou místní pro dané místo), `forecast_days=7` a jednotkami °C a km/h. Souřadnice jsou
+z `.env` (`COACH_HOME_LATITUDE`, `COACH_HOME_LONGITUDE`) nebo z argumentů (obě; mají přednost, pro cesty) a před
+odesláním se zaokrouhlí na dvě desetinná místa (asi 1 km); nic jiného se neposílá. Odpověď je omezená na 512 KiB
+a ověřená (tvar, časy, čísla); hodnota, která není konečné číslo, je `null`.
+
+Nejlepší okno pro trénink venku (`best_outdoor_windows`, nejvýš jedno na den):
+
+| Podmínka | Hranice (včetně) |
+|---|---|
+| denní světlo | aspoň 30 minut z hodiny mezi východem a západem slunce |
+| hodina ještě nezačala | začátek hodiny není před aktuálním místním časem |
+| pocitová teplota | −5 až 25 °C |
+| pravděpodobnost srážek | nejvýš 30 % |
+| vítr | nejvýš 25 km/h |
+| výběr | nejdelší souvislý úsek hodin; při shodě nižší nejvyšší pravděpodobnost srážek, pak dřívější |
+
+Cache: odpověď se drží 30 minut v paměti podle zaokrouhlených souřadnic (nejvýš 16 poloh, nejstarší odpadne),
+chyby se necachují a po 30 minutách se stahuje znovu. Tvar odpovědi (dny od dneška, okna, která ještě nezačala)
+se počítá při každém volání z aktuálního času.
+
+Chyby jsou krátké a bez souřadnic: `No home location configured: …` (chybí poloha v `.env` i argumenty),
+`Give both latitude and longitude, or neither.`, `latitude must be between -90 and 90 and longitude between -180 and 180.`
+(jen přímé volání, schéma nástroje to odmítne dřív), `Weather service timed out.` (jedno čtení 10 s, celé volání 20 s),
+`Weather service unreachable (<třída chyby>).`, `Weather service answered HTTP <kód>.` a
+`Weather service returned an unexpected response.` Log má jen řádky `weather status=fetched|error reason=…`
+(výsledek, kód, doba, název třídy chyby), nikdy souřadnice.
+
+Data o počasí: [Open-Meteo.com](https://open-meteo.com/) (licence CC BY 4.0).
+
 ## Konfigurace (env)
 
 | Proměnná | Default | Význam |
@@ -291,6 +326,8 @@ a nic se nezměnilo. Na prázdném volume skončí chybou `unable to open databa
 | `COACH_HISTORY_TIME` | `03:30` | kdy (`HH:MM`, `TZ`); čas uvnitř okna briefingu posune běh na cutoff |
 | `COACH_HISTORY_BACKFILL_DAYS` | `90` | kolik dní zpět načíst (1 až 366) |
 | `COACH_HISTORY_CALL_DELAY_SECONDS` | `15` | pauza mezi voláními `garmin-mcp` a `hevy-mcp` (1 až 600 s) |
+| `COACH_HOME_LATITUDE` | *(prázdné)* | zeměpisná šířka bydliště pro `get_weather_forecast` (desetinné stupně, −90 až 90, zaokrouhlí se na dvě desetinná místa); jen spolu s délkou; nikdy se neloguje |
+| `COACH_HOME_LONGITUDE` | *(prázdné)* | zeměpisná délka (−180 až 180), jinak totéž |
 
 Neplatná hodnota ukončí start s chybou (kontejner se nespustí) místo pozdějšího selhání v nástroji.
 
@@ -301,5 +338,5 @@ docker build --target test coach-mcp
 ```
 
 Testy běží při každém buildu (bez sítě, SQLite v dočasném adresáři, pevné datum 2026-10-07 a falešné hodiny
-místo skutečného času; Garmin a Telegram nahrazují falešné backendy).
+místo skutečného času; Garmin, Telegram a Open-Meteo nahrazují falešné backendy).
 Zámky závislostí (`requirements.lock`, `requirements-dev.lock`) se přegenerují jen přes `scripts/lock-deps.sh`.
