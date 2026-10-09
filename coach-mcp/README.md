@@ -294,7 +294,8 @@ chyby se necachují a po 30 minutách se stahuje znovu. Tvar odpovědi (dny od d
 se počítá při každém volání z aktuálního času.
 
 Chyby jsou krátké a bez souřadnic: `No home location configured: …` (chybí poloha v `.env` i argumenty),
-`Give both latitude and longitude, or neither.`, `Weather service timed out.`,
+`Give both latitude and longitude, or neither.`, `latitude must be between -90 and 90 and longitude between -180 and 180.`
+(jen přímé volání, schéma nástroje to odmítne dřív), `Weather service timed out.` (jedno čtení 10 s, celé volání 20 s),
 `Weather service unreachable (<třída chyby>).`, `Weather service answered HTTP <kód>.` a
 `Weather service returned an unexpected response.` Log má jen řádky `weather status=fetched|error reason=…`
 (výsledek, kód, doba, název třídy chyby), nikdy souřadnice.

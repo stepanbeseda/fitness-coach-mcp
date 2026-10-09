@@ -97,9 +97,9 @@ def test_configure_logging_keeps_sdk_quiet(restore_logging):
         logging.getLogger(name).setLevel(logging.NOTSET)
     configure_logging("DEBUG")
     assert logging.getLogger("mcp").level >= logging.WARNING
-    # httpx2 logs every request URL at INFO; the Telegram bot token and the weather request's coordinates are part
-    # of that URL. The logger's own
-    # level is asserted: the effective level would be WARNING anyway while the root stays at WARNING under pytest.
+    # httpx2 logs every request URL at INFO; the Telegram bot token and the weather request's coordinates are
+    # part of that URL. The logger's own level is asserted: the effective level would be WARNING anyway while
+    # the root stays at WARNING under pytest.
     for name in ("httpx2", "httpcore2"):
         assert logging.getLogger(name).level >= logging.WARNING, name
     # The SDK client logs under "mcp.client" and under a top-level logger literally named "client".

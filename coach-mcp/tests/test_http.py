@@ -864,10 +864,17 @@ async def test_weather_forecast_over_http(settings, store):
         bad = await call_tool(client, "get_weather_forecast", {"latitude": 91, "longitude": 0}, id_=5)
         assert bad["isError"] is True
         assert len(seen) == 2
+        for arguments in ({"latitude": True, "longitude": 0}, {"latitude": 48.2, "longitude": "16.4"}):
+            wrong = await call_tool(client, "get_weather_forecast", arguments, id_=8)
+            assert wrong["isError"] is True
+        assert len(seen) == 2
 
         away = await call_tool(client, "get_weather_forecast", {"latitude": 48.2082, "longitude": 16.3738}, id_=6)
         assert away["isError"] is False and payload(away)["location"]["source"] == "arguments"
         assert seen[2].url.params["latitude"] == "48.21" and seen[2].url.params["longitude"] == "16.37"
+
+        whole = await call_tool(client, "get_weather_forecast", {"latitude": 48, "longitude": 16}, id_=9)  # JSON ints
+        assert whole["isError"] is False and payload(whole)["location"]["latitude"] == 48.0
 
     app = weather_app(settings, store, handler)  # no home location
     async with running_client(app) as client:
@@ -877,7 +884,7 @@ async def test_weather_forecast_over_http(settings, store):
             "No home location configured: set COACH_HOME_LATITUDE and COACH_HOME_LONGITUDE in .env, "
             "or give latitude and longitude."
         ) in none["content"][0]["text"]
-        assert len(seen) == 3
+        assert len(seen) == 4
 
 
 @pytest.mark.anyio

@@ -228,16 +228,16 @@ def exercise_history(client: httpx.Client, token: str) -> None:
 def exercise_weather(client: httpx.Client, token: str) -> None:
     """get_weather_forecast fails cleanly: no home location configured, and no internet in the e2e stack."""
     _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_weather_forecast", "arguments": {}},
-                  msg_id=11)
+                  msg_id=14)
     check("No home location configured" in (tool_error_text(body) or ""),
           "coach get_weather_forecast without a location: clear tool error")
     _, body = rpc(client, "/coach/mcp", token, "tools/call", {
-        "name": "get_weather_forecast", "arguments": {"latitude": 51.48, "longitude": 0.0}}, msg_id=12)
+        "name": "get_weather_forecast", "arguments": {"latitude": 51.48, "longitude": 0.0}}, msg_id=15)
     text = tool_error_text(body) or ""
     check("Weather service unreachable" in text or "Weather service timed out" in text,
           "coach get_weather_forecast without internet: short tool error")
     _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_coach_context", "arguments": {}},
-                  msg_id=13)
+                  msg_id=16)
     ok, _ = tool_result(body)
     check(ok, "coach still answers after the weather error")
 

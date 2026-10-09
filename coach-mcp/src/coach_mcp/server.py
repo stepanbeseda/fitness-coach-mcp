@@ -426,6 +426,7 @@ def build_server(
         latitude: Annotated[
             float | None,
             Field(
+                strict=True,  # a JSON true is not 1.0
                 ge=-90,
                 le=90,
                 allow_inf_nan=False,
@@ -434,7 +435,7 @@ def build_server(
         ] = None,
         longitude: Annotated[
             float | None,
-            Field(ge=-180, le=180, allow_inf_nan=False, description="Decimal degrees; with latitude."),
+            Field(strict=True, ge=-180, le=180, allow_inf_nan=False, description="Decimal degrees; with latitude."),
         ] = None,
     ) -> Any:
         """Weather forecast from Open-Meteo for the next 7 days at the athlete's home (configured in .env) or,

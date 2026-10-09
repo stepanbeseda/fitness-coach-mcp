@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import math
@@ -454,6 +455,9 @@ FAILURES: dict[str, tuple[Any, str, str]] = {
     "sunrise_int": (_set(("daily", "sunrise", 0), 123), *BAD),
     "sunrise_no_date": (_set(("daily", "sunrise", 0), "07:12"), *BAD),
     "sunrise_aware": (_set(("daily", "sunrise", 0), "2026-10-07T07:12+02:00"), *BAD),
+    "hourly_time_year_9999": (_set(("hourly", "time", 167), "9999-12-31T23:00"), *BAD),
+    "daily_time_year_9999": (_set(("daily", "time", 6), "9999-12-31"), *BAD),
+    "sunset_year_1": (_set(("daily", "sunset", 0), "0001-01-01T00:00"), *BAD),
     "nested": (_body(b"[" * 100000 + b"]" * 100000), *BAD),
     "too_large": (
         _body(b'{"timezone": "' + b"x" * (600 * 1024) + b'"}'),
@@ -483,6 +487,23 @@ async def test_api_failures_are_short_tool_errors(name, caplog):
     assert "50.09" not in caplog.text and "14.42" not in caplog.text and "50.088" not in caplog.text
     assert service._cache == {}  # nothing stored
     assert UNEXPECTED == "Weather service returned an unexpected response."
+
+
+@pytest.mark.anyio
+async def test_a_slow_trickle_hits_the_overall_deadline(monkeypatch, caplog):
+    monkeypatch.setattr("coach_mcp.weather.TOTAL_TIMEOUT_SECONDS", 0.05)
+
+    async def handler(_request: httpx2.Request) -> httpx2.Response:
+        await asyncio.sleep(5)  # a server that never finishes; each read stays under the per-read timeout
+        return httpx2.Response(200)
+
+    caplog.set_level(logging.DEBUG, logger="coach_mcp.weather")
+    service, _, _ = make(handler=handler)
+    with pytest.raises(ToolError) as exc:
+        await service.forecast()
+    assert str(exc.value) == "Weather service timed out."
+    assert "weather status=error reason=timeout" in caplog.text
+    assert service._cache == {}
 
 
 @pytest.mark.anyio

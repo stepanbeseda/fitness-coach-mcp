@@ -11,6 +11,7 @@ Successful answers are cached in memory for 30 minutes per rounded coordinate pa
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -31,6 +32,7 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 CACHE_TTL = timedelta(minutes=30)
 CACHE_MAX_ENTRIES = 16
 MAX_RESPONSE_BYTES = 512 * 1024
+TOTAL_TIMEOUT_SECONDS = 20.0  # the whole request, on top of the per-read httpx2 timeouts
 FEELS_LIKE_MIN_C = -5.0
 FEELS_LIKE_MAX_C = 25.0
 PRECIPITATION_PROBABILITY_MAX_PCT = 30
@@ -51,6 +53,8 @@ OUT_OF_RANGE = "latitude must be between -90 and 90 and longitude between -180 a
 TIMED_OUT = "Weather service timed out."
 UNEXPECTED = "Weather service returned an unexpected response."
 
+# Dates near date.min / date.max would overflow the hour arithmetic of the shaping; no forecast looks like that.
+_SANE_YEARS = range(1900, 9000)
 _HOUR = timedelta(hours=1)
 _MIN_DAYLIGHT = timedelta(minutes=MIN_DAYLIGHT_MINUTES)
 _HOURLY_FIELDS = ("temperature_2m", "apparent_temperature", "precipitation_probability", "wind_speed_10m")
@@ -112,7 +116,7 @@ def _local_datetime(value: Any) -> datetime:
         parsed = datetime.fromisoformat(value)
     except ValueError:
         raise _BadPayload from None
-    if parsed.tzinfo is not None:
+    if parsed.tzinfo is not None or parsed.year not in _SANE_YEARS:
         raise _BadPayload
     return parsed
 
@@ -150,6 +154,8 @@ def _parse(body: bytes) -> Forecast:
             day = date.fromisoformat(raw_date)
         except ValueError:
             raise _BadPayload from None
+        if day.year not in _SANE_YEARS:
+            raise _BadPayload
         days.append(
             Day(
                 day,
@@ -338,9 +344,10 @@ class WeatherService:
         code = 0
         body = b""
         try:
-            async with httpx2.AsyncClient(
-                timeout=httpx2.Timeout(10.0, connect=5.0), transport=self._transport
-            ) as http:
+            async with (
+                asyncio.timeout(TOTAL_TIMEOUT_SECONDS),
+                httpx2.AsyncClient(timeout=httpx2.Timeout(10.0, connect=5.0), transport=self._transport) as http,
+            ):
                 # Never raise_for_status() or log/str() an exception or exc.request: they carry the URL
                 # with the coordinates. Only the class name is used.
                 async with http.stream("GET", OPEN_METEO_URL, params=params) as response:
@@ -357,7 +364,7 @@ class WeatherService:
         except _TooLarge:
             log.warning("weather status=error reason=too_large")
             raise ToolError(UNEXPECTED) from None
-        except httpx2.TimeoutException:
+        except (httpx2.TimeoutException, TimeoutError):  # TimeoutError is an OSError: keep it before that handler
             log.warning("weather status=error reason=timeout ms=%.0f", _ms(started))
             raise ToolError(TIMED_OUT) from None
         except (httpx2.RequestError, OSError) as exc:
