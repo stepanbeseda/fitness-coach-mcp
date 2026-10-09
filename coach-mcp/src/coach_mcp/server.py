@@ -54,7 +54,7 @@ INSTRUCTIONS = (
     "use it for weekly reviews (it includes strength volume and sets per muscle group from Hevy). "
     "get_strength_progress returns the estimated 1RM (Epley) per exercise over time from the stored Hevy history "
     "with a plateau flag: use it for strength progression; for the latest workout and exact sets call Hevy. "
-    "Past planned sessions carry a suggestion from the stored Garmin activities (matched with the day's totals "
+    "Past planned sessions carry a suggestion from the stored Garmin activities and Hevy workouts (matched with the day's totals "
     "of that sport, or no_activity; final false while a late watch sync can still change it); "
     "get_coach_context lists those of the last 7 days in to_confirm. A suggestion never changes a status: "
     "check it with the athlete and confirm it with update_session."
@@ -186,7 +186,7 @@ def build_server(
         """Planned sessions in a date range (default: this ISO week, max 92 days) with an adherence
         summary: planned, done, skipped and moved counts, overdue planned sessions and the completion rate
         done / (done + skipped). Superseded sessions are hidden unless include_superseded is true. Past planned
-        sessions carry a suggestion (matched or no_activity, from the nightly Garmin history); confirm it with
+        sessions carry a suggestion (matched or no_activity, from the nightly Garmin and Hevy history); confirm it with
         update_session."""
         return tools.get_plan(
             store, today(), start_date=start_date, end_date=end_date, include_superseded=include_superseded

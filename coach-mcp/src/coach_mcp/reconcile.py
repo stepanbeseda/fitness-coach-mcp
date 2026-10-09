@@ -74,7 +74,8 @@ def suggest(sessions: Sequence[Mapping[str, Any]], days: Mapping[str, DayActivit
     ``totals[type]["count"]`` (an int >= 0, otherwise 0); sessions already ``done`` take activities first,
     and the planned ones, in order of id, get ``matched`` while activities remain and ``no_activity``
     afterwards. ``final`` is the day's ``final``. The evidence of a match is the day's totals of the sport
-    (count, and duration / distance when positive). Returns ``{session_id: Suggestion}`` for planned sessions.
+    (count, and duration / distance when positive; for a strength day that Hevy covers, ``source`` is ``hevy``
+    with the working sets and volume instead). Returns ``{session_id: Suggestion}`` for planned sessions.
     """
     groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for session in sessions:
