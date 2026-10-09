@@ -77,6 +77,11 @@ grep -q 20991230T000000Z "$w/out2" && grep -q 20991231T000000Z "$w/out2" \
 archive="$w/a/$new"
 [[ "$(stat -c %a "$archive")" == 600 ]] || stop "krok 5: archiv nemá mód 600" "$w/out2"
 
+# 5b. a backup directory that is itself named like a staging directory is not removed by the clean-up
+mkdir "$w/.backup-tmp.self"
+scripts/backup.sh --dir "$w/.backup-tmp.self" --keep 1 >"$w/out3" 2>&1 || stop "krok 5b: záloha do adresáře .backup-tmp.* selhala" "$w/out3"
+compgen -G "$w/.backup-tmp.self/fitness-coach-backup-*.tgz" >/dev/null || stop "krok 5b: adresář .backup-tmp.* ztratil archiv" "$w/out3"
+
 # 6. the three parts, flat
 [[ "$(tar -tzf "$archive" | sort | tr '\n' ' ')" == "coach.db garmin_tokens.json gateway.sqlite3 " ]] \
   || stop "krok 6: špatný obsah archivu" "$w/out2"
@@ -96,7 +101,7 @@ check_db gateway.sqlite3 "SELECT count(*) FROM grants" || stop "krok 7: gateway.
 tar -xzOf "$archive" garmin_tokens.json | grep -q E2E-FAKE-TOKEN-MARKER || stop "krok 7: garmin_tokens.json nemá testovací token"
 
 # 8. privacy: the script output never carries data
-if grep -q -e E2E-FAKE -e 'E2E goal' "$w/out1" "$w/out1b" "$w/out2"; then
+if grep -q -e E2E-FAKE -e 'E2E goal' "$w/out1" "$w/out1b" "$w/out2" "$w/out3"; then
   stop "krok 8: výstup zálohy obsahuje data"
 fi
 

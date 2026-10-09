@@ -41,7 +41,7 @@ mkdir -p -- "$dir"
 exec 9>>"$dir/.backup.lock"
 flock -n 9 || die "Jiná záloha do $dir právě běží."
 # Under the lock no other run owns a staging directory: what is left is from a killed run (it holds copies of the data).
-find "$dir" -maxdepth 1 -type d -name '.backup-tmp.*' -exec rm -rf -- {} +
+find "$dir" -mindepth 1 -maxdepth 1 -type d -name '.backup-tmp.*' -exec rm -rf -- {} +
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 name="fitness-coach-backup-$ts.tgz"
