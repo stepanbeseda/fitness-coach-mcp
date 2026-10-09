@@ -404,6 +404,7 @@ def test_covered_day_without_workouts_is_no_activity():
     for hevy_days in ({}, hevy(workouts=0)):
         merged_day = merged({}, hevy_days)
         assert suggest([s(1, type_="strength")], {"2026-10-06": merged_day}) == {1: Suggestion("no_activity", False, None)}
+    assert merged({}, hevy(workouts=0)).totals == {}  # a covered day with no workout adds no strength entry
     # without a Hevy workout the watch's own strength activity still matches
     watch = merged({"strength": sport(1, 50, 0, 40)}, {})
     assert suggest([s(1, type_="strength")], {"2026-10-06": watch})[1].evidence["source"] == "garmin"
