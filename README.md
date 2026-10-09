@@ -384,6 +384,8 @@ zálohovací API SQLite uvnitř jejich kontejnerů, token Garminu zkopíruje a v
 `fitness-coach-backup-<UTC čas>.tgz` (mód 0600) v `BACKUP_DIR`. Ponechá nejnovějších `BACKUP_KEEP` archivů
 (výchozí 14) a jiné soubory v adresáři nikdy nemaže. Jakákoli chyba (služba neběží, chybí Garmin tokeny, poškozená
 databáze) = exit 1, žádný archiv a starší archivy zůstanou beze změny; každý problém je vypsaný na vlastním řádku.
+Zbytky přerušené zálohy (`.backup-tmp.*`) smaže další běh. Právě vytvořený archiv rotace nikdy nesmaže; má-li
+adresář archiv s novějším časem v názvu (posunuté hodiny, cizí archiv), skript to vypíše i s `--quiet`.
 Jméno nejnovějšího archivu je čas poslední povedené zálohy **v UTC** (běh v 02:47 v Praze přes léto se jmenuje
 `…T004700Z`, v zimě `…T014700Z`).
 
@@ -429,7 +431,9 @@ scripts/garmin-login.sh --check
 ```
 
 Obnova soubor nejdřív ověří (integrita SQLite, očekávané tabulky, schéma coach databáze není novější než image).
-Při jakékoli chybě skončí řádkem `… nothing changed` / `… nic se nezměnilo` a volume zůstane, jak byl. Při úspěchu
+U coach a gateway skončí při jakékoli chybě řádkem `… nothing changed` / `… nic se nezměnilo`; import Garmin
+tokenů odmítne neplatný soubor hláškou `Soubor nevypadá jako garmin_tokens.json …`. Ve všech případech zůstane volume,
+jak byl. Při úspěchu
 zůstanou dosavadní soubory ve volume jako `<soubor>.pred-obnovou-<UTC čas>` (včetně případného zbytku
 `-journal` / `-wal`, který by SQLite jinak přehrál do obnoveného souboru). Starší archiv coach databáze `coach-mcp`
 při startu migruje, novější odmítne (nasaď novější image). Garmin tokeny se nahradí bez záložní kopie (jdou znovu
@@ -439,6 +443,9 @@ některý příkaz skončí chybou, nepokračuj dalším; služba po `docker com
 
 **Cesta zpět po obnově** (u gateway obdobně s `-m gateway.cli restore-db /data/<soubor>.pred-obnovou-…`): první
 příkaz vypíše, jaké postranní kopie ve volume jsou, a obnovuje se z té s časem, na kterou se chceš vrátit.
+Výpis ukáže i soubory `<soubor>.pred-obnovou-<čas>-journal` / `-wal` / `-shm`; `restore` dostane jméno **bez** této
+přípony. Cesta zpět nechá aktuální databázi jako další postranní kopii a spotřebuje `-journal` / `-wal` / `-shm`
+vybrané kopie, protože je SQLite použije při jejím čtení; samotná kopie zůstane.
 
 ```bash
 docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint ls fitness-coach-mcp/coach-mcp:0.1.0 -l /data/coach
@@ -452,6 +459,14 @@ Postranní kopie, které už nepotřebuješ, smaž:
 ```bash
 docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint sh fitness-coach-mcp/coach-mcp:0.1.0 -c 'rm -f /data/coach/coach.db.pred-obnovou-*'
 ```
+
+Totéž pro gateway:
+
+```bash
+docker run --rm --network none -v fitness-coach-mcp_gateway-data:/data --entrypoint sh fitness-coach-mcp/gateway:0.1.0 -c 'rm -f /data/gateway.sqlite3.pred-obnovou-*'
+```
+
+Vzor smaže i pomocné soubory `-journal` / `-wal` / `-shm` a kopii, ze které ses právě vrátil.
 
 Denní historie (`history_days`) je ve stejném souboru jako `coach.db`; když se ztratí, `coach-mcp` ji po startu znovu
 načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.

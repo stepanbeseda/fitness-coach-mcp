@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import sqlite3
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -189,6 +190,28 @@ def test_snapshot_refuses_missing_garbage_and_oversized(tmp_path, db, monkeypatc
     monkeypatch.setattr(backup, "MAX_SNAPSHOT_BYTES", 4096)
     with pytest.raises(SnapshotError, match="larger than 4096 bytes"):
         snapshot(db, check_gateway)
+
+
+def test_snapshot_waits_out_a_short_lock_at_the_size_probe(db):
+    store = Store(str(db))
+    add_grant(store, 1)
+    store.close()
+    holder = sqlite3.connect(db, isolation_level=None, check_same_thread=False)
+    holder.execute("PRAGMA journal_mode=DELETE")
+    holder.execute("BEGIN EXCLUSIVE")
+    holder.execute("INSERT INTO grants VALUES ('committed-late', 'c', 'r', 'mcp', NULL, 1, NULL, NULL, NULL)")
+
+    def release():
+        holder.execute("COMMIT")
+        holder.close()
+
+    timer = threading.Timer(0.3, release)
+    timer.start()
+    try:
+        data, _ = snapshot(db, check_gateway, deadline_s=5, busy_timeout_s=0.05)
+    finally:
+        timer.join()
+    assert copy_grants(data) == ["committed-late", "grant-1"]
 
 
 def test_snapshot_deadline_ends_a_backup_that_turns_busy_midway(db):

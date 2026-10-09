@@ -64,16 +64,20 @@ def snapshot(
     try:
         # mode=rw never creates a missing file. No Store (it would migrate), no pragma.
         src = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=busy_timeout_s)
-        try:
-            size = src.execute("PRAGMA page_count").fetchone()[0] * src.execute("PRAGMA page_size").fetchone()[0]
-        except sqlite3.OperationalError as exc:
-            if "locked" in str(exc):  # an exclusive writer outlasted the busy timeout
-                raise SnapshotError(f"database stayed locked for {busy_timeout_s:g} s") from exc
-            raise
+        start = clock()  # one deadline covers the size probe and the copy alike
+        while True:
+            try:
+                size = src.execute("PRAGMA page_count").fetchone()[0] * src.execute("PRAGMA page_size").fetchone()[0]
+                break
+            except sqlite3.OperationalError as exc:
+                # An exclusive writer outlasted the busy timeout (each attempt already waited that long).
+                if "locked" not in str(exc) and "busy" not in str(exc):
+                    raise
+                if clock() - start > deadline_s:
+                    raise SnapshotError(f"database stayed locked for {deadline_s:g} s") from exc
         if size > MAX_SNAPSHOT_BYTES:
             raise SnapshotError(f"database is larger than {_cap_text()} ({size} bytes)")
         dst = sqlite3.connect(":memory:")
-        start = clock()
 
         def _progress(status: int, remaining: int, total: int) -> None:
             if progress is not None:

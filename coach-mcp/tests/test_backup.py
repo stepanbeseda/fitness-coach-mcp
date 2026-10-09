@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -120,6 +121,25 @@ def test_snapshot_gives_up_when_the_database_stays_locked(db_path):
         holder.execute("ROLLBACK")
         holder.close()
     assert time.monotonic() - started < 5
+
+
+def test_snapshot_waits_out_a_short_lock_at_the_size_probe(db_path):
+    make_db(db_path)
+    holder = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
+    holder.execute("BEGIN EXCLUSIVE")
+    holder.execute("INSERT INTO goals (title, created_at, updated_at) VALUES ('Committed late', 'x', 'x')")
+
+    def release():
+        holder.execute("COMMIT")
+        holder.close()
+
+    timer = threading.Timer(0.3, release)
+    timer.start()
+    try:
+        data, _ = snapshot(db_path, check_coach, deadline_s=5, busy_timeout_s=0.05)
+    finally:
+        timer.join()
+    assert goal_titles(data) == ["Run a marathon", "Sleep 8 h", "Committed late"]
 
 
 def test_snapshot_deadline_ends_a_backup_that_turns_busy_midway(db_path):

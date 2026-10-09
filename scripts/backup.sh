@@ -31,7 +31,8 @@ keep="${opt_keep:-${BACKUP_KEEP:-14}}"
 [[ -n "$dir" ]] || die "Nastav BACKUP_DIR v .env: absolutní cesta k adresáři mimo repo."
 [[ "$dir" == /* ]] || die "BACKUP_DIR musí být absolutní cesta (je: $dir)."
 real_dir="$(realpath -m -- "$dir")"
-if [[ "$real_dir" == "$REPO_ROOT" || "$real_dir" == "$REPO_ROOT"/* ]]; then
+real_repo="$(realpath -- "$REPO_ROOT")"
+if [[ "$real_dir" == "$real_repo" || "$real_dir" == "$real_repo"/* ]]; then
   die "BACKUP_DIR nesmí být uvnitř repa ($REPO_ROOT): archivy obsahují osobní data a Garmin tokeny."
 fi
 [[ "$keep" =~ ^[1-9][0-9]{0,2}$ ]] || die "BACKUP_KEEP musí být číslo 1 až 999."
@@ -39,6 +40,8 @@ fi
 mkdir -p -- "$dir"
 exec 9>>"$dir/.backup.lock"
 flock -n 9 || die "Jiná záloha do $dir právě běží."
+# Under the lock no other run owns a staging directory: what is left is from a killed run (it holds copies of the data).
+find "$dir" -maxdepth 1 -type d -name '.backup-tmp.*' -exec rm -rf -- {} +
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 name="fitness-coach-backup-$ts.tgz"
@@ -83,19 +86,29 @@ if [[ ${#problems[@]} -gt 0 ]]; then
   die "Záloha nevytvořena (${#problems[@]} problémů); starší archivy zůstaly beze změny."
 fi
 
-tar -C "$stage" -czf "$stage/archive.tgz" coach.db gateway.sqlite3 garmin_tokens.json
+tar -C "$stage" -czf "$stage/archive.tgz" coach.db gateway.sqlite3 garmin_tokens.json \
+  || die "Archiv nejde vytvořit (tar selhal; místo na disku?); starší archivy zůstaly beze změny."
 chmod 600 "$stage/archive.tgz"
-ln "$stage/archive.tgz" "$dir/$name" 2>/dev/null || die "Archiv $name už existuje (dvě zálohy ve stejné sekundě?)."
+[[ ! -e "$dir/$name" ]] || die "Archiv $name už existuje (dvě zálohy ve stejné sekundě?)."
+ln "$stage/archive.tgz" "$dir/$name" 2>/dev/null || die "Archiv $name nejde zapsat do $dir."
 
-# Rotation: only files that look like our archives, newest $keep stay; anything else is never touched.
-archives=()
+# Rotation: the archive written by this run is never touched. Of the other files that look like our archives
+# the newest keep-1 stay, so at most $keep archives remain; anything else in the directory is never touched.
+others=()
 while IFS= read -r file; do
-  [[ "$file" =~ ^fitness-coach-backup-[0-9]{8}T[0-9]{6}Z\.tgz$ ]] && archives+=("$file")
+  [[ "$file" =~ ^fitness-coach-backup-[0-9]{8}T[0-9]{6}Z\.tgz$ && "$file" != "$name" ]] && others+=("$file")
 done < <(find "$dir" -maxdepth 1 -type f -name 'fitness-coach-backup-*.tgz' -printf '%f\n' | LC_ALL=C sort)
-excess=$(( ${#archives[@]} - keep ))
-for (( i = 0; i < excess; i++ )); do
-  rm -f -- "$dir/${archives[$i]}"
-  [[ $QUIET == 1 ]] || info "Smazán starý archiv: ${archives[$i]}"
+# A newer name than the one just written (clock was ahead, foreign archive) would pose as the freshest backup.
+for file in "${others[@]}"; do
+  if [[ "$file" > "$name" ]]; then
+    warn "Archiv $file má novější čas než právě vytvořený $name (posunuté hodiny nebo cizí archiv?); zkontroluj BACKUP_DIR."
+  fi
 done
+excess=$(( ${#others[@]} - (keep - 1) ))
+for (( i = 0; i < excess; i++ )); do
+  rm -f -- "$dir/${others[$i]}"
+  [[ $QUIET == 1 ]] || info "Smazán starý archiv: ${others[$i]}"
+done
+[[ -f "$dir/$name" ]] || die "Archiv $name po rotaci chybí."
 
 [[ $QUIET == 1 ]] || ok "Záloha: $dir/$name ($(du -h -- "$dir/$name" | cut -f1))"
