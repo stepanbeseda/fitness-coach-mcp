@@ -249,6 +249,21 @@ Konektory z claude.ai fungují v Desktopu samy. Pokud chceš spojení čistě p�
 | Telegram bot | `scripts/setup-secrets.sh telegram-token` (token od @BotFather, vypíše chat id), `scripts/setup-secrets.sh telegram-chat-id` (chat id znovu) |
 | Nové verze | `scripts/check-updates.sh` |
 | Test bez dopadu na provoz | `scripts/e2e-test.sh` (samostatný compose projekt, bez internetu a Tailscale) |
+| Celý check (testy + e2e) | `scripts/check.sh --tag <tag>` (končí řádkem `CHECK OK tree=…`) |
+
+`scripts/e2e-test.sh` běží jako compose projekt `fcm-e2e` s image `fcm-e2e/<služba>:test`. Proměnné
+`E2E_PROJECT` (`fcm-e2e` nebo `fcm-e2e-<přípona>`) a `E2E_TAG` dají běhu vlastní projekt i image, takže dva
+e2e testy můžou běžet současně: `E2E_PROJECT=fcm-e2e-pr07 E2E_TAG=pr07 scripts/e2e-test.sh`. Sítě a volumes
+mají prefix projektu a žádná služba nepublikuje port na hostu.
+
+`scripts/check.sh` je jediný příkaz pro kontrolu změny: testovací stage `garmin-mcp`, `gateway` a `coach-mcp`
+(`docker build --target test --no-cache-filter test`, testy vždy opravdu proběhnou) a pak e2e test
+s `E2E_PROJECT=fcm-e2e-<tag>` a `E2E_TAG=<tag>`. Tag je `--tag`, jinak `CHECK_TAG`, jinak `local`. Každý build
+i e2e drží zámek `/tmp/fcm-docker.lock` (`CHECK_LOCK=0` ho vypne), `.env` nečte. Logy jsou v dočasném adresáři
+vypsaném na začátku; při chybě vypíše krok a posledních 40 řádků jeho logu. Poslední řádek úspěchu je
+`CHECK OK tree=<strom HEAD, 12 znaků>[-dirty] garmin=<n> gateway=<n> coach=<n> e2e=OK` (`n` = počet prošlých
+testů, `-dirty` = necommitnuté změny). `--only garmin|gateway|coach|e2e` spustí jen část (`CHECK PARTIAL`),
+`--keep-images` nechá postavené image `fcm-<služba>-check-<tag>` a `fcm-e2e/*:<tag>`, jinak je smaže.
 
 Doporučený cron (hlášení jen při problému):
 
@@ -408,7 +423,7 @@ Nic se neaktualizuje samo. Postup:
 1. `scripts/check-updates.sh`: co je nového.
 2. Uprav pin (`tailscale/Dockerfile`, `hevy-mcp/Dockerfile` včetně digestu, nebo `pyproject.toml`) a
    pro Python spusť `scripts/lock-deps.sh` (případně `--upgrade`).
-3. `scripts/e2e-test.sh` (build + testy + celý OAuth/MCP flow bez dopadu na provoz).
+3. `scripts/check.sh` (testy všech služeb + e2e: build, celý OAuth/MCP flow bez dopadu na provoz).
 4. `scripts/setup-secrets.sh`: doplní chybějící secrets nové verze (třeba `secrets/garmin_readonly_token` nebo
    prázdný `secrets/telegram_bot_token`); bez nich se služba, která je čte, nespustí. U kompletní instalace nic
    nemění.
@@ -566,6 +581,7 @@ gateway/                 OAuth 2.1 gateway (Python, Starlette), testy, config.to
 hevy-mcp/                wrapper nad oficiální image (secrets ze souborů, telemetrie vypnutá)
 garmin-mcp/              Garmin MCP server (Python, python-garminconnect + MCP SDK), testy
 coach-mcp/               paměť kouče (Python, MCP SDK, SQLite), testy
-scripts/                 setup-secrets, garmin-login, healthcheck, backup, smoke-test, e2e-test, admin, check-updates, lock-deps
+scripts/                 setup-secrets, garmin-login, healthcheck, backup, smoke-test, admin, check-updates,
+                         lock-deps; testy: check (celý check), e2e-test
 docs/coach-instructions.md   Custom Instructions pro Claude projekt „Fitness kouč“
 ```

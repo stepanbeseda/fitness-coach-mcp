@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # E2E step for scripts/backup.sh, called by scripts/e2e-test.sh against the running e2e stack
-# (COMPOSE_PROJECT_NAME=fcm-e2e): a missing part fails with a clear message and writes nothing,
-# then a complete run writes one archive with the three parts, rotates only our own archives and
-# never prints the data. Ends with "E2E backup OK".
+# (COMPOSE_PROJECT_NAME=fcm-e2e or fcm-e2e-<suffix>, see E2E_PROJECT): a missing part fails with a
+# clear message and writes nothing, then a complete run writes one archive with the three parts,
+# rotates only our own archives and never prints the data. Ends with "E2E backup OK".
 #
 #   COMPOSE_PROJECT_NAME=fcm-e2e COMPOSE_FILE=docker-compose.yml:compose.test.yml scripts/e2e_backup.sh
 source "$(dirname "$0")/lib.sh"
-[[ "${COMPOSE_PROJECT_NAME:-}" == fcm-e2e ]] || die "e2e_backup.sh běží jen proti e2e stacku (COMPOSE_PROJECT_NAME=fcm-e2e)."
+[[ "${COMPOSE_PROJECT_NAME:-}" =~ ^fcm-e2e(-[a-z0-9][a-z0-9_-]*)?$ ]] \
+  || die "e2e_backup.sh běží jen proti e2e stacku (COMPOSE_PROJECT_NAME=fcm-e2e nebo fcm-e2e-<přípona>)."
 
 w="$(mktemp -d)"
 trap 'rm -rf "$w"' EXIT
@@ -67,7 +68,9 @@ for file in "${archives[@]}"; do
     *) new="$file" ;;
   esac
 done
-[[ -n "$new" && "$new" != *2020* && "$new" != *20991230* ]] || stop "krok 5: rotace nechala špatné archivy (${archives[*]})" "$w/out2"
+# Match the date part only: a time of day like T202050Z must not look like an old archive.
+[[ -n "$new" && "$new" != fitness-coach-backup-202001* && "$new" != fitness-coach-backup-20991230* ]] \
+  || stop "krok 5: rotace nechala špatné archivy (${archives[*]})" "$w/out2"
 for gone in 20200101 20200102 20200103 20991230; do
   [[ ! -e "$w/a/fitness-coach-backup-${gone}T000000Z.tgz" ]] || stop "krok 5: rotace nesmazala starý archiv $gone" "$w/out2"
 done

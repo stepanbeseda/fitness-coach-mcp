@@ -5,20 +5,22 @@
 # The e2e builds get their own image tags. With the live tags, a test build of
 # a branch would replace the image the live stack is recreated from, and the next
 # `docker compose up -d` in the live checkout would deploy (and migrate) it.
+# E2E_TAG (default "test") separates parallel e2e runs: each run uses its own
+# fcm-e2e/<svc>:<E2E_TAG> images under its own compose project (E2E_PROJECT).
 services:
   ts:
-    image: fcm-e2e/tailscale:test
+    image: fcm-e2e/tailscale:${E2E_TAG:-test}
     entrypoint: ["sleep", "infinity"]
     healthcheck:
       disable: true
   gateway:
-    image: fcm-e2e/gateway:test
+    image: fcm-e2e/gateway:${E2E_TAG:-test}
   hevy-mcp:
-    image: fcm-e2e/hevy-mcp:test
+    image: fcm-e2e/hevy-mcp:${E2E_TAG:-test}
   garmin-mcp:
-    image: fcm-e2e/garmin-mcp:test
+    image: fcm-e2e/garmin-mcp:${E2E_TAG:-test}
   coach-mcp:
-    image: fcm-e2e/coach-mcp:test
+    image: fcm-e2e/coach-mcp:${E2E_TAG:-test}
 
 networks:
   mcp:
