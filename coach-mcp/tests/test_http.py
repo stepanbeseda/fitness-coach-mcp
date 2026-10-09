@@ -64,6 +64,7 @@ EXPECTED_TOOLS = {
     "search_notes",
     "list_goals",
     "list_constraints",
+    "get_correlations",
 }
 WRITE_TOOLS = {"set_goal", "set_constraint", "save_plan", "update_session", "add_note"}
 # Tools that reach an outside service (garmin-mcp); every other tool only touches the local store.
@@ -143,6 +144,7 @@ async def test_initialize_list_and_annotations(app):
         assert "get_strength_progress" in init["instructions"]
         for name in ("search_notes", "list_goals", "list_constraints"):
             assert name in init["instructions"]
+        assert "get_correlations" in init["instructions"]
 
         r = await client.post("/mcp", headers=auth_headers(), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert r.status_code == 202
@@ -163,6 +165,10 @@ async def test_initialize_list_and_annotations(app):
         status_schema = by_name["update_session"]["inputSchema"]["properties"]["status"]
         assert sorted(status_schema["enum"]) == ["done", "moved", "planned", "skipped"]
         assert len(by_name["get_trends"]["inputSchema"]["properties"]["metrics"]["items"]["enum"]) == 46
+        corr_schema = by_name["get_correlations"]["inputSchema"]["properties"]
+        assert corr_schema["metrics"]["items"]["enum"] == by_name["get_trends"]["inputSchema"]["properties"]["metrics"]["items"]["enum"]
+        assert (corr_schema["metrics"]["minItems"], corr_schema["metrics"]["maxItems"]) == (2, 6)
+        assert (corr_schema["lag_days"]["minimum"], corr_schema["lag_days"]["maximum"]) == (0, 3)
         assert len(json.dumps(tools)) < 40_000
 
 
@@ -545,6 +551,55 @@ async def test_trends_and_weekly_report_over_http(app, store):
             assert invalid["isError"] is True, arguments
         future = await call_tool(client, "get_weekly_report", {"week": "2026-10-12"}, id_=6)
         assert future["isError"] is True and "future" in future["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_correlations_over_http(app, store):
+    hrv = [50, 52, 49, 55, 58, 54, 60, 57, 62, 59, 65, 63, 61, 66]
+    rhr = [60, 58, 61, 57, 55, 58, 52, 56, 51, 54, 49, 50, 53, 48]
+    for n, (h, r) in enumerate(zip(hrv, rhr, strict=True)):
+        seed_day(store, date(2026, 9, 1) + timedelta(days=n), hrv_last_night_ms=h, resting_hr=r)
+    async with running_client(app) as client:
+        arguments = {
+            "metrics": ["hrv_last_night_ms", "resting_hr"],
+            "start_date": "2026-09-01",
+            "end_date": "2026-09-30",
+            "lag_days": 0,
+        }
+        result = await call_tool(client, "get_correlations", arguments)
+        assert result["isError"] is False
+        out = payload(result)
+        assert out["pairs"] == [
+            {"a": "hrv_last_night_ms", "b": "resting_hr", "n_pairs": 14, "available": True,
+             "pearson": -0.989, "spearman": -0.995}
+        ]
+        assert "not a cause" in out["caveat"]
+        for n, bad in enumerate(
+            (
+                {"metrics": ["readiness"]},
+                {"metrics": ["readiness"] * 7},
+                {"metrics": ["readiness", "steps"]},
+                {"metrics": ["readiness", "sleep_score"], "lag_days": 4},
+            ),
+            start=3,
+        ):
+            invalid = await call_tool(client, "get_correlations", bad, id_=n)
+            assert invalid["isError"] is True, bad
+        lagged = await call_tool(
+            client,
+            "get_correlations",
+            {**arguments, "start_date": "2026-09-02", "lag_days": 1},
+            id_=9,
+        )
+        assert lagged["isError"] is False
+        out = payload(lagged)
+        assert (out["start"], out["end"], out["lag_days"]) == ("2026-09-02", "2026-09-30", 1)
+        assert out["pairs"] == [
+            {"a": "hrv_last_night_ms", "b": "resting_hr", "n_pairs": 12, "available": False,
+             "reason": "too_few_pairs"}
+        ]
+        same = await call_tool(client, "get_correlations", {"metrics": ["readiness", "readiness"]}, id_=8)
+        assert same["isError"] is True and "at least two different metrics" in same["content"][0]["text"]
 
 
 def history_settings(settings: Settings, **overrides) -> Settings:

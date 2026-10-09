@@ -7,9 +7,9 @@ se k němu dostanou jen přes gateway (`/coach/mcp`), která posílá interní b
 (`/run/secrets/coach_backend_token`). Bez tokenu server všechny MCP požadavky odmítne (fail closed). Sám volá
 jen `garmin-mcp` (čtyři čtecí nástroje, read-only token `garmin_readonly_token`), `hevy-mcp` (dva čtecí nástroje,
 interní token `hevy_backend_token`) a volitelně Telegram Bot API (ranní briefing). Každou noc si z Garminu ukládá
-denní historii a z Hevy silové tréninky pro trendy, týdenní přehled a progres síly a podle historie navrhne stav
-minulých plánovaných tréninků. Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená a nahrazené
-tréninky zůstanou jako `superseded`.
+denní historii a z Hevy silové tréninky pro trendy, týdenní přehled, korelace a progres síly a podle historie
+navrhne stav minulých plánovaných tréninků. Nic se nemaže: cíle se uzavírají, omezení se označí jako vyřešená
+a nahrazené tréninky zůstanou jako `superseded`.
 
 ## Nástroje
 
@@ -29,6 +29,7 @@ tréninky zůstanou jako `superseded`.
 | `search_notes` | čtení | fulltextové hledání v celém deníku poznámek (`get_coach_context` má jen posledních 10): všechna slova dotazu, nejnovější první, volitelně rozsah dat nebo trénink, max. 50 výsledků a příznak `more` |
 | `list_goals` | čtení | všechny cíle včetně splněných (`achieved`) a opuštěných (`abandoned`), se stavem a časem vytvoření a poslední změny |
 | `list_constraints` | čtení | všechna omezení, aktivní i vyřešená (`resolved`), se stavem a časem vytvoření a poslední změny |
+| `get_correlations` | čtení | korelace mezi 2–6 metrikami z katalogu `get_trends` po dvojicích: Pearson a Spearman a počet spárovaných dní, volitelně s posunem 0–3 dny (metrika `a` v den D proti `b` v den D + posun); pod 14 páry nebo u konstantní řady `available: false`; vždy s upozorněním, že korelace není příčina |
 
 Všechny zápisy jsou označené jako ne-read-only a ne-destruktivní; v popisu mají větu „Only after the athlete
 confirmed“, takže je kouč navrhuje a zapisuje až po potvrzení. Data jsou `YYYY-MM-DD` v místním čase
@@ -100,7 +101,8 @@ skóre), klidovou tepovku, Body Battery (nejvyšší a nejnižší), stres, akut
 VO2max a součty aktivit po sportech (počet, délka, vzdálenost, tréninková zátěž). Řádek dne D má spánek a HRV
 noci, která skončila ráno D, a aktivity, které začaly v D. Dnešek se neukládá (není úplný): den se načte poprvé
 den po něm a pak ještě dvakrát v dalších dvou dnech, aby se zachytila pozdní synchronizace hodinek. Nad uloženou
-historií pracují `get_trends` a `get_weekly_report`; `get_hrv_trend` sahá jen 28 dní zpět a `get_body_battery` 31.
+historií pracují `get_trends`, `get_weekly_report` a `get_correlations`; `get_hrv_trend` sahá jen 28 dní zpět
+a `get_body_battery` 31.
 
 Doplňují se jen chybějící dny, takže po restartu se pokračuje tam, kde se skončilo (průběh je daný uloženými
 daty). První běh přijde minutu po startu služby a načte `COACH_HISTORY_BACKFILL_DAYS` dní zpět (výchozí 90):

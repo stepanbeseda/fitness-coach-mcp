@@ -1185,5 +1185,5 @@ from Telegram, media messages.
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between
   `garmin-mcp` and `coach-mcp`); creating a Hevy workout from a strength
-  session recorded on the watch (after PR 19). Correlation analysis is
-  PR 16 and the weekly report push is part of PR 14 since 2026-10-09.
+  session recorded on the watch (after PR 19). The weekly report push is part
+  of PR 14 since 2026-10-09.
