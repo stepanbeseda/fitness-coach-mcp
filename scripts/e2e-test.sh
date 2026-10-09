@@ -65,6 +65,7 @@ done
 
 status=0
 "${compose[@]}" exec -T -e E2E_PASSWORD="$E2E_PASSWORD" gateway python - < scripts/e2e_flow.py || status=1
+COMPOSE_PROJECT_NAME="$PROJECT" COMPOSE_FILE="docker-compose.yml:compose.test.yml" scripts/e2e_backup.sh || status=1
 
 echo
 info "Audit log (posledních 12 záznamů):"

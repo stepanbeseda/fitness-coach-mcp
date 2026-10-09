@@ -115,6 +115,7 @@ Když nežiješ v časovém pásmu `Europe/Prague`, nastav `ATHLETE_TZ` (např. 
 a kdy chodí ranní briefing a běží noční historie.
 Volitelně ranní briefing do Telegramu: `COACH_TELEGRAM_CHAT_ID` a `COACH_BRIEFING_*` (viz Provoz → Ranní briefing).
 Noční historie z Garminu je zapnutá; volby `COACH_HISTORY_*` jsou v `.env.example` (viz Provoz → Noční historie).
+Pro zálohy nastav `BACKUP_DIR` (absolutní cesta mimo repo) a volitelně `BACKUP_KEEP` (viz Provoz → Zálohy).
 
 ### 4. Secrets
 
@@ -237,6 +238,7 @@ Konektory z claude.ai fungují v Desktopu samy. Pokud chceš spojení čistě p�
 | Rotace interních tokenů | `scripts/setup-secrets.sh backend-tokens` |
 | Ranní briefing ručně | `docker compose exec coach-mcp python -m coach_mcp send-briefing` |
 | Noční historie (průběh) | `docker compose logs coach-mcp` (řádky `history status=…`) |
+| Záloha | `scripts/backup.sh` (pro cron: `--quiet`, exit 1 = archiv nevznikl) |
 | Telegram bot | `scripts/setup-secrets.sh telegram-token` (token od @BotFather, vypíše chat id), `scripts/setup-secrets.sh telegram-chat-id` (chat id znovu) |
 | Nové verze | `scripts/check-updates.sh` |
 | Test bez dopadu na provoz | `scripts/e2e-test.sh` (samostatný compose projekt, bez internetu a Tailscale) |
@@ -245,6 +247,7 @@ Doporučený cron (hlášení jen při problému):
 
 ```cron
 17 7 * * * cd /cesta/k/fitness-coach-mcp && scripts/healthcheck.sh --quiet
+47 2 * * * cd /cesta/k/fitness-coach-mcp && scripts/backup.sh --quiet
 ```
 
 ### Ranní briefing (Telegram)
@@ -371,41 +374,102 @@ Digest pro nový tag: `docker buildx imagetools inspect <image:tag>` (řádek `D
 
 ### Zálohy
 
-Stav je ve volumes `fitness-coach-mcp_gateway-data` (granty, audit), `fitness-coach-mcp_garmin-tokens`,
-`fitness-coach-mcp_coach-data` a `fitness-coach-mcp_ts-state` + adresář `secrets/`. Při ztrátě stačí
-znovu `setup-secrets.sh`, `garmin-login.sh` a znovu připojit konektory. Uzel Tailscale je pak potřeba
-znovu přihlásit novým auth key.
+`fitness-coach-mcp_coach-data` je **jediná kopie** cílů, omezení, plánu a poznámek kouče a žádný skript ji
+nedokáže znovu vytvořit. Databáze gateway (granty a refresh tokeny) a Garmin tokeny jdou vytvořit znovu (znovu
+připojit konektory, `scripts/garmin-login.sh`), záloha ale tuhle práci ušetří. Do zálohy nepatří `audit.jsonl`
+(log, ne stav), `ts-state` (nový auth key vytvoří uzel Tailscale znovu) a `secrets/` (`scripts/setup-secrets.sh`).
 
-Výjimka je `fitness-coach-mcp_coach-data`: je to **jediná kopie** cílů, omezení, plánu a poznámek kouče a
-žádný skript ji nedokáže znovu vytvořit. Záloha je konzistentní, když se `coach-mcp` na chvíli zastaví
-(databáze je jediný soubor; SQLite používá klasický rollback žurnál, ne WAL):
+**Jak.** `scripts/backup.sh` běží při spuštěném stacku. Konzistentní kopie obou databází udělá přes online
+zálohovací API SQLite uvnitř jejich kontejnerů, token Garminu zkopíruje a vše uloží do jednoho archivu
+`fitness-coach-backup-<UTC čas>.tgz` (mód 0600) v `BACKUP_DIR`. Ponechá nejnovějších `BACKUP_KEEP` archivů
+(výchozí 14) a jiné soubory v adresáři nikdy nemaže. Jakákoli chyba (služba neběží, chybí Garmin tokeny, poškozená
+databáze) = exit 1, žádný archiv a starší archivy zůstanou beze změny; každý problém je vypsaný na vlastním řádku.
+Zbytky přerušené zálohy (`.backup-tmp.*`) smaže další běh. Právě vytvořený archiv rotace nikdy nesmaže; má-li
+adresář archiv s novějším časem v názvu (posunuté hodiny, cizí archiv), skript to vypíše i s `--quiet`.
+Jméno nejnovějšího archivu je čas poslední povedené zálohy **v UTC** (běh v 02:47 v Praze přes léto se jmenuje
+`…T004700Z`, v zimě `…T014700Z`).
+
+Nastavení: do `.env` doplň `BACKUP_DIR=` (absolutní cesta mimo repo) a volitelně `BACKUP_KEEP=` editorem, jednou
+spusť `scripts/backup.sh` a přidej cron řádek z části Provoz. Příkazy `backup`, `restore`, `backup-db` a
+`restore-db` uvnitř kontejnerů existují jen v image sestavených z této verze: po aktualizaci nejdřív přestav a
+restartuj stack (Aktualizace, `docker compose up -d --build`); starší image odpoví na `restore` jen řádkem
+s použitím (exit 2) a nic nezmění.
+
+**Kam s nimi.** Archivy obsahují osobní tréninková data a přihlašovací tokeny Garminu: drž je mimo repo a mimo
+veřejná úložiště. Kopie mimo tenhle stroj (šifrovaná) je tvoje práce, skript ji neřeší.
+
+**Obnova** se dělá po jedné části, vždy při zastavené službě té části, příkazy po jednom. Nejdřív nastav cestu
+k archivu (jméno obsahuje čas v UTC, použij svůj archiv):
+
+```bash
+ARCHIV=/srv/backups/fitness-coach-mcp/fitness-coach-backup-20261009T004700Z.tgz
+```
+
+Paměť kouče:
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach:ro --entrypoint tar fitness-coach-mcp/coach-mcp:0.1.0 -C /data/coach -czf - . > coach-data.tgz
+tar -xzOf "$ARCHIV" coach.db | docker run --rm -i --network none -v fitness-coach-mcp_coach-data:/data/coach fitness-coach-mcp/coach-mcp:0.1.0 restore
 docker compose start coach-mcp
 ```
 
-Obnova **nahradí celý obsah** volume archivem `coach-data.tgz`; služba přitom musí stát. První `docker run`
-nejdřív uloží současný stav do nového souboru `coach-data-pred-obnovou-<datum-čas>.tgz` (jiné jméno než
-obnovovaný archiv, takže ho nepřepíše). Druhý `docker run` archiv celý rozbalí do dočasného adresáře a ověří,
-že obsahuje neprázdný `coach.db`; teprve potom smaže obsah volume (včetně případného zbytku žurnálu
-`coach.db-journal` po pádu služby, který by SQLite jinak vrátil do obnoveného souboru) a nahradí ho.
-Poškozený nebo neúplný archiv skončí chybou a volume zůstane beze změny. Když některý příkaz skončí chybou,
-nepokračuj dalším a služba se po `docker compose start coach-mcp` spustí se stávajícími daty. Na novém
-hostu nejdřív spusť stack podle Instalace (`docker compose up -d --build`), aby volume vytvořil Compose, a
-teprve potom obnovuj.
+Gateway (granty):
 
 ```bash
+docker compose stop gateway
+tar -xzOf "$ARCHIV" gateway.sqlite3 | docker run --rm -i --network none -v fitness-coach-mcp_gateway-data:/data --entrypoint python fitness-coach-mcp/gateway:0.1.0 -m gateway.cli restore-db
+docker compose start gateway
+```
+
+Garmin tokeny:
+
+```bash
+docker compose stop garmin-mcp
+tar -xzOf "$ARCHIV" garmin_tokens.json | docker run --rm -i --network none -v fitness-coach-mcp_garmin-tokens:/data/garmin --entrypoint python fitness-coach-mcp/garmin-mcp:0.1.0 -m garmin_coach_mcp.login --tokens-dir /data/garmin --import-file - --no-verify
+docker compose start garmin-mcp
+scripts/garmin-login.sh --check
+```
+
+Obnova soubor nejdřív ověří (integrita SQLite, očekávané tabulky, schéma coach databáze není novější než image).
+U coach a gateway skončí při jakékoli chybě řádkem `… nothing changed` / `… nic se nezměnilo`; import Garmin
+tokenů odmítne neplatný soubor hláškou `Soubor nevypadá jako garmin_tokens.json …`. Ve všech případech zůstane volume,
+jak byl. Při úspěchu
+zůstanou dosavadní soubory ve volume jako `<soubor>.pred-obnovou-<UTC čas>` (včetně případného zbytku
+`-journal` / `-wal`, který by SQLite jinak přehrál do obnoveného souboru). Starší archiv coach databáze `coach-mcp`
+při startu migruje, novější odmítne (nasaď novější image). Garmin tokeny se nahradí bez záložní kopie (jdou znovu
+vytvořit přes `scripts/garmin-login.sh`); expirovaný token z archivu ukáže `--check`. Na novém hostu nejdřív spusť
+stack podle Instalace (`docker compose up -d --build`), aby volumes vytvořil Compose, a teprve potom obnovuj. Když
+některý příkaz skončí chybou, nepokračuj dalším; služba po `docker compose start` poběží se stávajícími daty.
+
+**Cesta zpět po obnově** (u gateway obdobně s `-m gateway.cli restore-db /data/<soubor>.pred-obnovou-…`): první
+příkaz vypíše, jaké postranní kopie ve volume jsou, a obnovuje se z té s časem, na kterou se chceš vrátit.
+Výpis ukáže i soubory `<soubor>.pred-obnovou-<čas>-journal` / `-wal` / `-shm`; `restore` dostane jméno **bez** této
+přípony. Cesta zpět nechá aktuální databázi jako další postranní kopii a spotřebuje `-journal` / `-wal` / `-shm`
+vybrané kopie, protože je SQLite použije při jejím čtení; samotná kopie zůstane.
+
+```bash
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint ls fitness-coach-mcp/coach-mcp:0.1.0 -l /data/coach
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach:ro --entrypoint tar fitness-coach-mcp/coach-mcp:0.1.0 -C /data/coach -czf - . > "coach-data-pred-obnovou-$(date +%Y%m%d-%H%M%S).tgz"
-docker run --rm -i --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint sh fitness-coach-mcp/coach-mcp:0.1.0 -c 'mkdir /tmp/r && tar -C /tmp/r -xzf - && test -s /tmp/r/coach.db && find /data/coach -mindepth 1 -delete && cp -a /tmp/r/. /data/coach/' < coach-data.tgz
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach fitness-coach-mcp/coach-mcp:0.1.0 restore /data/coach/coach.db.pred-obnovou-20261009T101500Z
 docker compose start coach-mcp
 ```
 
-Archivy `coach-data.tgz` i `coach-data-pred-obnovou-*.tgz` obsahují osobní tréninková data: ulož je mimo repo
-a mimo veřejná úložiště. Denní historie (`history_days`) je ve stejném souboru; když se ztratí, `coach-mcp` ji po
-startu znovu načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.
+Postranní kopie, které už nepotřebuješ, smaž:
+
+```bash
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint sh fitness-coach-mcp/coach-mcp:0.1.0 -c 'rm -f /data/coach/coach.db.pred-obnovou-*'
+```
+
+Totéž pro gateway:
+
+```bash
+docker run --rm --network none -v fitness-coach-mcp_gateway-data:/data --entrypoint sh fitness-coach-mcp/gateway:0.1.0 -c 'rm -f /data/gateway.sqlite3.pred-obnovou-*'
+```
+
+Vzor smaže i pomocné soubory `-journal` / `-wal` / `-shm` a kopii, ze které ses právě vrátil.
+
+Denní historie (`history_days`) je ve stejném souboru jako `coach.db`; když se ztratí, `coach-mcp` ji po startu znovu
+načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.
 
 ## Troubleshooting
 
@@ -420,6 +484,7 @@ startu znovu načte z Garminu za posledních `COACH_HISTORY_BACKFILL_DAYS` dní.
 | MCP volání vrací 502 `backend_misconfigured` | Nesedí interní token gateway ↔ backend → `scripts/setup-secrets.sh backend-tokens`. |
 | Gateway se po aktualizaci nespustí: `cannot read secret /run/secrets/coach_backend_token` | `scripts/setup-secrets.sh` (doplní chybějící interní token) a pak `docker compose up -d --build coach-mcp gateway`. |
 | `coach-mcp` unhealthy, v logu `database schema version N is newer` | Běží starší image než data: nasaď znovu novější verzi; volume `coach-data` nemaž. |
+| `scripts/backup.sh` končí `Záloha nevytvořena` | Řádky nad tím jmenují část: `is not running` (hláška Compose) = služba neběží (`docker compose ps`); `garmin_tokens.json: chybí` = `scripts/garmin-login.sh`; `database is larger than 32 MiB` / `stayed locked` = nahlas to (limit se zvedá v PR). Archiv nevznikl a starší zůstaly. |
 | `coach-mcp` se nespustí: `bind source path does not exist: …/secrets/telegram_bot_token` | Chybí soubor pro token bota (stačí prázdný) → `scripts/setup-secrets.sh` a `docker compose up -d coach-mcp`. |
 | `coach-mcp` se pořád restartuje, v logu `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | V `.env` je chat id, ale token chybí nebo je poškozený → `scripts/setup-secrets.sh telegram-token`, nebo chat id z `.env` smaž (briefing vypnutý). |
 | `get_trends` / `get_weekly_report` nemají data | Historie se teprve načítá (první běh ~30 min, mimo okno briefingu) nebo Garmin není přihlášený: `docker compose logs coach-mcp`, řádky `history status=…` (`rate_limited` = Garmin omezil počet volání, další pokus za 1 až 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect nebo internet nefungoval, další pokus za 1 až 8 h, dny se nezapočítají; `given_up` > 0 = dny, které třikrát selhaly, i když Garmin jiné dny vracel). |
@@ -443,6 +508,6 @@ gateway/                 OAuth 2.1 gateway (Python, Starlette), testy, config.to
 hevy-mcp/                wrapper nad oficiální image (secrets ze souborů, telemetrie vypnutá)
 garmin-mcp/              Garmin MCP server (Python, python-garminconnect + MCP SDK), testy
 coach-mcp/               paměť kouče (Python, MCP SDK, SQLite), testy
-scripts/                 setup-secrets, garmin-login, healthcheck, smoke-test, e2e-test, admin, check-updates, lock-deps
+scripts/                 setup-secrets, garmin-login, healthcheck, backup, smoke-test, e2e-test, admin, check-updates, lock-deps
 docs/coach-instructions.md   Custom Instructions pro Claude projekt „Fitness kouč“
 ```

@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 DEFAULT_CONFIG_PATH = "/app/config.toml"
+DEFAULT_DB_PATH = "/data/gateway.sqlite3"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 SCOPE = "mcp"
 
@@ -240,7 +241,7 @@ def load_settings(path: str | None = None, *, allow_http: bool = False) -> Setti
         public_base_url=base_url,
         listen_host=str(server.get("listen_host", "127.0.0.1")),
         listen_port=_int(server, "listen_port"),
-        db_path=str(server.get("db_path", "/data/gateway.sqlite3")),
+        db_path=str(server.get("db_path", DEFAULT_DB_PATH)),
         audit_log_path=str(server["audit_log_path"]) if server.get("audit_log_path") else None,
         owner_tailscale_login=owner,
         login_tailnet_only=bool(auth.get("login_tailnet_only", True)),

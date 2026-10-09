@@ -32,6 +32,15 @@ def _text(env: dict[str, str], name: str, default: str) -> str:
     return value
 
 
+def db_path_from_env(env: dict[str, str] | None = None) -> Path:
+    """The ``COACH_MCP_DB_PATH`` setting alone (the backup and restore commands need nothing else)."""
+    env = dict(os.environ if env is None else env)
+    db_path = Path(_text(env, "COACH_MCP_DB_PATH", "/data/coach/coach.db"))
+    if not db_path.is_absolute():
+        raise ValueError("COACH_MCP_DB_PATH must be an absolute path")
+    return db_path
+
+
 def _opt(env: dict[str, str], name: str, default: str) -> str:
     """Like ``_text`` but a missing or blank value means the default (Compose passes ``${X:-}``)."""
     return env.get(name, "").strip() or default
@@ -108,9 +117,7 @@ class Settings:
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
         env = dict(os.environ if env is None else env)
 
-        db_path = Path(_text(env, "COACH_MCP_DB_PATH", "/data/coach/coach.db"))
-        if not db_path.is_absolute():
-            raise ValueError("COACH_MCP_DB_PATH must be an absolute path")
+        db_path = db_path_from_env(env)
 
         raw_port = _text(env, "COACH_MCP_PORT", "8000")
         try:

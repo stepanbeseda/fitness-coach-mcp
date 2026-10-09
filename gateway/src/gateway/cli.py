@@ -11,12 +11,14 @@ import getpass
 import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pyotp
 import segno
 from argon2 import PasswordHasher
 
-from .config import SCOPE, ConfigError, load_settings, read_secret
+from .backup import backup_command, restore_command
+from .config import DEFAULT_DB_PATH, SCOPE, ConfigError, load_settings, read_secret
 from .security import TotpVerifier, hash_token, new_id, new_token
 from .store import Grant, Store, Token
 
@@ -144,6 +146,15 @@ def cmd_check_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup_db(args: argparse.Namespace) -> int:
+    # No load_settings(): the backup needs only the database path, not config or secrets.
+    return backup_command(Path(args.db))
+
+
+def cmd_restore_db(args: argparse.Namespace) -> int:
+    return restore_command(Path(args.db), args.source)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m gateway.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -173,6 +184,15 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("check-config", help="validate configuration and secrets")
     p.set_defaults(func=cmd_check_config)
+
+    p = sub.add_parser("backup-db", help="consistent copy of the gateway database (stdout)")
+    p.add_argument("--db", default=DEFAULT_DB_PATH, help="database file (default: %(default)s)")
+    p.set_defaults(func=cmd_backup_db)
+
+    p = sub.add_parser("restore-db", help="replace the gateway database with a backup (service stopped)")
+    p.add_argument("--db", default=DEFAULT_DB_PATH, help="database file (default: %(default)s)")
+    p.add_argument("source", nargs="?", default="-", help="backup file; - (default) reads stdin")
+    p.set_defaults(func=cmd_restore_db)
 
     args = parser.parse_args(argv)
     try:

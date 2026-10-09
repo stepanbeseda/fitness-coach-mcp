@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from coach_mcp.__main__ import configure_logging
-from coach_mcp.config import CHAT_ID_ERROR, Settings
+from coach_mcp.config import CHAT_ID_ERROR, Settings, db_path_from_env
 
 
 def test_from_env_defaults():
@@ -243,3 +243,12 @@ def test_history_time_inside_briefing_window_is_accepted():
         assert Settings.from_env({"COACH_HISTORY_TIME": good}).history_time == dt.time.fromisoformat(good)
     env = {"COACH_BRIEFING_TIME": "05:00", "COACH_BRIEFING_CUTOFF": "06:00"}
     assert Settings.from_env({**env, "COACH_HISTORY_TIME": "05:00"}).history_time == dt.time(5, 0)
+
+
+def test_db_path_from_env():
+    assert db_path_from_env({}) == Path("/data/coach/coach.db")
+    assert db_path_from_env({"COACH_MCP_DB_PATH": " /tmp/x/coach.db "}) == Path("/tmp/x/coach.db")
+    with pytest.raises(ValueError, match="COACH_MCP_DB_PATH must be an absolute path"):
+        db_path_from_env({"COACH_MCP_DB_PATH": "relative/coach.db"})
+    with pytest.raises(ValueError, match="COACH_MCP_DB_PATH must not be empty"):
+        db_path_from_env({"COACH_MCP_DB_PATH": " "})
