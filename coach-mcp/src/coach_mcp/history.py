@@ -7,6 +7,8 @@ the store which days still need a call, so a restart resumes where the last run 
 sleep function are injected. Log lines carry outcome words, counters and exception class names only, never
 dates, values, payload text or arguments. After every run the job stores a suggestion (matched / no_activity)
 for the planned sessions of the last seven days (``reconcile``); it never changes a session status.
+A day whose snapshot had sections in error keeps them in ``recovery_missing``; after the re-fetch window such a
+day is fetched again, a few per night, and only its missing sections are written (``repair_sections``).
 
 With a strength source the same run then syncs Hevy workouts (``strength.py``): events since the last
 complete listing, exercise templates once; the Garmin part never depends on it.
@@ -19,7 +21,7 @@ import json
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, time as dt_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -40,6 +42,8 @@ MAX_BACKOFF_SECONDS = 28800.0
 MAX_SLEEP_SECONDS = 3600.0
 REFETCH_DAYS = 3
 MAX_FAILURES = 3
+REPAIR_ATTEMPTS = 3  # answered repair calls that are charged to a day
+REPAIR_DAYS_PER_NIGHT = 5  # answered repair calls per local date
 OUTAGE_ERRORS = 3
 BLOCK_DAYS = 7
 ACTIVITY_LIMIT = 100
@@ -74,6 +78,9 @@ _SECTION_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("vo2max_cycling", "vo2max_cycling"),
     ),
 }
+ALL_SECTIONS = frozenset(SNAPSHOT_SECTIONS)
+# Column -> key of its section.
+_SECTION_OF: dict[str, str] = {column: key for key, columns in _SECTION_COLUMNS.items() for column, _ in columns}
 SPORTS = ("running", "cycling", "swimming", "walking", "hiking", "strength", "other")
 # Everything except Garmin's own strength_training, which is reported separately.
 ENDURANCE_SPORTS = ("running", "cycling", "swimming", "walking", "hiking", "other")
@@ -114,6 +121,18 @@ def recovery_values(payload: dict[str, Any]) -> dict[str, Any]:
 def snapshot_failed(payload: dict[str, Any]) -> bool:
     """True when every section of the snapshot is an error (the call itself worked, nothing was read)."""
     return all(isinstance(payload.get(key), dict) and "error" in payload[key] for key in SNAPSHOT_SECTIONS)
+
+
+def section_errors(payload: dict[str, Any]) -> frozenset[str]:
+    """The sections of a snapshot payload that hold ``error`` (the test of ``recovery_values``)."""
+    return frozenset(
+        key for key in SNAPSHOT_SECTIONS if isinstance(payload.get(key), dict) and "error" in payload[key]
+    )
+
+
+def missing_text(sections: Collection[str]) -> str:
+    """The stored form of a set of sections: comma list in the order of ``SNAPSHOT_SECTIONS``."""
+    return ",".join(key for key in SNAPSHOT_SECTIONS if key in sections)
 
 
 def sport_of(type_key: str | None) -> str:
@@ -234,6 +253,36 @@ def _fetched_on(value: Any) -> date | None:
         return None
 
 
+def missing_sections(row: Mapping[str, Any]) -> frozenset[str]:
+    """The sections of a stored day that were never read without an error.
+
+    A day without an answered snapshot misses all of them; ``recovery_missing`` NULL on a fetched row (written
+    by a caller that did not know) counts as complete; unknown tokens are ignored.
+    """
+    if _fetched_on(row.get("recovery_fetched_on")) is None:
+        return ALL_SECTIONS
+    text = row.get("recovery_missing")
+    if not isinstance(text, str):
+        return frozenset()
+    return frozenset(token for token in text.split(",") if token in ALL_SECTIONS)
+
+
+def repair_sections(row: Mapping[str, Any], day: date, today: date) -> frozenset[str]:
+    """The sections of ``day`` to ask for again now; empty when the day is not due (or complete).
+
+    Due only after the regular re-fetch window, never on the date of a regular fetch, below the failure and
+    repair limits and at most once per local date. Disjoint from ``needs_fetch`` for a fetched day.
+    """
+    fetched_on = _fetched_on(row.get("recovery_fetched_on"))
+    if fetched_on is None or fetched_on < day + timedelta(days=REFETCH_DAYS) or fetched_on >= today:
+        return frozenset()
+    if (row.get("recovery_failures") or 0) >= MAX_FAILURES or (row.get("recovery_repairs") or 0) >= REPAIR_ATTEMPTS:
+        return frozenset()
+    if row.get("recovery_repaired_on") == today.isoformat():
+        return frozenset()
+    return missing_sections(row)
+
+
 def day_activities(rows: Sequence[Mapping[str, Any]]) -> dict[str, DayActivities]:
     """Stored activity totals per date (``history_days`` rows) for ``reconcile.suggest``.
 
@@ -300,6 +349,11 @@ class _Run:
         self.unconfirmed: dict[str, list[list[date]]] = {part: [] for part in PARTS}
         # Per part: a day for which the backend answered this part correctly, the probe asks for it.
         self.known_good: dict[str, date | None] = {part: None for part in PARTS}
+        self.repaired = 0  # days whose missing sections all loaded in this run
+        # The regular snapshots of this run that were answered, and the sections read without an error in them:
+        # the evidence that a section works (or is down) for the whole run.
+        self.snapshots_answered = 0
+        self.sections_ok: set[str] = set()
 
 
 class _StrengthRun:
@@ -430,13 +484,14 @@ class HistoryJob:
             level = logging.WARNING
         log.log(
             level,
-            "history status=%s fetched=%d failed=%d pending=%d given_up=%d ms=%.0f %s",
+            "history status=%s fetched=%d failed=%d pending=%d given_up=%d ms=%.0f repaired=%d %s",
             outcome,
             run.fetched,
             run.failed,
             len(run.pending),
             run.given_up,
             (time.monotonic() - started - strength_seconds) * 1000,
+            run.repaired,
             step,
         )
         if strength_crash is not None:
@@ -479,6 +534,9 @@ class HistoryJob:
         stored = {row["date"]: row for row in self._store.history_rows(first, last)}
         need_recovery: set[date] = set()
         need_activities: set[date] = set()
+        prior: dict[date, frozenset[str]] = {}  # sections never read without an error, per day to fetch
+        repairs: list[tuple[date, frozenset[str]]] = []  # newest first, like the loop
+        answered_today = 0
         day = last
         while day >= first:
             row = stored.get(day.isoformat(), {})
@@ -486,6 +544,12 @@ class HistoryJob:
             failures = {part: row.get(f"{part}_failures") or 0 for part in PARTS}
             if needs_fetch(day, fetched["recovery"], failures["recovery"], today):
                 need_recovery.add(day)
+                prior[day] = missing_sections(row)
+            due = repair_sections(row, day, today)
+            if due:
+                repairs.append((day, due))
+            if row.get("recovery_repaired_on") == today.isoformat():
+                answered_today += 1
             if needs_fetch(day, fetched["activities"], failures["activities"], today):
                 need_activities.add(day)
             if any(fetched[p] is None and failures[p] >= MAX_FAILURES for p in PARTS):
@@ -495,7 +559,8 @@ class HistoryJob:
                     run.known_good[part] = day
             day -= timedelta(days=1)
         run.pending.extend(sorted(need_recovery | need_activities, reverse=True))
-        if not run.pending:
+        budget = max(0, REPAIR_DAYS_PER_NIGHT - answered_today)
+        if not run.pending and not (repairs and budget):
             return "done"
         if self._in_briefing_window(self._now()):
             return "paused"
@@ -511,7 +576,8 @@ class HistoryJob:
                 await self._fetch_activities(act, today, run)
             for d in block:
                 if d in need_recovery:
-                    await self._fetch_snapshot(d, today, run)
+                    await self._fetch_snapshot(d, today, run, prior[d])
+        await self._repairs(repairs, budget, today, run)
         for part in PARTS:  # errors held at the end of the loop: the backend must show it works
             if run.unconfirmed[part]:
                 await self._probe(part, run)
@@ -609,14 +675,50 @@ class HistoryJob:
         self._store.upsert_history_activities({d: totals_json(t) for d, t in totals.items()}, today)
         run.fetched += 1
 
-    async def _fetch_snapshot(self, day: date, today: date, run: _Run) -> None:
+    async def _fetch_snapshot(self, day: date, today: date, run: _Run, prior: frozenset[str]) -> None:
+        """Fetch and store the snapshot of ``day``; ``prior`` = its sections never read without an error."""
         outcome, payload = await self._call("get_recovery_snapshot", {"date": day.isoformat()}, run)
         if outcome != "ok" or payload is None or snapshot_failed(payload):
             await self._item_error("recovery", [day], run)
             return
+        errors = section_errors(payload)
+        run.snapshots_answered += 1
+        run.sections_ok |= ALL_SECTIONS - errors
         self._confirm("recovery", day, run)
-        self._store.upsert_history_recovery(day, recovery_values(payload), today)
+        self._store.upsert_history_recovery(day, recovery_values(payload), today, missing=missing_text(prior & errors))
         run.fetched += 1
+
+    # A day that still lacks a section after the re-fetch window is asked for again (a repair), a few per night.
+    # Call-level errors follow the held-error rule above; a section that fails for every day of the run is not
+    # asked for and nothing is charged for it.
+
+    async def _repairs(
+        self, candidates: list[tuple[date, frozenset[str]]], budget: int, today: date, run: _Run
+    ) -> None:
+        """Repair up to ``budget`` days, newest first, skipping days whose sections all failed in this run."""
+        calls = 0
+        for day, missing in candidates:
+            if calls >= budget:
+                break
+            if run.snapshots_answered and not missing & run.sections_ok:
+                continue  # every missing section failed in this run's regular snapshots: that part is down
+            calls += 1
+            await self._repair(day, missing, today, run)
+
+    async def _repair(self, day: date, missing: frozenset[str], today: date, run: _Run) -> None:
+        outcome, payload = await self._call("get_recovery_snapshot", {"date": day.isoformat()}, run)
+        if outcome != "ok" or payload is None or snapshot_failed(payload):
+            await self._item_error("recovery", [day], run)  # held; charged only when the backend shows it works
+            return
+        self._confirm("recovery", day, run)
+        errors = section_errors(payload)
+        rest = missing & errors
+        values = {c: v for c, v in recovery_values(payload).items() if _SECTION_OF[c] in missing - errors}
+        # An answer is charged only when the still-missing sections loaded for another day of this run.
+        charged = bool(rest) and rest <= run.sections_ok
+        self._store.repair_history_recovery(day, values, missing_text(rest), today, charged=charged)
+        if not rest:
+            run.repaired += 1
 
     # ------------------------------------------------------------- strength
 
