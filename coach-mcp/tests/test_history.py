@@ -2004,7 +2004,7 @@ def test_missing_sections_of_a_row(row, expected):
 @pytest.mark.parametrize(
     ("overrides", "due"),
     [
-        ({"recovery_fetched_on": (TODAY - timedelta(days=8)).isoformat()}, True),  # day + 2: still re-fetched
+        ({"recovery_fetched_on": (TODAY - timedelta(days=8)).isoformat()}, False),  # day + 2: still re-fetched
         ({}, True),  # day + 3
         ({"recovery_fetched_on": (TODAY - timedelta(days=9)).isoformat()}, False),  # day + 1
         ({"recovery_fetched_on": TODAY.isoformat()}, False),  # fetched tonight
@@ -2023,12 +2023,9 @@ def test_missing_sections_of_a_row(row, expected):
 def test_repair_sections_rule(overrides, due):
     # day = TODAY - 10; the default fetched_on is day + 3.
     row = row_for(**overrides)
-    if overrides.get("recovery_fetched_on") == (TODAY - timedelta(days=8)).isoformat():
-        due = False  # day + 3 is the first date: day + 2 is still inside the regular re-fetch window
     got = repair_sections(row, TODAY - timedelta(days=10), TODAY)
     assert got == (missing_sections(row) if due else frozenset())
-    if due:
-        assert got
+    assert bool(got) == due
 
 
 def test_repair_and_refetch_rules_are_disjoint():
@@ -2096,11 +2093,12 @@ async def test_complete_fetch_stores_empty_missing(store):
 @pytest.mark.anyio
 async def test_section_error_on_backfill_is_not_repaired_the_same_date(store):
     bad = date(2026, 10, 1)
+    state = {"cut": True}
 
     def recovery(day: date, index: int):
-        if index >= 7:  # the 09-30 call, after the activities block and six snapshots: the run is cut off
+        if state["cut"] and index >= 7:  # the 09-30 call, after the activities block and six snapshots
             return "rate_limited", None
-        return "ok", history_snapshot(day.isoformat(), hrv=ERROR_SECTION if day == bad else {"status": "OK"})
+        return "ok", history_snapshot(day.isoformat(), **({"hrv": ERROR_SECTION} if day == bad else {}))
 
     source = FakeHistorySource(recovery=recovery)
     job, clock = make_job(store, source, START, history_backfill_days=7)
@@ -2109,7 +2107,7 @@ async def test_section_error_on_backfill_is_not_repaired_the_same_date(store):
     assert rows_by_date(store)["2026-10-01"]["recovery_missing"] == "hrv"
     assert delay == 3600.0
     # The retry an hour later, still on the same local date: 10-01 was fetched tonight, so it is not asked again.
-    source._recovery = lambda day, index: ("ok", history_snapshot(day.isoformat()))
+    state["cut"] = False
     await next_run(job, clock, delay)
     assert asked(source, bad) == 1
     assert source.snapshot_days[7:] == [date(2026, 9, 30)]

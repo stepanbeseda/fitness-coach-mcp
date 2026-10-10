@@ -138,7 +138,7 @@ data). The first run comes one minute after the service starts and loads `COACH_
 (default 90): about 470 Garmin Connect calls in 103 `garmin-mcp` calls, with a pause of
 `COACH_HISTORY_CALL_DELAY_SECONDS` (15 s) between them, roughly 30 minutes in total. Between
 `COACH_BRIEFING_TIME` and `COACH_BRIEFING_CUTOFF` the run pauses and continues after the cutoff. Every following
-night it is about 16 calls.
+night it is about 16 calls, plus at most 5 repair calls (see the last point below).
 
 - Garmin answers 429 (rate limit): the run stops and retries in an hour, then in 2, 4 and at most 8 hours.
 - Garmin is not logged in or `garmin-mcp` does not respond: no calls, next attempt in an hour (at the latest at
@@ -152,6 +152,16 @@ night it is about 16 calls.
   after three errors.
 - On a completely empty history the server has no day to compare with and treats three errors in a row as an
   outage; this resolves as soon as the first day succeeds (with the next day at the latest).
+- A section that Garmin answered with an error while the rest of the day loaded (for example HRV failed for a
+  moment during the first load) is remembered for that day. If it is still missing after the three regular
+  loads, the server asks for the day again on later nights: at most 5 such days a night, newest first, and only
+  the missing sections are written (stored values stay). A day is no longer asked for once the section loads,
+  after three answers in which it failed although it loaded for another day of the same run, or after three
+  errors of the whole call. While a section fails for every day (that part of Garmin is down), the days wait
+  and nothing is counted. Only days inside `COACH_HISTORY_BACKFILL_DAYS` (default 90) are repaired. Days
+  loaded before this version: a section without any value counts as missing, so each such day is asked for
+  once; when Garmin answers it without an error (also with no data, for example the watch was not worn), the
+  day is complete.
 
 Strength workouts from Hevy: after Garmin, the same run loads through `hevy-mcp` the workouts changed since the
 last complete run, including edited and deleted ones (`get-workout-events`, 10 per page), and for each exercise
@@ -168,8 +178,9 @@ From `garmin-mcp` the server may call only four read tools (`get_recovery_snapsh
 `list_scheduled_workouts`, `list_activities`). The coach code does not call its write tools, and `garmin-mcp`
 rejects them with the coach's read-only token before they run. From `hevy-mcp` it may call only
 `get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
-`history status=… fetched=… failed=… pending=… given_up=… ms=… matched=… no_activity=…` (`reconcile=error kind=…`
-when plan reconciliation fails; the history run does not fail because of it) and one for Hevy:
+`history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=…`
+(`repaired` = days whose missing sections loaded in this run; `reconcile=error kind=…` when plan reconciliation
+fails; the history run does not fail because of it) and one for Hevy:
 `history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (no data or values;
 `skipped` = events from Hevy that could not be used). The Hevy part runs before plan reconciliation, so its line
 comes before the Garmin line in the log. With `COACH_HISTORY_TIME` inside the briefing window there is also one
@@ -210,7 +221,8 @@ with `no_activity` (alert above).
 - `session_suggestions`: suggested status of a planned session (`matched` with evidence or `no_activity`, `final`,
   evaluation date); one row per session, rewritten every night.
 - `history_days`: one row per day with values from Garmin (readiness, HRV, sleep, resting HR, Body Battery,
-  stress, load, VO2max) and activity totals by sport; when and with how many errors the day was last loaded.
+  stress, load, VO2max) and activity totals by sport; when and with how many errors the day was last loaded,
+  which Garmin sections are still missing after an error, and when and how often the day was repaired.
 - `strength_workouts`: one row per Hevy workout (id, local start date, last-change time in Hevy) with a
   per-exercise summary (template, title, working sets, volume in kg, best set and estimated 1RM); a deleted
   workout stays as a `deleted` marker without exercises.
@@ -224,6 +236,23 @@ in one transaction). An older image refuses to open a newer database so that it 
 root `README.md` (section Backups); the `coach-data` volume is the only copy of this data.
 
 Run `scripts/backup.sh` before moving to an older version.
+
+**Going back to a version without history repair** (schema 7 → 6). An older image refuses a database with
+schema 7 (`database schema version 7 is newer`). Before deploying the older version, drop only the three repair
+columns of `history_days` (`recovery_missing`, `recovery_repairs`, `recovery_repaired_on`); every value stays,
+including those a repair filled in. The service must be stopped; run the commands one at a time:
+
+```bash
+docker compose stop coach-mcp
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 7 or sys.exit(f"schema version {v}, expected 7: nothing changed"); c.executescript("BEGIN IMMEDIATE; ALTER TABLE history_days DROP COLUMN recovery_repaired_on; ALTER TABLE history_days DROP COLUMN recovery_repairs; ALTER TABLE history_days DROP COLUMN recovery_missing; PRAGMA user_version = 6; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+The second command must print `schema version 6`. Then deploy the older version (`git checkout <commit before
+PR 18>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
+does not have schema 7 and nothing changed. On an empty volume it ends with the error `unable to open database
+file` and creates nothing. To go back to an even older version, run this 7 → 6 procedure first and then the ones
+below. When the newer version is deployed again, its migration marks the missing sections anew (see "Nightly
+history").
 
 **Going back to a version without note search** (schema 6 → 5). An older image refuses a database with schema 6
 (`database schema version 6 is newer`). Before deploying the older version, drop only the full-text index of the
