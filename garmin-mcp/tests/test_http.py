@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "list_scheduled_workouts",
     "unschedule_workout",
     "get_performance_metrics",
+    "get_race_predictions",
     "get_running_tolerance",
     "get_personal_records",
     "get_gear",
@@ -130,6 +131,26 @@ async def test_performance_tools_over_http(app, fake):
         result = r.json()["result"]
         assert result["isError"] is False, result
         assert json.loads(result["content"][0]["text"])["count"] == 3
+
+
+@pytest.mark.anyio
+async def test_race_predictions_over_http(app, fake):
+    fake.responses["get_race_predictions"] = fx.RACE_PREDICTIONS_DAILY
+
+    async def call(client, arguments, id_):
+        r = await rpc(client, "tools/call", {"name": "get_race_predictions", "arguments": arguments}, id_=id_)
+        return r.json()["result"]
+
+    async with running_client(app) as client:
+        result = await call(client, {"start_date": "2026-09-28", "end_date": "2026-09-30"}, 40)
+        assert result["isError"] is False, result
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["count"] == 3 and payload["start"] == "2026-09-28"
+        assert ("get_race_predictions", ("2026-09-28", "2026-09-30", "daily")) in fake.calls
+
+        edge = await call(client, {"start_date": "2025-10-01", "end_date": "2026-10-01"}, 41)  # 366 days
+        assert edge["isError"] is False, edge
+        assert (await call(client, {"start_date": "2025-09-30", "end_date": "2026-10-01"}, 42))["isError"] is True
 
 
 @pytest.mark.anyio

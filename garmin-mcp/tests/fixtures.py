@@ -367,6 +367,20 @@ CALENDAR_MONTH = {
 RACE_PREDICTIONS = {"userId": 1, "calendarDate": DAY, "time5K": 1290, "time10K": 2700,
                     "timeHalfMarathon": 5970, "timeMarathon": 12310}
 
+# Synthetic daily answers: the real shape of get_race_predictions(start, end, "daily") is unverified until the
+# capture on the test host (PR 14 spec, section 11). They follow the shape of the latest answer above.
+RACE_PREDICTIONS_DAILY = [
+    {"userId": 1, "calendarDate": "2026-09-30", "time5K": 1290, "time10K": 2700, "timeHalfMarathon": 5970,
+     "timeMarathon": 12310},
+    {"userId": 1, "calendarDate": "2026-09-28", "time5K": 1300, "time10K": 2720, "timeHalfMarathon": 6010,
+     "timeMarathon": 12400},
+    {"userId": 1, "calendarDate": "2026-09-29", "time5K": 1295, "time10K": 2710, "timeHalfMarathon": 5990,
+     "timeMarathon": 12350},
+    {"userId": 1, "calendarDate": "2026-09-20", "time5K": 1400, "time10K": 2900, "timeHalfMarathon": 6200,
+     "timeMarathon": 13000},
+]
+RACE_PREDICTIONS_WRAPPED = {"racePredictions": RACE_PREDICTIONS_DAILY[1:3]}
+
 LACTATE_THRESHOLD = {  # already merged by garminconnect.get_lactate_threshold(latest=True)
     "speed_and_heart_rate": {"userProfilePK": 1, "version": 1, "calendarDate": "2026-09-12T00:00:00.0",
                              "sequence": 1, "speed": 0.3636, "heartRate": 172, "heartRateCycling": None},

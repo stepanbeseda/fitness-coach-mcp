@@ -33,6 +33,7 @@ INSTRUCTIONS = (
     "(today's training readiness, HRV, sleep, Body Battery, resting HR, stress, training status), "
     "then list_activities for recent load. "
     "Before prescribing paces, heart-rate or power targets call get_performance_metrics (race predictions, lactate threshold, zones, VO2max trend). "
+    "get_race_predictions returns Garmin's daily race predictions over a date range (their history). "
     "For weight, body-fat or nutrition goals call get_body_composition (weigh-in trend) and get_nutrition "
     "(calories, macros, meals, hydration); Garmin is the primary source for weight. "
     "Before raising weekly running volume call get_running_tolerance (weekly running load vs. tolerance). "
@@ -186,6 +187,17 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         and change over the window) and the weekly VO2max trend. Sections that Garmin cannot
         provide contain an "error" or "available": false instead of failing the whole call."""
         return await performance.performance_metrics(service, weeks)
+
+    @tool("get_race_predictions", _read("Race predictions"))
+    async def get_race_predictions(
+        start_date: Annotated[str | None, Field(description="YYYY-MM-DD; default end_date - 27 days.")] = None,
+        end_date: DateArg = None,
+    ) -> Any:
+        """Garmin's daily race predictions over a date range (max 366 days, default the 28 days ending
+        today): per day the predicted 5 km, 10 km, half marathon and marathon times in seconds. Use it
+        for the history of the predictions; get_performance_metrics has the latest ones with pace. Days
+        without a prediction are left out; an empty range returns "available": false."""
+        return await performance.race_predictions(service, start_date, end_date)
 
     @tool("get_running_tolerance", _read("Running tolerance"))
     async def get_running_tolerance(
