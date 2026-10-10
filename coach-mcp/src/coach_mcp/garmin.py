@@ -1,6 +1,7 @@
 """Read-only client for garmin-mcp: allowlisted read tools over MCP.
 
-The morning briefing calls ``BRIEFING_TOOLS``, the nightly history job ``HISTORY_TOOLS``. The
+The morning briefing calls ``BRIEFING_TOOLS``, the nightly history job ``HISTORY_TOOLS`` (the daily race
+predictions, ``get_race_predictions``, are one of them; PR 14). The
 coach authenticates with its own read-only token (garmin-mcp refuses it every tool not annotated
 read-only) and calls nothing outside ``ALLOWED_TOOLS``.
 Log lines carry outcome words, durations and exception class names only.
