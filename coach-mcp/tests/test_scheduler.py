@@ -863,7 +863,8 @@ async def test_late_start_sends_no_monday_report(db_path, caplog):
 
 
 @pytest.mark.anyio
-async def test_transient_monday_failure_retries_like_the_briefing(db_path):
+async def test_transient_monday_failure_retries_like_the_briefing(db_path, caplog):
+    caplog.set_level(logging.INFO)
     clock_push = FakePush(["sent", "transient", "sent"])
     push, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), clock_push, stop_pushes=3)
     assert [utc(t) for t, _ in push.sent] == [local(M, 6, 30).astimezone(UTC)] * 2 + [local(M, 6, 45).astimezone(UTC)]
@@ -871,6 +872,9 @@ async def test_transient_monday_failure_retries_like_the_briefing(db_path):
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT count(*) FROM briefing_runs").fetchone()[0] == 1
     assert Store(db_path).weekly_report_sent("2026-W41")
+    # the report counts its own attempts, not the briefing's
+    assert "weekly status=waiting attempt=1" in caplog.text and "weekly status=sent attempt=2" in caplog.text
+    assert "briefing status=sent attempt=1" in caplog.text
 
 
 @pytest.mark.anyio
@@ -984,7 +988,8 @@ async def test_a_recorded_week_is_not_sent_again(db_path):
 
 
 @pytest.mark.anyio
-async def test_the_report_follows_a_briefing_whose_state_could_not_be_recorded(db_path, monkeypatch):
+async def test_the_report_follows_a_briefing_whose_state_could_not_be_recorded(db_path, caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
     store = Store(db_path)
 
     def boom(*args, **kwargs):
@@ -992,9 +997,14 @@ async def test_the_report_follows_a_briefing_whose_state_could_not_be_recorded(d
 
     monkeypatch.setattr(store, "record_briefing_sent", boom)
     garmin = FakeGarmin(garmin_data())
-    push, _ = await run_scheduler(db_path, local(M, 0), garmin, until=local(M, 23), store=store)
-    assert [m.title for _, m in push.sent][1:] == [MONDAY_TITLE] and len(push.sent) == 2
+    # the report fails once: the next tick must not take "no briefing recorded" for "send the briefing again"
+    push, _ = await run_scheduler(
+        db_path, local(M, 0), garmin, FakePush(["sent", "transient", "sent"]), until=local(M, 23), store=store
+    )
+    assert [m.title for _, m in push.sent][1:] == [MONDAY_TITLE] * 2 and len(push.sent) == 3
+    assert "ranní briefing" in push.sent[0][1].title
     assert garmin.calls == 1  # the in-process flag stops a second briefing
+    assert "briefing status=state_error kind=OperationalError" in caplog.text
 
 
 @pytest.mark.anyio

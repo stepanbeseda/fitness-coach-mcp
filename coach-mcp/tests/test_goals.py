@@ -128,6 +128,20 @@ def test_vo2max_goal(store):
     assert progress(store)["on_track"] is False  # higher is better: 54.9 < 55
 
 
+def test_vo2max_tie_is_on_track(store):
+    # exact binary values: 0.5 ml/kg/min every 2 days is exactly 0.25 a day, so the projection is exactly 71.0
+    for n in range(15):
+        seed_day(store, date(2026, 9, 8) + timedelta(days=2 * n), vo2max_running=50 + 0.5 * n)
+    gid = goal(store, metric="vo2max_running", target_value=71.0, target_date="2026-12-01")
+    out = progress(store)
+    assert out["current"]["value"] == 57.0 and out["projected"]["value"] == 71.0
+    assert out["trend_per_week"] == 1.75 and out["on_track"] is True
+    store.update_goal(gid, {"target_value": 71.1})
+    assert progress(store)["on_track"] is False
+    store.update_goal(gid, {"target_value": 70.9})
+    assert progress(store)["on_track"] is True
+
+
 def seed_5k(store, points):
     seed_race(store, "time_5k_s", points)
 
