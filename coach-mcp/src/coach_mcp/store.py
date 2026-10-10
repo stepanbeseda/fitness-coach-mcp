@@ -169,6 +169,26 @@ CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN
   INSERT INTO notes_fts(rowid, text) VALUES (new.id, new.text);
 END;
 """,
+    # History repair (PR 18): per-day missing recovery sections and the repair bookkeeping.
+    """
+ALTER TABLE history_days ADD COLUMN recovery_missing TEXT
+  CHECK (recovery_missing IS NULL OR length(recovery_missing) <= 200);
+ALTER TABLE history_days ADD COLUMN recovery_repairs INTEGER NOT NULL DEFAULT 0 CHECK (recovery_repairs >= 0);
+ALTER TABLE history_days ADD COLUMN recovery_repaired_on TEXT;
+-- Rows stored before this migration: a section whose columns are all NULL counts as missing (see README).
+UPDATE history_days SET recovery_missing = rtrim(
+    CASE WHEN readiness IS NULL THEN 'readiness,' ELSE '' END
+  || CASE WHEN hrv_last_night_ms IS NULL AND hrv_weekly_avg_ms IS NULL AND hrv_status IS NULL
+          THEN 'hrv,' ELSE '' END
+  || CASE WHEN sleep_duration_h IS NULL AND sleep_score IS NULL THEN 'sleep,' ELSE '' END
+  || CASE WHEN body_battery_high IS NULL AND body_battery_low IS NULL THEN 'body_battery,' ELSE '' END
+  || CASE WHEN resting_hr IS NULL THEN 'resting_hr,' ELSE '' END
+  || CASE WHEN stress_avg IS NULL THEN 'stress,' ELSE '' END
+  || CASE WHEN acute_load IS NULL AND chronic_load IS NULL AND acwr_ratio IS NULL AND vo2max_running IS NULL
+           AND vo2max_cycling IS NULL THEN 'training_status,' ELSE '' END,
+  ',')
+WHERE recovery_fetched_on IS NOT NULL;
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -474,18 +494,48 @@ class Store:
             params.append(start.isoformat())
         return self._all(sql + " ORDER BY date", tuple(params))
 
-    def upsert_history_recovery(self, day: date, values: Mapping[str, Any], fetched_on: date) -> None:
-        """Store the daily values of ``day``; columns not in ``values`` keep their stored value."""
+    def upsert_history_recovery(
+        self, day: date, values: Mapping[str, Any], fetched_on: date, missing: str | None = None
+    ) -> None:
+        """Store the daily values of ``day``; columns not in ``values`` keep their stored value.
+
+        ``missing``: the sections still missing after this fetch (``history.missing_text``); None leaves the
+        column as stored.
+        """
         _check_fields(values, frozenset(HISTORY_COLUMNS))
-        columns = [*values, "recovery_fetched_on", "recovery_failures", "updated_at"]
+        columns = [*values, *([] if missing is None else ["recovery_missing"])]
+        columns += ["recovery_fetched_on", "recovery_failures", "updated_at"]
         sets = [f"{c} = excluded.{c}" for c in columns]
+        params = [*values.values(), *([] if missing is None else [missing]), fetched_on.isoformat(), 0, _now()]
         with self._conn() as conn, conn:
             conn.execute(
                 f"INSERT INTO history_days (date, {', '.join(columns)}) "
                 f"VALUES (?, {', '.join('?' for _ in columns)}) "
                 f"ON CONFLICT(date) DO UPDATE SET {', '.join(sets)}",
-                (day.isoformat(), *values.values(), fetched_on.isoformat(), 0, _now()),
+                (day.isoformat(), *params),
             )
+
+    def repair_history_recovery(
+        self, day: date, values: Mapping[str, Any], missing: str, repaired_on: date, *, charged: bool
+    ) -> None:
+        """Write the sections a repair call read for ``day`` and its bookkeeping, in one transaction.
+
+        ``values`` holds only the columns of the sections that loaded (it may be empty); every other column
+        and ``recovery_fetched_on`` stay as stored. ``missing`` is what is still missing afterwards; the
+        failure counter is reset and the repair counter grows by one only when ``charged``.
+        """
+        _check_fields(values, frozenset(HISTORY_COLUMNS))
+        sets = [f"{c} = ?" for c in values]
+        sets += [
+            "recovery_missing = ?",
+            "recovery_repaired_on = ?",
+            "recovery_repairs = recovery_repairs + ?",
+            "recovery_failures = 0",
+            "updated_at = ?",
+        ]
+        params = [*values.values(), missing, repaired_on.isoformat(), 1 if charged else 0, _now(), day.isoformat()]
+        with self._conn() as conn, conn:
+            conn.execute(f"UPDATE history_days SET {', '.join(sets)} WHERE date = ?", params)
 
     def upsert_history_activities(self, totals: Mapping[date, str], fetched_on: date) -> None:
         """Store the activity totals (JSON text) of every day in ``totals`` in one transaction."""

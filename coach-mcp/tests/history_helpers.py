@@ -20,9 +20,14 @@ def local(day: date, hour: int, minute: int = 0, second: int = 0) -> datetime:
     return datetime(day.year, day.month, day.day, hour, minute, second, tzinfo=PRAGUE)
 
 
-def seed_day(store: Store, day: date, *, fetched_on: date | None = None, **columns: Any) -> None:
-    """Store daily values for ``day`` (fetched the day after unless ``fetched_on`` says otherwise)."""
-    store.upsert_history_recovery(day, columns, fetched_on or day + timedelta(days=1))
+def seed_day(
+    store: Store, day: date, *, fetched_on: date | None = None, missing: str | None = None, **columns: Any
+) -> None:
+    """Store daily values for ``day`` (fetched the day after unless ``fetched_on`` says otherwise).
+
+    ``missing`` is the stored ``recovery_missing`` text; None leaves the column NULL (an old-schema seed).
+    """
+    store.upsert_history_recovery(day, columns, fetched_on or day + timedelta(days=1), missing=missing)
 
 
 def seed_activities(

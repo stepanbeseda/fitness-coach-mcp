@@ -17,8 +17,8 @@ from coach_mcp.store import (
 
 # The schema version of the strength tables: the only number that changes when this migration is renumbered.
 STRENGTH_VERSION = 5
-# The latest schema version (the notes full-text index, PR 15); the other number pinned by hand.
-LATEST_VERSION = 6
+# The latest schema version (history repair, PR 18); the other number pinned by hand.
+LATEST_VERSION = 7
 
 
 def _tables(path) -> set[str]:
@@ -476,6 +476,8 @@ def test_upsert_suggestions_and_suggestions_for(store):
 
 # Position of the notes full-text migration (renumbered on rebase without touching these tests).
 NOTES_FTS_VERSION = next(i + 1 for i, script in enumerate(MIGRATIONS) if "notes_fts" in script)
+# Position of the history repair migration (PR 18), derived the same way.
+REPAIR_VERSION = next(i + 1 for i, script in enumerate(MIGRATIONS) if "recovery_missing" in script)
 # Keep in sync with the notes_fts downgrade command in coach-mcp/README.md.
 DOWNGRADE_NOTES_FTS_SQL = (
     "BEGIN IMMEDIATE; DROP TRIGGER notes_fts_insert; DROP TABLE notes_fts; "
@@ -524,7 +526,10 @@ def test_notes_fts_migration_indexes_existing_notes(db_path, monkeypatch):
 
 
 def test_notes_fts_downgrade_sql_returns_to_the_previous_version(db_path, monkeypatch):
-    new = Store(db_path)
+    # A 6 -> 5 recipe: the file is built at the notes version (a later file must first go back to it).
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:NOTES_FTS_VERSION])
+        new = Store(db_path)
     new.insert_note(date(2026, 10, 6), "Bolí mě pravé koleno po běhu")
     assert _fts_rows(db_path) == 1
     conn = sqlite3.connect(db_path)
@@ -540,8 +545,9 @@ def test_notes_fts_downgrade_sql_returns_to_the_previous_version(db_path, monkey
         old = Store(db_path)
         # A leftover trigger would raise "no such table: notes_fts" here.
         old.insert_note(date(2026, 10, 7), "Nová poznámka po návratu")
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:NOTES_FTS_VERSION])
     again = Store(db_path)
-    assert _user_version(db_path) == SCHEMA_VERSION
+    assert _user_version(db_path) == NOTES_FTS_VERSION
     assert [n["text"] for n in again.search_notes("navratu", None, None, None, 10)] == ["Nová poznámka po návratu"]
     assert len(again.search_notes("koleno", None, None, None, 10)) == 1
     assert _fts_rows(db_path) == 2
@@ -667,7 +673,8 @@ def test_migration_5_upgrades_a_version_4_file_with_data(db_path, monkeypatch):
         assert not set(STRENGTH_TABLES) & _tables(db_path)
     new = Store(db_path)
     assert _user_version(db_path) == SCHEMA_VERSION
-    assert new.history_rows(None, D3) == before  # whole rows, every column
+    # Every old column of every row is unchanged (the repair columns of PR 18 are asserted in S1).
+    assert [{k: r[k] for k in before[0]} for r in new.history_rows(None, D3)] == before
     assert new.suggestions_for([session_id]) == suggestions  # PR 13's table is untouched
     goal, constraint = new.get_goal(goal_id), new.get_constraint(constraint_id)
     assert goal is not None and goal["title"] == "Keep me"
@@ -868,3 +875,232 @@ def test_strength_check_constraints(store, db_path):
         conn.execute("INSERT INTO strength_workouts (workout_id, deleted, updated_at) VALUES ('W2', 1, 'a')")  # tombstone
     finally:
         conn.close()
+
+
+# ------------------------------------------------------- history repair (migration 7, PR 18)
+
+# Columns per recovery section, spelled out here on purpose: the migration's SQL repeats them by hand and a
+# test that derived them from the code would follow a wrong copy.
+HISTORY_SECTIONS: dict[str, tuple[str, ...]] = {
+    "readiness": ("readiness",),
+    "hrv": ("hrv_last_night_ms", "hrv_weekly_avg_ms", "hrv_status"),
+    "sleep": ("sleep_duration_h", "sleep_score"),
+    "body_battery": ("body_battery_high", "body_battery_low"),
+    "resting_hr": ("resting_hr",),
+    "stress": ("stress_avg",),
+    "training_status": ("acute_load", "chronic_load", "acwr_ratio", "vo2max_running", "vo2max_cycling"),
+}
+REPAIR_COLUMNS = ("recovery_missing", "recovery_repairs", "recovery_repaired_on")
+ALL_SECTION_KEYS = ",".join(HISTORY_SECTIONS)
+# Keep in sync with the 7 -> 6 downgrade command in coach-mcp/README.md.
+DOWNGRADE_7_SQL = (
+    "BEGIN IMMEDIATE; ALTER TABLE history_days DROP COLUMN recovery_repaired_on; "
+    "ALTER TABLE history_days DROP COLUMN recovery_repairs; ALTER TABLE history_days DROP COLUMN recovery_missing; "
+    "PRAGMA user_version = 6; COMMIT;"
+)
+
+
+def _insert_v6_row(path, day: str, fetched_on: str | None, values: dict[str, object], failures: int = 0) -> None:
+    """A history row as the code before migration 7 wrote it (raw SQL: the store of that version is gone)."""
+    columns = ["date", "recovery_fetched_on", "recovery_failures", "updated_at", *values]
+    conn = sqlite3.connect(path)
+    try:
+        with conn:
+            conn.execute(
+                f"INSERT INTO history_days ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                (day, fetched_on, failures, "2026-10-01T00:00:00+00:00", *values.values()),
+            )
+    finally:
+        conn.close()
+
+
+def _all_columns_set(skip: tuple[str, ...] = (), only: tuple[str, ...] | None = None) -> dict[str, object]:
+    """Every recovery column set to a value, except those in ``skip`` (NULL) or, with ``only``, all but those."""
+    out: dict[str, object] = {}
+    for columns in HISTORY_SECTIONS.values():
+        for column in columns:
+            holds = column not in skip if only is None else column in only
+            out[column] = None if not holds else ("BALANCED" if column == "hrv_status" else 7.5)
+    return out
+
+
+def _v6_store(db_path, monkeypatch) -> Store:
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: REPAIR_VERSION - 1])
+        old = Store(db_path)
+    assert _user_version(db_path) == REPAIR_VERSION - 1
+    return old
+
+
+def test_history_sections_table_matches_the_job_and_the_schema():
+    from coach_mcp.history import _SECTION_COLUMNS, SNAPSHOT_SECTIONS
+
+    assert tuple(HISTORY_SECTIONS) == SNAPSHOT_SECTIONS
+    assert {k: tuple(c for c, _ in v) for k, v in _SECTION_COLUMNS.items()} == HISTORY_SECTIONS
+    assert {c for columns in HISTORY_SECTIONS.values() for c in columns} == set(HISTORY_COLUMNS)
+
+
+def test_migration_7_upgrades_a_version_6_file_with_data(db_path, monkeypatch):
+    old = _v6_store(db_path, monkeypatch)
+    goal_id = old.insert_goal({"title": "Keep me"})
+    constraint_id = old.insert_constraint({"kind": "injury", "title": "Left knee"})
+    session_id = _one_session(old)
+    note_id = old.insert_note(date(2026, 10, 7), "A note", session_id)
+    old.record_briefing_sent(date(2026, 10, 7), "yellow", {"hrv_below_baseline": (True, True)})
+    old.upsert_suggestions([(session_id, "matched", True, '{"source":"garmin","sport":"running","count":1}')], D3)
+    old.upsert_history_recovery(D1, {"readiness": 70, "hrv_last_night_ms": 55.5, "hrv_status": "BALANCED"}, D2)
+    old.upsert_history_recovery(D2, {"readiness": 65, "sleep_score": 80}, D3)
+    old.upsert_history_activities({D1: '{"running":{"count":1}}', D2: "{}"}, D3)
+    old.record_history_failure([D3], "recovery")
+    before = old.history_rows(None, D3)
+    assert len(before) == 3 and not set(REPAIR_COLUMNS) & set(before[0])
+    new = Store(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION
+    after = new.history_rows(None, D3)
+    # Every old column of every row is unchanged.
+    assert [{k: r[k] for k in before[0]} for r in after] == before
+    assert [r["recovery_repairs"] for r in after] == [0, 0, 0]
+    assert [r["recovery_repaired_on"] for r in after] == [None, None, None]
+    goal, constraint = new.get_goal(goal_id), new.get_constraint(constraint_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    assert constraint is not None and constraint["title"] == "Left knee"
+    session, note = new.get_session(session_id), new.get_note(note_id)
+    assert session is not None and session["description"] == "Easy run"
+    assert note is not None and note["text"] == "A note"
+    assert new.briefing_sent(date(2026, 10, 7)) is True
+    assert new.suggestions_for([session_id])[session_id]["result"] == "matched"
+    assert [n["id"] for n in new.search_notes("note", None, None, None, 10)] == [note_id]
+
+
+@pytest.mark.parametrize("section", list(HISTORY_SECTIONS))
+def test_migration_7_classifies_legacy_rows(section, db_path, monkeypatch):
+    _v6_store(db_path, monkeypatch)
+    # Only the columns of ``section`` are NULL: exactly that section is missing.
+    _insert_v6_row(db_path, "2026-09-01", "2026-09-02", _all_columns_set(skip=HISTORY_SECTIONS[section]))
+    new = Store(db_path)
+    (row,) = new.history_rows(None, date(2026, 9, 30))
+    assert row["recovery_missing"] == section
+    assert row["recovery_repairs"] == 0 and row["recovery_repaired_on"] is None
+    assert row["updated_at"] == "2026-10-01T00:00:00+00:00"  # the classification is not an update
+
+
+def test_migration_7_classifies_the_other_legacy_rows(db_path, monkeypatch):
+    _v6_store(db_path, monkeypatch)
+    expected: dict[str, str | None] = {}
+
+    def add(day: str, fetched_on: str | None, values: dict[str, object], want: str | None, failures: int = 0) -> None:
+        _insert_v6_row(db_path, day, fetched_on, values, failures)
+        expected[day] = want
+
+    add("2026-09-01", "2026-09-02", _all_columns_set(), "")  # complete
+    every_column = tuple(c for columns in HISTORY_SECTIONS.values() for c in columns)
+    add("2026-09-02", "2026-09-03", _all_columns_set(skip=every_column), ALL_SECTION_KEYS)
+    # A section with one NULL column and the rest set is not missing.
+    for n, section in enumerate(("hrv", "sleep", "body_battery", "training_status")):
+        add(f"2026-09-1{n}", f"2026-09-2{n}", _all_columns_set(skip=HISTORY_SECTIONS[section][:1]), "")
+    # Only one column holds a value: its section is not missing, whichever column it is.
+    day = 20
+    for section in ("hrv", "sleep", "body_battery", "training_status"):
+        for column in HISTORY_SECTIONS[section]:
+            others = tuple(c for c in HISTORY_SECTIONS[section] if c != column)
+            values = _all_columns_set(skip=others)
+            assert values[column] is not None and all(values[c] is None for c in others)
+            add(f"2026-08-{day}", "2026-09-30", values, "")
+            day += 1
+    assert day - 20 == 12
+    # Never loaded (failures only) and activities-only rows keep NULL.
+    add("2026-07-01", None, {}, None, failures=2)
+    add("2026-07-02", None, {"activities": "{}"}, None)
+    new = Store(db_path)
+    rows = {r["date"]: r for r in new.history_rows(None, date(2026, 12, 31))}
+    assert {d: rows[d]["recovery_missing"] for d in expected} == expected
+
+
+def test_history_repair_columns_have_checks(store, db_path):
+    conn = sqlite3.connect(db_path)
+    try:
+        for sql, params in (
+            ("INSERT INTO history_days (date, recovery_repairs, updated_at) VALUES ('2026-10-05', -1, 'a')", ()),
+            ("INSERT INTO history_days (date, recovery_repairs, updated_at) VALUES ('2026-10-05', NULL, 'a')", ()),
+            (
+                "INSERT INTO history_days (date, recovery_missing, updated_at) VALUES ('2026-10-05', ?, 'a')",
+                ("x" * 201,),
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(sql, params)
+        conn.execute(
+            "INSERT INTO history_days (date, recovery_missing, updated_at) VALUES ('2026-10-05', ?, 'a')", ("x" * 200,)
+        )
+        row = conn.execute("SELECT recovery_repairs, recovery_repaired_on FROM history_days").fetchone()
+        assert row == (0, None)  # the default of a new row
+    finally:
+        conn.close()
+
+
+def test_downgrade_7_sql_returns_to_a_version_6_file(db_path, monkeypatch):
+    # It is a 7 -> 6 recipe: the file is built at the repair version (a later file must first go back to it).
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:REPAIR_VERSION])
+        new = Store(db_path)
+    goal_id = new.insert_goal({"title": "Keep me"})
+    new.upsert_history_recovery(D1, {"readiness": 70, "sleep_score": 80}, D2, missing="hrv")
+    new.repair_history_recovery(D1, {"hrv_last_night_ms": 50}, "", D3, charged=True)
+    assert new.history_rows(None, D3)[0]["recovery_repairs"] == 1
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_7_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == REPAIR_VERSION - 1
+    conn = sqlite3.connect(db_path)
+    try:
+        assert not set(REPAIR_COLUMNS) & {r[1] for r in conn.execute("PRAGMA table_info(history_days)")}
+    finally:
+        conn.close()
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[: REPAIR_VERSION - 1])
+    old = Store(db_path)
+    goal = old.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    (row,) = old.history_rows(None, D3)
+    assert (row["readiness"], row["sleep_score"], row["hrv_last_night_ms"]) == (70, 80, 50)  # repaired value stays
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:REPAIR_VERSION])
+    again = Store(db_path)
+    assert _user_version(db_path) == REPAIR_VERSION
+    (row,) = again.history_rows(None, D3)
+    # Reclassified by the migration: only the sections without any value are missing.
+    assert row["recovery_missing"] == "body_battery,resting_hr,stress,training_status" and row["recovery_repairs"] == 0
+
+
+def test_repair_history_recovery_writes_only_given_columns(store):
+    store.upsert_history_recovery(D1, {"readiness": 70, "sleep_score": 80}, D2, missing="hrv,sleep")
+    store.record_history_failure([D1, D1], "recovery")
+    (before,) = store.history_rows(None, D3)
+    assert before["recovery_failures"] == 2 and before["recovery_missing"] == "hrv,sleep"
+    store.repair_history_recovery(D1, {"hrv_last_night_ms": 50}, "sleep", date(2026, 10, 9), charged=True)
+    (row,) = store.history_rows(None, D3)
+    assert row["hrv_last_night_ms"] == 50
+    assert (row["sleep_score"], row["readiness"]) == (80, 70)
+    assert row["recovery_missing"] == "sleep"
+    assert row["recovery_repairs"] == 1 and row["recovery_repaired_on"] == "2026-10-09"
+    assert row["recovery_failures"] == 0
+    assert row["recovery_fetched_on"] == before["recovery_fetched_on"] == "2026-10-06"
+    store.repair_history_recovery(D1, {}, "sleep", date(2026, 10, 10), charged=False)
+    (row,) = store.history_rows(None, D3)
+    assert row["recovery_repairs"] == 1 and row["recovery_repaired_on"] == "2026-10-10"
+    assert row["hrv_last_night_ms"] == 50  # empty values: only the bookkeeping is written
+    with pytest.raises(ValueError, match="unknown column"):
+        store.repair_history_recovery(D1, {"hrv_status": "X", "evil = 1; --": 2}, "", D3, charged=True)
+    (row,) = store.history_rows(None, D3)
+    assert row["hrv_status"] is None and row["recovery_repairs"] == 1
+
+
+def test_upsert_history_recovery_missing_is_optional(store):
+    store.upsert_history_recovery(D1, {"readiness": 70}, D2, missing="hrv")
+    store.upsert_history_recovery(D1, {"readiness": 71}, D3)  # no ``missing``: the stored value stays
+    (row,) = store.history_rows(None, D3)
+    assert row["recovery_missing"] == "hrv" and row["readiness"] == 71 and row["recovery_fetched_on"] == "2026-10-07"
+    store.upsert_history_recovery(D1, {"readiness": 72}, D3, missing="")  # '' overwrites
+    assert store.history_rows(None, D3)[0]["recovery_missing"] == ""
+    store.upsert_history_recovery(D2, {"readiness": 60}, D3)  # a new row without ``missing`` stays NULL
+    assert store.history_rows(D2, D2)[0]["recovery_missing"] is None
