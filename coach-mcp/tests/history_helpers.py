@@ -49,6 +49,7 @@ async def run_job(
     stop_when: Any = lambda: False,
     max_sleeps: int = 2000,
     strength: FakeStrengthSource | None = None,
+    predictions: FakeHistorySource | None = None,
 ) -> tuple[HistoryJob, FakeClock]:
     """Run ``HistoryJob.run()`` from ``start`` on a fake clock until ``stop_when()`` or ``max_sleeps`` sleeps."""
     clock = FakeClock(start, stop_when=stop_when, max_sleeps=max_sleeps)
@@ -57,7 +58,11 @@ async def run_job(
     if strength is not None and strength.clock is None:
         strength.clock = clock
     settings = Settings(timezone="Europe/Prague", **(settings_overrides or {}))
-    job = HistoryJob(settings, store, source, now=clock.now, sleep=clock.sleep, strength=strength)
+    if predictions is not None and predictions.clock is None:
+        predictions.clock = clock
+    job = HistoryJob(
+        settings, store, source, now=clock.now, sleep=clock.sleep, strength=strength, predictions=predictions
+    )
     try:
         await job.run()
     except StopLoop:
@@ -72,6 +77,7 @@ def make_job(
     *,
     stop_when: Any = lambda: False,
     strength: FakeStrengthSource | None = None,
+    predictions: FakeHistorySource | None = None,
     **settings: Any,
 ) -> tuple[HistoryJob, FakeClock]:
     """A job on a fake clock for tests that drive ``tick()`` by hand (the clock only moves in ``sleep``)."""
@@ -80,6 +86,8 @@ def make_job(
         source.clock = clock
     if strength is not None and strength.clock is None:
         strength.clock = clock
+    if predictions is not None and predictions.clock is None:
+        predictions.clock = clock
     job = HistoryJob(
         Settings(timezone="Europe/Prague", **settings),
         store,
@@ -87,6 +95,7 @@ def make_job(
         now=clock.now,
         sleep=clock.sleep,
         strength=strength,
+        predictions=predictions,
     )
     return job, clock
 

@@ -882,3 +882,149 @@ def test_writes_never_reduce_row_counts(store):
     step(tools.update_session, session_id=seed_id + 1, status="done")
     step(tools.add_note, text="n2", session_id=sid)
     assert snapshot()["sessions"] >= 5
+
+
+# ------------------------------------------------- goal metric and target_value (PR 14)
+
+
+def make_goal(store, **kw) -> dict:
+    return tools.set_goal(store, TODAY, title=kw.pop("title", "Goal"), **kw)["goal"]
+
+
+def stored(store, gid) -> tuple:
+    row = store.get_goal(gid)
+    return row["metric"], row["target_value"]
+
+
+def test_set_goal_race_metric_stores_seconds_and_shows_time(store):
+    goal = make_goal(store, metric="race_half_marathon", target_value="1:36:40")
+    assert goal["metric"] == "race_half_marathon" and goal["target_value"] == "1:36:40"
+    assert stored(store, goal["id"]) == ("race_half_marathon", 5800.0)
+
+
+def test_set_goal_vo2max_accepts_number_and_text(store):
+    first = make_goal(store, metric="vo2max_running", target_value=55.0)
+    second = make_goal(store, metric="vo2max_running", target_value="55.5")
+    assert (first["target_value"], second["target_value"]) == (55.0, 55.5)
+    assert stored(store, first["id"]) == ("vo2max_running", 55.0)
+    assert stored(store, second["id"]) == ("vo2max_running", 55.5)
+
+
+def test_set_goal_metric_without_target_and_context(store):
+    goal = make_goal(store, metric="race_5k")
+    assert goal["metric"] == "race_5k" and "target_value" not in goal
+    shown = tools.get_coach_context(store, TODAY)["goals"][0]
+    assert shown["metric"] == "race_5k"
+    plain = make_goal(store, title="Plain")
+    assert "metric" not in plain and "target_value" not in plain  # goals without a metric keep their output
+
+
+def test_set_goal_target_without_metric(store):
+    assert err(tools.set_goal, store, TODAY, title="x", target_value="1:00:00") == "target_value needs a metric"
+    assert err(tools.set_goal, store, TODAY, title="x", metric="", target_value=55.0) == "target_value needs a metric"
+    goal = make_goal(store, metric="", target_value="")  # empty strings count as absent
+    assert "metric" not in goal
+
+
+@pytest.mark.parametrize("text", ["1:36:40", "21:30", " 0:21:30 ", "59:59"])
+def test_set_goal_accepts_time_formats(store, text):
+    make_goal(store, metric="race_10k", target_value=text)
+
+
+@pytest.mark.parametrize("value", ["1:5:00", "1:60:00", "21:3", "abc", "100:00:00", "1:2:3:4", "1.5", 95.0, True])
+def test_set_goal_rejects_bad_race_formats(store, value):
+    message = "target_value for race_marathon must be a time H:MM:SS or MM:SS, e.g. 1:45:00"
+    assert err(tools.set_goal, store, TODAY, title="x", metric="race_marathon", target_value=value) == message
+
+
+@pytest.mark.parametrize(
+    ("metric", "ok", "bad"),
+    [
+        ("race_5k", ["10:00", "2:00:00"], ["9:59", "2:00:01"]),
+        ("race_10k", ["20:00", "4:00:00"], ["19:59", "4:00:01"]),
+        ("race_half_marathon", ["45:00", "8:00:00"], ["44:59", "8:00:01"]),
+        ("race_marathon", ["1:45:00", "12:00:00"], ["1:44:59", "12:00:01"]),
+        ("vo2max_running", [20, 95, 20.0, 95.0], [19.9, 95.1, 0.0, 1000.0]),
+    ],
+)
+def test_set_goal_bounds_per_metric(store, metric, ok, bad):
+    for value in ok:
+        make_goal(store, metric=metric, target_value=value)
+    for value in bad:
+        message = err(tools.set_goal, store, TODAY, title="x", metric=metric, target_value=value)
+        assert message.startswith(f"target_value for {metric} must be between ")
+
+
+def test_set_goal_bounds_message_and_minutes_seconds_form(store):
+    message = err(tools.set_goal, store, TODAY, title="x", metric="race_half_marathon", target_value="1:45")
+    assert message == "target_value for race_half_marathon must be between 45:00 and 8:00:00"  # 1 min 45 s
+    assert err(tools.set_goal, store, TODAY, title="x", metric="vo2max_running", target_value=19.9) == (
+        "target_value for vo2max_running must be between 20 and 95"
+    )
+
+
+@pytest.mark.parametrize("value", ["1e3", "nan", "55.", "-5", "x", [], True, float("inf"), float("nan"), "1:00"])
+def test_set_goal_vo2max_rejects_bad_values(store, value):
+    message = err(tools.set_goal, store, TODAY, title="x", metric="vo2max_running", target_value=value)
+    assert message == "target_value for vo2max_running must be a number, e.g. 55"
+
+
+def test_set_goal_vo2max_rounds_to_one_decimal(store):
+    goal = make_goal(store, metric="vo2max_running", target_value="55.25")
+    assert stored(store, goal["id"])[1] == round(55.25, 1)
+    assert make_goal(store, metric="vo2max_running", target_value=" 52 ")["target_value"] == 52.0
+
+
+def test_set_goal_update_target_uses_the_stored_metric(store):
+    gid = make_goal(store, metric="race_10k", target_value="45:00")["id"]
+    changed = tools.set_goal(store, TODAY, goal_id=gid, target_value="44:00")["goal"]
+    assert changed["target_value"] == "44:00" and stored(store, gid) == ("race_10k", 2640.0)
+    assert "must be between 20:00 and 4:00:00" in err(tools.set_goal, store, TODAY, goal_id=gid, target_value="19:59")
+    plain = make_goal(store, title="Plain")["id"]
+    assert err(tools.set_goal, store, TODAY, goal_id=plain, target_value="45:00") == "target_value needs a metric"
+
+
+def test_set_goal_changing_the_metric_needs_a_new_target(store):
+    gid = make_goal(store, metric="race_10k", target_value="45:00")["id"]
+    message = "changing the metric needs a new target_value (or an empty string to clear it)"
+    assert err(tools.set_goal, store, TODAY, goal_id=gid, metric="race_5k") == message
+    assert stored(store, gid) == ("race_10k", 2700.0)
+    same = tools.set_goal(store, TODAY, goal_id=gid, metric="race_10k")["goal"]  # re-given: the target stays
+    assert same["target_value"] == "45:00"
+    both = tools.set_goal(store, TODAY, goal_id=gid, metric="race_5k", target_value="21:00")["goal"]
+    assert (both["metric"], both["target_value"]) == ("race_5k", "21:00")
+    cleared = tools.set_goal(store, TODAY, goal_id=gid, metric="race_10k", target_value="")["goal"]
+    assert cleared["metric"] == "race_10k" and "target_value" not in cleared
+    assert tools.set_goal(store, TODAY, goal_id=gid, metric="race_marathon")["goal"]["metric"] == "race_marathon"
+
+
+def test_set_goal_empty_metric_clears_both(store):
+    gid = make_goal(store, metric="race_10k", target_value="45:00")["id"]
+    message = "an empty metric clears target_value; do not give both"
+    assert err(tools.set_goal, store, TODAY, goal_id=gid, metric="", target_value="1:00:00") == message
+    assert stored(store, gid) == ("race_10k", 2700.0)
+    cleared = tools.set_goal(store, TODAY, goal_id=gid, metric="")["goal"]
+    assert "metric" not in cleared and stored(store, gid) == (None, None)
+    gid2 = make_goal(store, metric="race_10k", target_value="45:00")["id"]
+    only_target = tools.set_goal(store, TODAY, goal_id=gid2, target_value="")["goal"]
+    assert only_target["metric"] == "race_10k" and "target_value" not in only_target
+    assert tools.set_goal(store, TODAY, goal_id=gid2, metric="", target_value="")["goal"].get("metric") is None
+
+
+def test_set_goal_update_with_only_metric_or_target_is_an_update(store):
+    gid = make_goal(store)["id"]
+    assert tools.set_goal(store, TODAY, goal_id=gid, metric="race_5k")["created"] is False
+    assert tools.set_goal(store, TODAY, goal_id=gid, target_value="21:00")["goal"]["target_value"] == "21:00"
+    assert err(tools.set_goal, store, TODAY, goal_id=gid) == "nothing to update"
+
+
+def test_set_goal_unknown_id_with_only_a_metric(store):
+    assert err(tools.set_goal, store, TODAY, goal_id=999, metric="race_5k") == "goal 999 not found"
+    assert err(tools.set_goal, store, TODAY, goal_id=999, target_value="1:00:00") == "goal 999 not found"
+    assert err(tools.set_goal, store, TODAY, goal_id=999) == "nothing to update"
+
+
+def test_list_goals_shows_metric_and_target(store):
+    make_goal(store, metric="race_5k", target_value="21:30")
+    (goal,) = tools.list_goals(store, TODAY)["goals"]
+    assert (goal["metric"], goal["target_value"]) == ("race_5k", "21:30")

@@ -67,6 +67,7 @@ EXPECTED_TOOLS = {
     "list_constraints",
     "get_correlations",
     "get_weather_forecast",
+    "get_goal_progress",
 }
 WRITE_TOOLS = {"set_goal", "set_constraint", "save_plan", "update_session", "add_note"}
 # Tools that reach an outside service (garmin-mcp, Open-Meteo); every other tool only touches the local store.
@@ -148,6 +149,7 @@ async def test_initialize_list_and_annotations(app):
             assert name in init["instructions"]
         assert "get_correlations" in init["instructions"]
         assert "get_weather_forecast" in init["instructions"]
+        assert "get_goal_progress" in init["instructions"]
 
         r = await client.post("/mcp", headers=auth_headers(), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert r.status_code == 202
@@ -172,7 +174,52 @@ async def test_initialize_list_and_annotations(app):
         assert corr_schema["metrics"]["items"]["enum"] == by_name["get_trends"]["inputSchema"]["properties"]["metrics"]["items"]["enum"]
         assert (corr_schema["metrics"]["minItems"], corr_schema["metrics"]["maxItems"]) == (2, 6)
         assert (corr_schema["lag_days"]["minimum"], corr_schema["lag_days"]["maximum"]) == (0, 3)
+        goal_schema = by_name["set_goal"]["inputSchema"]["properties"]
+        metric_options = next(o for o in goal_schema["metric"]["anyOf"] if "enum" in o)
+        assert sorted(metric_options["enum"]) == sorted(
+            ["race_5k", "race_10k", "race_half_marathon", "race_marathon", "vo2max_running", ""]
+        )
         assert len(json.dumps(tools)) < 40_000
+
+
+@pytest.mark.anyio
+async def test_set_goal_metric_and_target_value_over_http(app, store):
+    async with running_client(app) as client:
+        made = await call_tool(client, "set_goal", {"title": "VO2max", "metric": "vo2max_running", "target_value": 52})
+        assert made["isError"] is False, made
+        assert payload(made)["goal"]["target_value"] == 52.0
+        assert store.get_goal(1)["target_value"] == 52.0
+        text = await call_tool(client, "set_goal", {"title": "10k", "metric": "race_10k", "target_value": "0:45:00"}, id_=3)
+        assert payload(text)["goal"]["target_value"] == "45:00"
+        for arguments in (
+            {"title": "x", "metric": "vo2max_running", "target_value": True},
+            {"title": "x", "metric": "race_1k"},
+            {"title": "x", "metric": "race_10k", "target_value": "soon"},
+        ):
+            bad = await call_tool(client, "set_goal", arguments, id_=4)
+            assert bad["isError"] is True, arguments
+        cleared = await call_tool(client, "set_goal", {"goal_id": 1, "metric": ""}, id_=5)
+        assert "metric" not in payload(cleared)["goal"] and store.get_goal(1)["target_value"] is None
+
+
+@pytest.mark.anyio
+async def test_get_goal_progress_over_http(app, store):
+    start = TODAY - timedelta(days=83)
+    for n in range(83):
+        day = start + timedelta(days=n)
+        store.store_race_predictions({day: {"time_half_marathon_s": 6000 - 2 * n}}, day + timedelta(days=1), day)
+    store.insert_goal(
+        {"title": "Half", "metric": "race_half_marathon", "target_value": 5800.0, "target_date": date(2026, 11, 15)}
+    )
+    store.insert_goal({"title": "Plain"})
+    async with running_client(app) as client:
+        result = await call_tool(client, "get_goal_progress", {})
+        assert result["isError"] is False
+        body = payload(result)
+    assert body["goals_without_metric"] == 1
+    (goal,) = body["goals"]
+    assert goal["current"]["time"] == "1:37:16" and goal["trend_per_week"] == -14.0
+    assert goal["projected"]["time"] == "1:35:56" and goal["on_track"] is True and goal["days_remaining"] == 39
 
 
 @pytest.mark.anyio
@@ -815,6 +862,31 @@ async def test_create_app_runs_the_strength_part(settings, store):
     assert [name for name, _ in strength.calls] == ["get-workout-events"]
     assert strength.calls[0][1]["since"] == "2026-10-05T22:00:00Z"  # local midnight of the first backfill day (10-06)
     assert source.calls  # the Garmin part ran first
+
+
+@pytest.mark.anyio
+async def test_create_app_runs_the_predictions_part(settings, store):
+    clock = history_clock()
+    source = FakeHistorySource(clock=clock)
+
+    async def sleep(seconds: float) -> None:
+        if source.prediction_ranges:
+            await never_wake(seconds)
+        await clock.sleep(seconds)
+        await asyncio.sleep(0)
+
+    app = create_app(
+        history_settings(settings, history_backfill_days=1),
+        store,
+        today=lambda: TODAY,
+        now=clock.now,
+        history_source=source,
+        history_sleep=sleep,
+    )
+    async with running_client(app):
+        await wait_for(lambda: source.prediction_ranges)
+    assert [n for n, _ in source.calls] == ["list_activities", "get_recovery_snapshot", "get_race_predictions"]
+    assert source.prediction_ranges == [(date(2026, 10, 6), date(2026, 10, 6))]
 
 
 def rows_of(store):

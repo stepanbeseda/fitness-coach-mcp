@@ -10,10 +10,10 @@ import uvicorn
 
 from .backup import backup_command, restore_command
 from .config import Settings, db_path_from_env
-from .scheduler import send_briefing_command
+from .scheduler import send_briefing_command, send_weekly_report_command
 from .server import create_app
 
-USAGE = "usage: python -m coach_mcp [send-briefing | backup | restore [PATH]]"
+USAGE = "usage: python -m coach_mcp [send-briefing | send-weekly-report | backup | restore [PATH]]"
 
 
 def configure_logging(level: str) -> None:
@@ -38,6 +38,10 @@ def main(argv: list[str] | None = None) -> int | None:
         settings = Settings.from_env()
         configure_logging(settings.log_level)
         return asyncio.run(send_briefing_command(settings))
+    if args == ["send-weekly-report"]:
+        settings = Settings.from_env()
+        configure_logging(settings.log_level)
+        return asyncio.run(send_weekly_report_command(settings))
     if args == ["backup"] or (args[:1] == ["restore"] and len(args) <= 2):
         # Only the database path is needed: no logging set-up, no other settings.
         try:

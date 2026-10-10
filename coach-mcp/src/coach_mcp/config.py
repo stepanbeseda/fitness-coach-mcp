@@ -116,7 +116,7 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8000
     timezone: str = "Europe/Prague"
-    # Language of the text sent to the athlete (morning briefing push): a key of messages.LANGUAGES.
+    # Language of the text sent to the athlete (morning briefing, Monday report): a key of messages.LANGUAGES.
     language: str = DEFAULT_LANGUAGE
     log_level: str = "INFO"
     # Optional Host allowlist (enables the SDK's DNS-rebinding check when set).
@@ -131,6 +131,8 @@ class Settings:
     briefing_time: dt.time = dt.time(6, 30)
     briefing_cutoff: dt.time = dt.time(9, 30)
     briefing_retry_minutes: int = 15
+    # The Monday report after the briefing (effective only while push is on).
+    weekly_push: bool = True
     # Nightly history of Garmin daily values (get_trends, get_weekly_report).
     history_enabled: bool = True
     history_time: dt.time = dt.time(3, 30)
@@ -205,6 +207,10 @@ class Settings:
         if not 1 <= retry <= 180:
             raise ValueError("COACH_BRIEFING_RETRY_MINUTES must be between 1 and 180")
 
+        raw_weekly = _opt(env, "COACH_WEEKLY_PUSH", "true").lower()
+        if raw_weekly not in ("true", "false"):
+            raise ValueError("COACH_WEEKLY_PUSH must be true or false")
+
         raw_history = _opt(env, "COACH_HISTORY_ENABLED", "true").lower()
         if raw_history not in ("true", "false"):
             raise ValueError("COACH_HISTORY_ENABLED must be true or false")
@@ -238,6 +244,7 @@ class Settings:
             briefing_time=briefing_time,
             briefing_cutoff=briefing_cutoff,
             briefing_retry_minutes=retry,
+            weekly_push=raw_weekly == "true",
             history_enabled=raw_history == "true",
             history_time=history_time,
             history_backfill_days=backfill_days,

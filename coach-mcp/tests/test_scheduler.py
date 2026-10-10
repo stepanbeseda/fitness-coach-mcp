@@ -18,7 +18,13 @@ from coach_mcp.briefing import ALERT_KEYS, EVENT_ALERTS
 from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminReader
 from coach_mcp.push import TelegramPush
-from coach_mcp.scheduler import BriefingScheduler, compose_briefing, send_briefing_command
+from coach_mcp import scheduler as scheduler_module
+from coach_mcp.scheduler import (
+    BriefingScheduler,
+    compose_briefing,
+    send_briefing_command,
+    send_weekly_report_command,
+)
 from coach_mcp.store import Store
 from garmin_payloads import (
     GREEN_SNAPSHOT,
@@ -31,6 +37,7 @@ from garmin_payloads import (
 BOT_TOKEN = "123456789:SECRETtokenSECRETtokenSECRETtoken12"  # 35 characters after the colon
 PRAGUE = ZoneInfo("Europe/Prague")
 D = date(2026, 10, 7)
+M = date(2026, 10, 12)  # a Monday: the Monday report of ISO week 2026-W41 (5-11 Oct)
 
 
 def local(day: date, hour: int, minute: int = 0, zone: ZoneInfo = PRAGUE) -> datetime:
@@ -684,12 +691,16 @@ async def test_send_briefing_command_with_unusable_token_reports_permanent(db_pa
 
 def test_main_dispatch_usage(capsys, monkeypatch, restore_logging):
     assert main(["bogus"]) == 2
-    assert capsys.readouterr().err == "usage: python -m coach_mcp [send-briefing | backup | restore [PATH]]\n"
+    usage = "usage: python -m coach_mcp [send-briefing | send-weekly-report | backup | restore [PATH]]\n"
+    assert capsys.readouterr().err == usage
     assert main(["send-briefing", "extra"]) == 2
+    assert main(["send-weekly-report", "x"]) == 2
     monkeypatch.delenv("COACH_TELEGRAM_CHAT_ID", raising=False)
     capsys.readouterr()
     assert main(["send-briefing"]) == 2
     assert "push is not configured" in capsys.readouterr().err
+    assert main(["send-weekly-report"]) == 2
+    assert capsys.readouterr().err == "push is not configured: set COACH_TELEGRAM_CHAT_ID\n"
 
 
 # ------------------------------------------------------------------ privacy
@@ -711,16 +722,17 @@ async def test_logs_never_contain_text_chat_id_token_or_values(db_path, tmp_path
     )
     store = Store(db_path)
     store.replace_planned(
-        D, D, D, [{"date": D, "type": "running", "description": "PRIVATE-SESSION-TEXT", "duration_min": 40}]
+        M, M, M, [{"date": M, "type": "running", "description": "PRIVATE-SESSION-TEXT", "duration_min": 40}]
     )
-    answers = iter([500, 200])
+    store.insert_goal({"title": "PRIVATE-GOAL-TITLE", "metric": "race_10k", "target_value": 2700.0})
+    answers = iter([500, 200, 200])  # the briefing is retried once; the third answer is the Monday message
     clock_ref: dict[str, FakeClock] = {}
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(next(answers))
 
     app, _calls = fake_garmin_app("garmin-backend-token-0123456789abcdef", errors={"get_hrv_trend": "SECRET-ERROR-TEXT"})
-    clock = FakeClock(local(D, 0), stop_when=lambda: store.briefing_sent(D))
+    clock = FakeClock(local(M, 0), stop_when=lambda: store.weekly_report_sent("2026-W41"))
     clock_ref["clock"] = clock
     scheduler = BriefingScheduler(
         settings,
@@ -733,10 +745,11 @@ async def test_logs_never_contain_text_chat_id_token_or_values(db_path, tmp_path
     async with fake_garmin_running(app):
         with pytest.raises(StopLoop):
             await scheduler.run()
-    assert store.briefing_sent(D)
+    assert store.briefing_sent(M)
 
     text = caplog.text
     assert "briefing status=sent" in text
+    assert "weekly status=sent" in text
     assert "push status=transient code=500" in text
     assert "garmin status=partial" in text
     for secret in (
@@ -750,6 +763,8 @@ async def test_logs_never_contain_text_chat_id_token_or_values(db_path, tmp_path
         "Readiness",
         "ranní briefing",
         "garmin-backend-token",
+        "PRIVATE-GOAL-TITLE",
+        "Týdenní report",
     ):
         assert secret not in text, secret
 
@@ -766,3 +781,275 @@ async def test_compose_briefing_reads_plan_and_alert_rows(db_path):
     assert [p["description"] for p in briefing.payload["planned"]] == ["Easy"]
     rhr = next(a for a in briefing.payload["alerts"] if a["key"] == "resting_hr_elevated")
     assert rhr == {"key": "resting_hr_elevated", "holds": True, "new": False}  # held yesterday: not new
+
+
+# ------------------------------------------------------------ the Monday report (PR 14)
+
+
+def weekly_titles(push: FakePush) -> list[str]:
+    return [msg.title for _, msg in push.sent if "Týdenní report" in msg.title]
+
+
+MONDAY_TITLE = "\U0001f4ca Týdenní report 2026-W41 · 5. 10.–11. 10."
+
+
+@pytest.mark.anyio
+async def test_monday_report_follows_the_briefing_once(db_path):
+    push, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), stop_pushes=2)
+    assert [utc(t) for t, _ in push.sent] == [local(M, 6, 30).astimezone(UTC)] * 2
+    assert "ranní briefing" in push.sent[0][1].title
+    assert push.sent[1][1].title == MONDAY_TITLE
+    assert "Pro tento týden nejsou uložená data" in push.sent[1][1].body
+    store = Store(db_path)
+    assert store.weekly_report_sent("2026-W41") and store.briefing_sent(M)
+
+
+@pytest.mark.anyio
+async def test_no_monday_report_on_other_days(db_path):
+    push, _ = await run_scheduler(db_path, local(D, 0), FakeGarmin(garmin_data()), until=local(D, 12))
+    assert len(push.sent) == 1 and weekly_titles(push) == []
+    assert Store(db_path).weekly_report_sent("2026-W40") is False
+
+
+@pytest.mark.anyio
+async def test_weekly_push_off_sends_only_the_briefing(db_path):
+    push, _ = await run_scheduler(
+        db_path, local(M, 0), FakeGarmin(garmin_data()), until=local(M, 12), weekly_push=False
+    )
+    assert len(push.sent) == 1 and weekly_titles(push) == []
+
+
+@pytest.mark.anyio
+async def test_consecutive_mondays_each_send_their_own_week(db_path):
+    first, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), stop_pushes=2)
+    nxt = M + timedelta(days=7)
+    second, _ = await run_scheduler(db_path, local(nxt, 0), FakeGarmin(garmin_data()), stop_pushes=2)
+    assert "Týdenní report 2026-W41 ·" in weekly_titles(first)[0]
+    assert "Týdenní report 2026-W42 ·" in weekly_titles(second)[0]
+    store = Store(db_path)
+    assert store.weekly_report_sent("2026-W41") and store.weekly_report_sent("2026-W42")
+
+
+@pytest.mark.anyio
+async def test_restart_after_both_messages_sends_nothing(db_path):
+    await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), stop_pushes=2)
+    push, _ = await run_scheduler(db_path, local(M, 7), FakeGarmin(garmin_data()), until=local(M, 23))
+    assert push.sent == []
+
+
+@pytest.mark.anyio
+async def test_restart_after_the_briefing_sends_the_report(db_path):
+    Store(db_path).record_briefing_sent(M, "green", {})
+    garmin = FakeGarmin(garmin_data())
+    push, _ = await run_scheduler(db_path, local(M, 7), garmin, until=local(M, 12))
+    assert [msg.title for _, msg in push.sent] == [MONDAY_TITLE]
+    assert [utc(t) for t, _ in push.sent] == [local(M, 7).astimezone(UTC)]
+    assert garmin.calls == 0  # the briefing is not composed again
+
+
+@pytest.mark.anyio
+async def test_late_start_sends_no_monday_report(db_path, caplog):
+    caplog.set_level(logging.INFO)
+    Store(db_path).record_briefing_sent(M, "green", {})
+    push, _ = await run_scheduler(db_path, local(M, 10), FakeGarmin(garmin_data()), until=local(M, 23))
+    assert push.sent == []
+    assert "weekly status=skipped reason=late_start" in caplog.text
+    caplog.clear()
+    push, _ = await run_scheduler(
+        db_path.with_name("fresh.db"), local(M, 10), FakeGarmin(garmin_data()), until=local(M, 23)
+    )
+    assert push.sent == []
+    assert "briefing status=skipped reason=late_start" in caplog.text and "weekly status" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_transient_monday_failure_retries_like_the_briefing(db_path):
+    clock_push = FakePush(["sent", "transient", "sent"])
+    push, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), clock_push, stop_pushes=3)
+    assert [utc(t) for t, _ in push.sent] == [local(M, 6, 30).astimezone(UTC)] * 2 + [local(M, 6, 45).astimezone(UTC)]
+    assert [m.title for _, m in push.sent][1:] == [MONDAY_TITLE] * 2
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM briefing_runs").fetchone()[0] == 1
+    assert Store(db_path).weekly_report_sent("2026-W41")
+
+
+@pytest.mark.anyio
+async def test_permanent_monday_failure_gives_up(db_path, caplog):
+    caplog.set_level(logging.INFO)
+    push, _ = await run_scheduler(
+        db_path, local(M, 0), FakeGarmin(garmin_data()), FakePush(["sent", "permanent"]), until=local(M, 23)
+    )
+    assert len(push.sent) == 2
+    assert Store(db_path).weekly_report_sent("2026-W41") is False
+    assert "weekly status=gave_up reason=push_permanent" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_monday_report_gives_up_at_the_cutoff(db_path, caplog):
+    caplog.set_level(logging.INFO)
+    push, _ = await run_scheduler(
+        db_path, local(M, 0), FakeGarmin(garmin_data()), FakePush(["sent", "transient"]), until=local(M + timedelta(days=1), 0)
+    )
+    assert len(push.sent) == 14  # the briefing and 13 attempts: 06:30, 06:45, ..., 09:30
+    times = [utc(t) for t, _ in push.sent]
+    assert times[1] == local(M, 6, 30).astimezone(UTC) and times[-1] == local(M, 9, 30).astimezone(UTC)
+    assert "weekly status=gave_up reason=push_transient" in caplog.text
+    assert Store(db_path).weekly_report_sent("2026-W41") is False
+
+
+@pytest.mark.anyio
+async def test_no_monday_report_after_a_briefing_that_gave_up(db_path):
+    push, _ = await run_scheduler(
+        db_path, local(M, 0), FakeGarmin(garmin_data()), FakePush(["permanent"]), until=local(M, 23)
+    )
+    assert len(push.sent) == 1 and "ranní briefing" in push.sent[0][1].title
+    assert Store(db_path).weekly_report_sent("2026-W41") is False
+
+
+@pytest.mark.anyio
+async def test_monday_report_waits_for_a_briefing_that_waits_for_sleep(db_path):
+    def data(day: date, index: int):
+        if index < 2:
+            return garmin_data(snapshot={k: v for k, v in GREEN_SNAPSHOT.items() if k != "sleep"})
+        return garmin_data()
+
+    push, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(data), stop_pushes=2)
+    assert [utc(t) for t, _ in push.sent] == [local(M, 7, 0).astimezone(UTC)] * 2
+    assert "ranní briefing" in push.sent[0][1].title and push.sent[1][1].title == MONDAY_TITLE
+
+
+@pytest.mark.anyio
+async def test_briefing_sent_at_the_cutoff_gets_one_final_report_attempt(db_path, caplog):
+    caplog.set_level(logging.INFO)
+    garmin = FakeGarmin(garmin_data(snapshot={k: v for k, v in GREEN_SNAPSHOT.items() if k != "hrv"}))
+    push, _ = await run_scheduler(
+        db_path, local(M, 0), garmin, FakePush(["sent", "transient"]), until=local(M + timedelta(days=1), 0)
+    )
+    assert [utc(t) for t, _ in push.sent] == [local(M, 9, 30).astimezone(UTC)] * 2
+    assert "weekly status=gave_up reason=push_transient" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_a_crash_composing_the_report_is_retried(db_path, caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+    real = scheduler_module.compose_weekly
+    calls = {"n": 0}
+
+    def flaky(store, day, language="en"):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return real(store, day, language)
+
+    monkeypatch.setattr(scheduler_module, "compose_weekly", flaky)
+    push, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), stop_pushes=2)
+    assert "weekly status=crashed kind=RuntimeError" in caplog.text and "boom" not in caplog.text
+    assert [utc(t) for t, _ in push.sent] == [local(M, 6, 30).astimezone(UTC), local(M, 6, 45).astimezone(UTC)]
+    assert "ranní briefing" in push.sent[0][1].title and push.sent[1][1].title == MONDAY_TITLE
+
+
+@pytest.mark.anyio
+async def test_a_crash_composing_the_report_at_the_cutoff_gives_up_quietly(db_path, caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+
+    def broken(store, day, language="en"):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(scheduler_module, "compose_weekly", broken)
+    garmin = FakeGarmin(garmin_data(snapshot={k: v for k, v in GREEN_SNAPSHOT.items() if k != "hrv"}))
+    push, _ = await run_scheduler(db_path, local(M, 0), garmin, until=local(M + timedelta(days=1), 0))
+    assert len(push.sent) == 1  # only the briefing, at the cutoff; the report crashed on its single final attempt
+    assert caplog.text.count("weekly status=crashed kind=RuntimeError") == 1
+
+
+@pytest.mark.anyio
+async def test_a_state_error_after_the_report_does_not_send_it_twice(db_path, caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+    store = Store(db_path)
+
+    def boom(week):
+        raise sqlite3.OperationalError("disk")
+
+    monkeypatch.setattr(store, "record_weekly_report_sent", boom)
+    push, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), until=local(M, 23), store=store)
+    assert len(push.sent) == 2 and "weekly status=state_error kind=OperationalError" in caplog.text
+    assert "disk" not in caplog.text and "weekly status=sent" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_a_recorded_week_is_not_sent_again(db_path):
+    Store(db_path).record_weekly_report_sent("2026-W41")
+    push, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), until=local(M, 23))
+    assert len(push.sent) == 1 and "ranní briefing" in push.sent[0][1].title
+
+
+@pytest.mark.anyio
+async def test_the_report_follows_a_briefing_whose_state_could_not_be_recorded(db_path, monkeypatch):
+    store = Store(db_path)
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("disk")
+
+    monkeypatch.setattr(store, "record_briefing_sent", boom)
+    garmin = FakeGarmin(garmin_data())
+    push, _ = await run_scheduler(db_path, local(M, 0), garmin, until=local(M, 23), store=store)
+    assert [m.title for _, m in push.sent][1:] == [MONDAY_TITLE] and len(push.sent) == 2
+    assert garmin.calls == 1  # the in-process flag stops a second briefing
+
+
+@pytest.mark.anyio
+async def test_the_monday_report_has_goals_and_the_week_numbers(db_path):
+    store = Store(db_path)
+    store.insert_goal({"title": "Plain goal"})
+    push, _ = await run_scheduler(db_path, local(M, 0), FakeGarmin(garmin_data()), stop_pushes=2, store=store)
+    assert "Cíle bez měřitelné metriky: 1." in push.sent[1][1].body
+
+
+@pytest.mark.anyio
+async def test_send_weekly_report_command_pushes_without_writing_state(db_path, capsys):
+    push = FakePush()
+    rc = await send_weekly_report_command(make_settings(db_path), store=Store(db_path), push=push, today=lambda: M)
+    assert rc == 0 and [m.title for _, m in push.sent] == [MONDAY_TITLE]
+    assert capsys.readouterr().out == "weekly status=sent week=2026-W41 goals=0\n"
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM weekly_reports").fetchone()[0] == 0
+    # it ignores COACH_WEEKLY_PUSH and reports the last complete week on any weekday
+    rc = await send_weekly_report_command(
+        make_settings(db_path, weekly_push=False), store=Store(db_path), push=FakePush(), today=lambda: D
+    )
+    assert rc == 0 and capsys.readouterr().out == "weekly status=sent week=2026-W40 goals=0\n"
+
+
+@pytest.mark.anyio
+async def test_send_weekly_report_command_counts_goals(db_path, capsys):
+    store = Store(db_path)
+    store.insert_goal({"title": "G", "metric": "race_5k"})
+    store.insert_goal({"title": "Plain"})
+    rc = await send_weekly_report_command(make_settings(db_path), store=store, push=FakePush(), today=lambda: M)
+    assert rc == 0 and capsys.readouterr().out == "weekly status=sent week=2026-W41 goals=1\n"
+
+
+@pytest.mark.anyio
+async def test_send_weekly_report_command_failures(db_path, capsys, monkeypatch):
+    rc = await send_weekly_report_command(
+        make_settings(db_path), store=Store(db_path), push=FakePush(["transient"]), today=lambda: M
+    )
+    assert rc == 1 and capsys.readouterr().out == "weekly status=transient week=2026-W41 goals=0\n"
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(scheduler_module, "compose_weekly", boom)
+    rc = await send_weekly_report_command(make_settings(db_path), store=Store(db_path), push=FakePush(), today=lambda: M)
+    assert rc == 1 and capsys.readouterr().out == ""
+
+
+@pytest.mark.anyio
+async def test_send_weekly_report_command_without_push_config_exits_2(db_path, capsys):
+    push = FakePush()
+    rc = await send_weekly_report_command(
+        Settings(db_path=db_path, language="cs"), store=Store(db_path), push=push, today=lambda: M
+    )
+    assert rc == 2 and push.sent == []
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == "push is not configured: set COACH_TELEGRAM_CHAT_ID\n"

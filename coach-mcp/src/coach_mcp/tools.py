@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
+from .goals import parse_target_value, target_value_out
 from .reconcile import RECONCILE_DAYS
 from .store import Store
 
@@ -126,6 +127,10 @@ def _workout_id(value: str | int | None, name: str) -> str | None:
 # ------------------------------------------------------------ output shaping
 
 
+def _target_out(row: dict[str, Any]) -> str | float | None:
+    return None if row["target_value"] is None else target_value_out(row["metric"], row["target_value"])
+
+
 def goal_out(row: dict[str, Any], today: dt.date) -> dict[str, Any]:
     out = {
         "id": row["id"],
@@ -134,6 +139,8 @@ def goal_out(row: dict[str, Any], today: dt.date) -> dict[str, Any]:
         "target": row["target"],
         "target_date": row["target_date"],
         "target_result": row["target_result"],
+        "metric": row["metric"],
+        "target_value": _target_out(row),
         "days_remaining": None,
     }
     if row["target_date"] is not None:
@@ -268,23 +275,43 @@ def set_goal(
     target_date: str | None = None,
     target_result: str | None = None,
     status: str | None = None,
+    metric: str | None = None,
+    target_value: str | float | None = None,
 ) -> dict[str, Any]:
     if goal_id is None:
         if title is None:
             raise ToolError("title is required to create a goal")
+        metric = metric or None  # an empty string counts as absent
+        target_value = None if target_value == "" else target_value
+        if target_value is not None and metric is None:
+            raise ToolError("target_value needs a metric")
+        parsed = None if metric is None or target_value is None else parse_target_value(metric, target_value)
         fields: dict[str, Any] = {
             "title": _required_text(title, "title"),
             "target": _optional_text(target, "target"),
             "target_date": _optional_date(target_date, "target_date"),
             "target_result": _optional_text(target_result, "target_result"),
             "status": status or "active",
+            "metric": metric,
+            "target_value": parsed,
         }
         new_id = store.insert_goal({k: v for k, v in fields.items() if v is not None})
         return {"goal": goal_out(_must_get(store.get_goal(new_id), "goal", new_id), today), "created": True}
 
-    given = {"title": title, "target": target, "target_date": target_date, "target_result": target_result, "status": status}
+    given = {
+        "title": title,
+        "target": target,
+        "target_date": target_date,
+        "target_result": target_result,
+        "status": status,
+        "metric": metric,
+        "target_value": target_value,
+    }
     if all(v is None for v in given.values()):
         raise ToolError("nothing to update")
+    stored = store.get_goal(goal_id)
+    if stored is None:
+        raise ToolError(f"goal {goal_id} not found")
     fields = {}
     if title is not None:
         fields["title"] = _required_text(title, "title")
@@ -296,9 +323,31 @@ def set_goal(
         fields["target_result"] = _optional_text(target_result, "target_result")
     if status is not None:
         fields["status"] = status
+    fields.update(_metric_fields(stored, metric, target_value))
     if not store.update_goal(goal_id, fields):
         raise ToolError(f"goal {goal_id} not found")
     return {"goal": goal_out(_must_get(store.get_goal(goal_id), "goal", goal_id), today), "created": False}
+
+
+def _metric_fields(stored: dict[str, Any], metric: str | None, target_value: str | float | None) -> dict[str, Any]:
+    """Columns metric / target_value of an update of ``stored`` (rules of D6: no silent reinterpretation)."""
+    if metric == "":
+        if target_value not in (None, ""):
+            raise ToolError("an empty metric clears target_value; do not give both")
+        return {"metric": None, "target_value": None}
+    if metric is None and target_value is None:
+        return {}
+    effective = metric if metric is not None else stored["metric"]
+    fields: dict[str, Any] = {} if metric is None else {"metric": metric}
+    if target_value == "":
+        fields["target_value"] = None
+    elif target_value is not None:
+        if effective is None:
+            raise ToolError("target_value needs a metric")
+        fields["target_value"] = parse_target_value(effective, target_value)
+    elif metric != stored["metric"] and stored["target_value"] is not None:
+        raise ToolError("changing the metric needs a new target_value (or an empty string to clear it)")
+    return fields
 
 
 def set_constraint(

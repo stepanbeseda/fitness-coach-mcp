@@ -189,6 +189,33 @@ UPDATE history_days SET recovery_missing = rtrim(
   ',')
 WHERE recovery_fetched_on IS NOT NULL;
 """,
+    # Goal progress (PR 14): a measurable metric per goal, Garmin's daily race predictions, the weekly push state.
+    """
+ALTER TABLE goals ADD COLUMN metric TEXT CHECK (metric IS NULL OR metric IN
+  ('race_5k','race_10k','race_half_marathon','race_marathon','vo2max_running'));
+ALTER TABLE goals ADD COLUMN target_value REAL
+  CHECK (target_value IS NULL OR (metric IS NOT NULL AND target_value > 0 AND target_value < 1000000));
+CREATE TABLE race_predictions (
+  date                 TEXT PRIMARY KEY CHECK (length(date) = 10),
+  time_5k_s            REAL CHECK (time_5k_s IS NULL OR (time_5k_s > 0 AND time_5k_s <= 86400)),
+  time_10k_s           REAL CHECK (time_10k_s IS NULL OR (time_10k_s > 0 AND time_10k_s <= 86400)),
+  time_half_marathon_s REAL CHECK (time_half_marathon_s IS NULL
+                                   OR (time_half_marathon_s > 0 AND time_half_marathon_s <= 86400)),
+  time_marathon_s      REAL CHECK (time_marathon_s IS NULL OR (time_marathon_s > 0 AND time_marathon_s <= 86400)),
+  fetched_on           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL
+);
+CREATE TABLE prediction_sync (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  covered_from TEXT NOT NULL,
+  synced_on    TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+CREATE TABLE weekly_reports (
+  week    TEXT PRIMARY KEY CHECK (length(week) = 8),
+  sent_at TEXT NOT NULL
+);
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -214,7 +241,8 @@ HISTORY_COLUMNS: tuple[str, ...] = (
 HISTORY_PARTS = ("recovery", "activities")
 STRENGTH_TABLES = ("strength_workouts", "hevy_templates", "hevy_sync")
 
-GOAL_FIELDS = frozenset({"title", "target", "target_date", "target_result", "status"})
+GOAL_FIELDS = frozenset({"title", "target", "target_date", "target_result", "status", "metric", "target_value"})
+RACE_COLUMNS = ("time_5k_s", "time_10k_s", "time_half_marathon_s", "time_marathon_s")
 CONSTRAINT_FIELDS = frozenset({"kind", "title", "details", "status"})
 SESSION_FIELDS = (
     "date",
@@ -460,6 +488,17 @@ class Store:
     def briefing_sent(self, day: date) -> bool:
         return bool(self._all("SELECT 1 FROM briefing_runs WHERE date = ?", (day.isoformat(),)))
 
+    def weekly_report_sent(self, week: str) -> bool:
+        return bool(self._all("SELECT 1 FROM weekly_reports WHERE week = ?", (week,)))
+
+    def record_weekly_report_sent(self, week: str) -> None:
+        """Remember that the Monday report of the ISO week ``week`` (``2026-W41``) went out.
+
+        A second call for the same week raises ``sqlite3.IntegrityError``.
+        """
+        with self._conn() as conn, conn:
+            conn.execute("INSERT INTO weekly_reports (week, sent_at) VALUES (?, ?)", (week, _now()))
+
     def alert_states(self) -> dict[str, dict[str, Any]]:
         """Alert key -> ``{value, evaluated_on, fired_on}`` for every alert evaluated so far."""
         rows = self._all("SELECT key, value, evaluated_on, fired_on FROM alert_state")
@@ -670,6 +709,49 @@ class Store:
                     _now(),
                 ),
             )
+
+    # --------------------------------------------------- race predictions
+
+    def store_race_predictions(
+        self, values: Mapping[date, Mapping[str, float | None]], fetched_on: date, covered_from: date
+    ) -> None:
+        """Store Garmin's daily race predictions and the sync state in one transaction.
+
+        A later answer for a day replaces all four times of that day (``NULL`` included). An empty
+        ``values`` still records the sync (a complete answer without days).
+        """
+        for fields in values.values():
+            _check_fields(fields, frozenset(RACE_COLUMNS))
+        now = _now()
+        columns = ", ".join(RACE_COLUMNS)
+        marks = ", ".join("?" for _ in RACE_COLUMNS)
+        updates = ", ".join(f"{c} = excluded.{c}" for c in RACE_COLUMNS)
+        with self._conn() as conn, conn:
+            for day, fields in values.items():
+                conn.execute(
+                    f"INSERT INTO race_predictions (date, {columns}, fetched_on, updated_at) "
+                    f"VALUES (?, {marks}, ?, ?) ON CONFLICT(date) DO UPDATE SET {updates}, "
+                    "fetched_on = excluded.fetched_on, updated_at = excluded.updated_at",
+                    (day.isoformat(), *(fields.get(c) for c in RACE_COLUMNS), fetched_on.isoformat(), now),
+                )
+            conn.execute(
+                "INSERT INTO prediction_sync (id, covered_from, synced_on, updated_at) VALUES (1, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET covered_from = excluded.covered_from, "
+                "synced_on = excluded.synced_on, updated_at = excluded.updated_at",
+                (covered_from.isoformat(), fetched_on.isoformat(), now),
+            )
+
+    def race_prediction_rows(self, start: date | None, end: date) -> list[dict[str, Any]]:
+        """The stored prediction days up to ``end`` (and from ``start`` when given), oldest first."""
+        sql, params = "SELECT * FROM race_predictions WHERE date <= ?", [end.isoformat()]
+        if start is not None:
+            sql += " AND date >= ?"
+            params.append(start.isoformat())
+        return self._all(sql + " ORDER BY date", tuple(params))
+
+    def prediction_sync_state(self) -> dict[str, Any] | None:
+        rows = self._all("SELECT covered_from, synced_on FROM prediction_sync WHERE id = 1")
+        return rows[0] if rows else None
 
     # --------------------------------------------------------------- notes
 

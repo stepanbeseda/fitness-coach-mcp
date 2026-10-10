@@ -151,9 +151,9 @@ async def test_only_allowlisted_tools_can_be_called():
     with pytest.raises(ValueError):
         await garmin_module._call(Boom(), "create_workout", {})  # type: ignore[arg-type]
     assert BRIEFING_TOOLS == ("get_recovery_snapshot", "get_hrv_trend", "list_scheduled_workouts")
-    assert ALLOWED_TOOLS == (*BRIEFING_TOOLS, "list_activities")
+    assert ALLOWED_TOOLS == (*BRIEFING_TOOLS, "list_activities", "get_race_predictions")
     assert set(HISTORY_TOOLS) <= set(ALLOWED_TOOLS)
-    assert HISTORY_TOOLS == ("get_recovery_snapshot", "list_activities")
+    assert HISTORY_TOOLS == ("get_recovery_snapshot", "list_activities", "get_race_predictions")
 
 
 @pytest.mark.anyio
@@ -246,6 +246,30 @@ async def test_history_call_reads_snapshot_and_activities(tmp_path):
     assert got_snapshot == ("ok", snapshot)
     assert got_activities == ("ok", activities)
     assert calls == [("get_recovery_snapshot", SNAPSHOT_ARGS), ("list_activities", ACTIVITIES_ARGS)]
+
+
+@pytest.mark.anyio
+async def test_history_call_reads_race_predictions(tmp_path):
+    from fakes import RACE_PREDICTIONS_PAYLOAD
+
+    app, calls = fake_garmin_app(TOKEN)
+    args = {"start_date": "2026-09-28", "end_date": "2026-09-30"}
+    async with fake_garmin_running(app):
+        got = await reader_for(app, tmp_path).history_call("get_race_predictions", dict(args))
+    assert got == ("ok", RACE_PREDICTIONS_PAYLOAD)
+    assert calls == [("get_race_predictions", args)]
+
+
+@pytest.mark.anyio
+async def test_history_call_race_predictions_failures(tmp_path):
+    app, _ = fake_garmin_app(TOKEN, auth="missing", errors={"get_race_predictions": NOT_LOGGED_IN})
+    async with fake_garmin_running(app):
+        got = await reader_for(app, tmp_path).history_call("get_race_predictions", {})
+    assert got == ("auth_error", None)
+    app, _ = fake_garmin_app(TOKEN, errors={"get_race_predictions": "Garmin Connect rate limit (HTTP 429). Wait."})
+    async with fake_garmin_running(app):
+        got = await reader_for(app, tmp_path).history_call("get_race_predictions", {})
+    assert got == ("rate_limited", None)
 
 
 @pytest.mark.anyio
