@@ -170,12 +170,13 @@ services:
       HOME: /tmp
       # The athlete's local time zone: what "today" means, and when the briefing and history jobs run.
       TZ: ${ATHLETE_TZ:-Europe/Prague}
-      # Language of the morning briefing push: en (default) or cs.
+      # Language of the morning briefing and the Monday report: en (default) or cs.
       COACH_LANGUAGE: ${COACH_LANGUAGE:-}
       COACH_TELEGRAM_CHAT_ID: ${COACH_TELEGRAM_CHAT_ID:-}
       COACH_BRIEFING_TIME: ${COACH_BRIEFING_TIME:-}
       COACH_BRIEFING_CUTOFF: ${COACH_BRIEFING_CUTOFF:-}
       COACH_BRIEFING_RETRY_MINUTES: ${COACH_BRIEFING_RETRY_MINUTES:-}
+      COACH_WEEKLY_PUSH: ${COACH_WEEKLY_PUSH:-}
       COACH_HISTORY_ENABLED: ${COACH_HISTORY_ENABLED:-}
       COACH_HISTORY_TIME: ${COACH_HISTORY_TIME:-}
       COACH_HISTORY_BACKFILL_DAYS: ${COACH_HISTORY_BACKFILL_DAYS:-}

@@ -91,6 +91,9 @@ def garmin_new_signals(garmin: McpSession) -> None:
         print(f"running_tolerance: {data['count']} weeks | latest {latest.get('date')} | fields {fields}")
     else:
         print(f"running_tolerance: {json.dumps(data, ensure_ascii=False)[:300]}")
+    data = json.loads(garmin.call("get_race_predictions", {}))
+    days = data.get("days") or []
+    print(f"get_race_predictions: {data.get('count', 0)} days | latest {days[-1]['date'] if days else '-'}")
     rows = json.loads(garmin.call("list_activities", {"days": 30}))["activities"]
     strength = next((a for a in rows if "strength" in str(a.get("type") or "")), None)
     outdoor = next((a for a in rows if a.get("distance_km") and a is not strength), None)
@@ -199,6 +202,13 @@ def main() -> int:
               f"sports {', '.join(endurance.get('by_sport', {})) or '-'} | "
               + ", ".join(f"{key} {'no' if data[key].get('available') is False else 'yes'}"
                           for key in ("sleep", "hrv", "resting_hr", "adherence", "strength")))
+        data = json.loads(coach.call("get_goal_progress", {}))
+        parts = "".join(
+            f" | {g['metric']} available {'yes' if g['available'] else 'no'} reason {g['reason'] or '-'} "
+            f"on_track {'-' if g['on_track'] is None else str(g['on_track']).lower()}"
+            for g in data["goals"]
+        )
+        print(f"get_goal_progress: {len(data['goals'])} goals{parts} | without metric {data['goals_without_metric']}")
         data = json.loads(coach.call("get_strength_progress", {}))
         covered = data["coverage"] or {}
         print(f"get_strength_progress: {data['start']} - {data['end']} | "

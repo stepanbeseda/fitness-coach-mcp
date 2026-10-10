@@ -225,6 +225,26 @@ def exercise_history(client: httpx.Client, token: str) -> None:
           "coach get_correlations answers from the empty history with the caveat")
 
 
+def exercise_goal_progress(client: httpx.Client, token: str) -> None:
+    """A goal with a metric, then get_goal_progress from the empty history (the nightly job is off in e2e)."""
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "set_goal", "arguments": {
+        "title": "E2E 10k", "metric": "race_10k", "target_value": "45:00", "target_date": "2030-01-01"}}, msg_id=13)
+    ok, data = tool_result(body)
+    goal = data.get("goal") if isinstance(data, dict) else None
+    check(ok and isinstance(goal, dict) and goal.get("metric") == "race_10k" and goal.get("target_value") == "45:00",
+          "coach set_goal stores a metric and a target value")
+    _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_goal_progress", "arguments": {}},
+                  msg_id=17)
+    ok, data = tool_result(body)
+    goals = data.get("goals") if isinstance(data, dict) else None
+    mine = next((g for g in goals if isinstance(g, dict) and g.get("title") == "E2E 10k"), {}) if isinstance(goals, list) else {}
+    target = mine.get("target_value") if isinstance(mine.get("target_value"), dict) else {}
+    without = data.get("goals_without_metric") if isinstance(data, dict) else None
+    check(ok and mine.get("available") is False and mine.get("reason") == "no_recent_value"
+          and target.get("time") == "45:00" and isinstance(without, int) and without >= 1,
+          "coach get_goal_progress answers from the empty history (no_recent_value)")
+
+
 def exercise_weather(client: httpx.Client, token: str) -> None:
     """get_weather_forecast fails cleanly: no home location configured, and no internet in the e2e stack."""
     _, body = rpc(client, "/coach/mcp", token, "tools/call", {"name": "get_weather_forecast", "arguments": {}},
@@ -258,6 +278,7 @@ def main() -> int:
         exercise_coach_memory(client, coach)
         exercise_daily_briefing(client, coach)
         exercise_history(client, coach)
+        exercise_goal_progress(client, coach)
         exercise_weather(client, coach)
         cross = client.post(f"{GW}/coach/mcp", headers={**FUNNEL, "authorization": f"Bearer {garmin}"},
                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
