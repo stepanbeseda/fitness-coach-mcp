@@ -2,6 +2,7 @@ import json
 from datetime import date
 
 import pytest
+from garminconnect import GarminConnectNotFoundError
 from mcp.server.mcpserver.exceptions import ToolError
 
 import fixtures as fx
@@ -305,3 +306,152 @@ async def test_gear_tool_accepts_wrapped_list(service, fake):
     fake.responses["get_gear"] = {"gear": fx.GEAR}
     out = await performance.gear(service)
     assert out["count"] == 3
+
+
+# --------------------------------------------------- PR 19: running tolerance
+
+TOLERANCE_EXPECTED = {
+    "count": 3,
+    "weeks": [
+        {"date": "2026-09-07", "weekly_running_load": 380.0, "tolerance_low": 290.0, "tolerance_high": 500.0,
+         "tolerance_status": "WITHIN", "is_valid": True},
+        {"date": "2026-09-14", "weekly_running_load": 560.0, "tolerance_low": 295.0, "tolerance_high": 510.0,
+         "tolerance_status": "ABOVE"},
+        {"date": "2026-09-21", "weekly_running_load": 455.4, "tolerance_low": 300.0, "tolerance_high": 520.0,
+         "tolerance_status": "WITHIN", "range_min": 280, "range_max": 540.2},
+    ],
+}
+UNAVAILABLE = {"available": False}
+
+
+def test_shape_running_tolerance_passthrough():
+    out = performance.shape_running_tolerance(fx.RUNNING_TOLERANCE)
+    assert out == TOLERANCE_EXPECTED
+    text = json.dumps(out)
+    assert "1001" not in text and "device" not in text and "notes" not in text
+
+
+def test_shape_running_tolerance_entry_shapes():
+    shape = performance.shape_running_tolerance
+    wrapped = {"userProfilePk": 1, "stats": [{"weekStartDate": "2026-09-28", "load": 2}]}
+    assert shape(wrapped) == {"count": 1, "weeks": [{"date": "2026-09-28", "load": 2}]}
+    assert shape({"calendarDate": "2026-09-28", "load": 1}) == {"count": 1, "weeks": [{"date": "2026-09-28", "load": 1}]}
+    assert shape([{"date": "2026-09-28T00:00:00", "load": 1}])["weeks"] == [{"date": "2026-09-28", "load": 1}]
+    assert shape([{"startDate": "2026-09-21", "load": 1}])["weeks"] == [{"date": "2026-09-21", "load": 1}]
+    both = [{"calendarDate": "2026-09-28", "load": 1}, {"load": 2}]
+    assert shape(both)["weeks"] == [{"load": 2}, {"date": "2026-09-28", "load": 1}]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [None, {}, [], {"x": 1}, "text", [{"calendarDate": "2026-09-28", "toleranceStatus": "NO_DATA"}]],
+)
+def test_shape_running_tolerance_unavailable(raw):
+    assert performance.shape_running_tolerance(raw) == UNAVAILABLE
+
+
+def test_shape_running_tolerance_field_rules():
+    entry = {
+        "calendarDate": "2026-09-28",
+        "longText": "x" * 41,
+        "okText": "y" * 40,
+        "aList": [1, 2],
+        "nested": {"inner": {"deep": 1}, "flat": 2},
+        "deviceID": 5,
+        "id": 6,
+        "userProfilePK": 7,
+        "isValid": False,
+        "loadDTO": {"value": 3.25, "deviceId": 9, "label": "ok", "items": [1]},
+        "none": None,
+        1: 5,
+    }
+    assert performance.shape_running_tolerance([entry])["weeks"] == [
+        {"date": "2026-09-28", "ok_text": "y" * 40, "nested_flat": 2, "is_valid": False, "load_value": 3.2,
+         "load_label": "ok"}
+    ]
+    wide = {"calendarDate": "2026-09-28", **{f"f{i:02d}": i for i in range(25)}}
+    week = performance.shape_running_tolerance([wide])["weeks"][0]
+    assert list(week) == ["date"] + [f"f{i:02d}" for i in range(20)]
+    # a bool alone is not a number: the entry is dropped
+    assert performance.shape_running_tolerance([{"calendarDate": "2026-09-28", "isValid": True}]) == UNAVAILABLE
+
+
+def test_shape_running_tolerance_far_dates():
+    raw = [{"calendarDate": "9999-12-31", "load": 1}, {"calendarDate": "0001-01-01", "load": 2}]
+    out = performance.shape_running_tolerance(raw)
+    assert [w["date"] for w in out["weeks"]] == ["0001-01-01", "9999-12-31"]
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_tool(service, fake):
+    out = await performance.running_tolerance(service, 4, "2026-09-30")
+    assert ("get_running_tolerance", ("2026-09-03", "2026-09-30", "weekly")) in fake.calls
+    assert out["start"] == "2026-09-03" and out["end"] == "2026-09-30" and out["aggregation"] == "weekly"
+    assert out["count"] == 3 and out["weeks"] == TOLERANCE_EXPECTED["weeks"]
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_weeks_bounds(service, fake):
+    assert (await performance.running_tolerance(service, 1, "2026-09-30"))["start"] == "2026-09-24"
+    assert (await performance.running_tolerance(service, 26, "2026-09-30"))["start"] == "2026-04-02"
+    fake.calls.clear()
+    for weeks in (0, 27):
+        with pytest.raises(ToolError, match="weeks must be between 1 and 26"):
+            await performance.running_tolerance(service, weeks, "2026-09-30")
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_check_order(service, fake):
+    with pytest.raises(ToolError, match="weeks must be between 1 and 26"):
+        await performance.running_tolerance(service, 0, "bad")
+    with pytest.raises(ToolError, match="end_date"):
+        await performance.running_tolerance(service, 4, "bad")
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_out_of_range_end(service, fake):
+    with pytest.raises(ToolError, match="out of range"):
+        await performance.running_tolerance(service, 2, "0001-01-10")
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_not_found_is_unavailable(service, fake):
+    fake.fail["get_running_tolerance"] = GarminConnectNotFoundError("API Error 404")
+    out = await performance.running_tolerance(service, 4, "2026-09-30")
+    assert out == {"start": "2026-09-03", "end": "2026-09-30", "aggregation": "weekly", "available": False}
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_library_error_fails_tool(service, fake):
+    fake.fail["get_running_tolerance"] = CONN_ERROR
+    with pytest.raises(ToolError, match="500"):
+        await performance.running_tolerance(service, 4, "2026-09-30")
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_auth_error_fails_tool(service, fake):
+    fake.fail["get_running_tolerance"] = AUTH_ERROR
+    with pytest.raises(ToolError, match="garmin-login.sh"):
+        await performance.running_tolerance(service, 4, "2026-09-30")
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_odd_payload_is_error(service, fake, monkeypatch):
+    def boom(raw):
+        raise KeyError("x")
+
+    monkeypatch.setattr(performance, "shape_running_tolerance", boom)
+    out = await performance.running_tolerance(service, 4, "2026-09-30")
+    assert out == {
+        "start": "2026-09-03", "end": "2026-09-30", "aggregation": "weekly",
+        "error": "unexpected Garmin response for running_tolerance",
+    }
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_captured_empty(service, fake):
+    fake.responses["get_running_tolerance"] = fx.RUNNING_TOLERANCE_EMPTY
+    out = await performance.running_tolerance(service, 8, "2026-09-30")
+    assert out == {"start": "2026-08-06", "end": "2026-09-30", "aggregation": "weekly", "available": False}

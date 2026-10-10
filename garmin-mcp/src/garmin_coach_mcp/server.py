@@ -35,6 +35,8 @@ INSTRUCTIONS = (
     "Before prescribing paces, heart-rate or power targets call get_performance_metrics (race predictions, lactate threshold, zones, VO2max trend). "
     "For weight, body-fat or nutrition goals call get_body_composition (weigh-in trend) and get_nutrition "
     "(calories, macros, meals, hydration); Garmin is the primary source for weight. "
+    "Before raising weekly running volume call get_running_tolerance (weekly running load vs. tolerance). "
+    "get_activity also returns the weather and, for strength activities, the sets recorded on the watch. "
     "Dates are YYYY-MM-DD in the athlete's local time zone; "
     "omit them for today. create_workout, schedule_workout, unschedule_workout and log_weight change the "
     "athlete's Garmin data: show the plan or value and get explicit confirmation first."
@@ -185,6 +187,18 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         provide contain an "error" or "available": false instead of failing the whole call."""
         return await performance.performance_metrics(service, weeks)
 
+    @tool("get_running_tolerance", _read("Running tolerance"))
+    async def get_running_tolerance(
+        weeks: Annotated[int, Field(ge=1, le=26, description="Weeks ending at end_date (1-26).")] = 8,
+        end_date: DateArg = None,
+    ) -> Any:
+        """Garmin's running tolerance per week: the athlete's weekly running load against the load
+        Garmin estimates they can currently tolerate (watches with Running Tolerance). Garmin does not
+        document this payload, so each week lists Garmin's own fields in snake_case (identifiers
+        dropped). Use it before raising weekly running volume. Without the feature or data the result
+        is "available": false."""
+        return await performance.running_tolerance(service, weeks, end_date)
+
     @tool("get_personal_records", _read("Personal records"))
     async def get_personal_records() -> Any:
         """Garmin personal records: type (1k, 1_mile, 5k, 10k, half_marathon, marathon,
@@ -252,7 +266,11 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         activity_id: Annotated[int, Field(gt=0, description="Activity id from list_activities.")],
     ) -> Any:
         """One activity in detail: summary metrics, laps/splits (pace or speed, HR, power,
-        cadence, workout step) and time in each heart-rate zone."""
+        cadence, workout step), time in each heart-rate zone and the weather during the activity
+        (temperature, feels-like, humidity, wind, conditions). For strength activities also the sets
+        recorded on the watch: exercise, reps, weight (kg) and duration per set, plus a summary per
+        exercise, and the active-set and rep totals of the activity. A part Garmin cannot provide is
+        "available": false or "error"."""
         return await activities.get_activity(service, activity_id)
 
     # ------------------------------------------------------------ workouts
