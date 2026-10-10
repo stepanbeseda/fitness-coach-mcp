@@ -179,8 +179,8 @@ class OAuthServer:
         self.audit.event("auth.login_origin_denied", src=ctx.source, ip=ctx.client_ip if ctx.via_funnel else None)
         return error_page(
             403,
-            "Přístup odepřen",
-            "Přihlášení je dostupné jen z tvých zařízení v tailnetu. Zapni Tailscale a otevři odkaz znovu.",
+            "Access denied",
+            "Sign-in is only available from your devices on the tailnet. Turn on Tailscale and open the link again.",
         )
 
     def _redirect(self, uri: str, params: dict[str, str | None], status: int) -> RedirectResponse:
@@ -237,7 +237,7 @@ class OAuthServer:
         if denied := self._login_origin_denied(ctx):
             return denied
         if self._limit_authorize.hit(ctx.tailscale_login or ctx.client_ip or "unknown"):
-            return error_page(429, "Příliš mnoho požadavků", "Zkus to prosím za chvíli.")
+            return error_page(429, "Too many requests", "Please try again in a moment.")
         if request.method == "POST":
             return await self._authorize_submit(request, ctx)
         return self._authorize_start(request, ctx)
@@ -248,14 +248,14 @@ class OAuthServer:
             client_id = query_single(params, "client_id")
             redirect_uri = query_single(params, "redirect_uri")
         except DuplicateParameter:
-            return error_page(400, "Neplatný požadavek", "Parametr client_id nebo redirect_uri je uveden víckrát.")
+            return error_page(400, "Invalid request", "The client_id or redirect_uri parameter is given more than once.")
         client = self.settings.clients.get(client_id or "")
         if client is None:
             self.audit.event("oauth.authorize_unknown_client", client_id=(client_id or "")[:200], src=ctx.source)
-            return error_page(400, "Neznámý klient", "Tahle aplikace není na bráně povolená.")
+            return error_page(400, "Unknown client", "This application is not allowed on the gateway.")
         if not redirect_uri or not redirect_uri_allowed(client, redirect_uri):
             self.audit.event("oauth.authorize_bad_redirect", client=client.name, src=ctx.source)
-            return error_page(400, "Neplatné přesměrování", "Adresa redirect_uri neodpovídá registrovanému klientovi.")
+            return error_page(400, "Invalid redirect", "The redirect_uri does not match the registered client.")
 
         # From here on errors go back to the (verified) client redirect URI.
         try:
@@ -323,31 +323,31 @@ class OAuthServer:
         body = await read_body(request, MAX_FORM_BYTES)
         form = parse_form(body) if body is not None else None
         if form is None:
-            return error_page(400, "Neplatný požadavek", "Formulář se nepodařilo zpracovat.")
+            return error_page(400, "Invalid request", "The form could not be processed.")
         try:
             txn = form_single(form, "txn")
             decision = form_single(form, "decision")
             password = form_single(form, "password") or ""
             code = form_single(form, "totp") or ""
         except DuplicateParameter:
-            return error_page(400, "Neplatný požadavek", "Parametr je uveden víckrát.")
+            return error_page(400, "Invalid request", "A parameter is given more than once.")
         now = int(time.time())
         req = self.store.get_auth_request(hash_token(txn), now) if txn else None
         if req is None:
-            return error_page(400, "Žádost vypršela", "Začni přihlášení znovu z aplikace (Claude).")
+            return error_page(400, "Request expired", "Start the sign-in again from the app (Claude).")
         cookie = request.cookies.get(self._cookie_name(req.txn_hash))
         if not cookie or not hmac.compare_digest(hash_token(cookie), req.csrf_hash):
             self.audit.event("auth.csrf_failed", src=ctx.source)
-            return error_page(400, "Neplatný formulář", "Chybí ochranná cookie. Začni přihlášení znovu z aplikace.")
+            return error_page(400, "Invalid form", "The protection cookie is missing. Start the sign-in again from the app.")
         if self.settings.login_tailnet_only and (req.tailscale_login or "").casefold() != (
             ctx.tailscale_login or ""
         ).casefold():
-            return error_page(403, "Přístup odepřen", "Žádost patří jinému uživateli.")
+            return error_page(403, "Access denied", "This request belongs to another user.")
         client = self.settings.clients.get(req.client_id)
         backend = self.settings.backend_for_resource(req.resource)
         if client is None or backend is None:
             self.store.delete_auth_request(req.txn_hash)
-            return error_page(400, "Neplatná žádost", "Klient nebo resource už není nakonfigurovaný.")
+            return error_page(400, "Invalid request", "The client or resource is no longer configured.")
 
         def again(message: str, status: int) -> Response:
             return consent_page(
@@ -366,20 +366,20 @@ class OAuthServer:
             self.audit.event("oauth.authorize_denied", client=client.name, resource=backend.name)
             return self._redirect_error(req.redirect_uri, req.state, "access_denied", status=303)
         if decision != "approve":
-            return error_page(400, "Neplatný požadavek", "Neznámá volba.")
+            return error_page(400, "Invalid request", "Unknown choice.")
         if req.attempts >= MAX_ATTEMPTS_PER_REQUEST:
             self.store.delete_auth_request(req.txn_hash)
-            return error_page(400, "Příliš mnoho pokusů", "Začni přihlášení znovu z aplikace.")
+            return error_page(400, "Too many attempts", "Start the sign-in again from the app.")
         locked = self.guard.locked_for(now)
         if locked:
             self.audit.event("auth.login_locked", retry_after=locked, src=ctx.source)
-            return again(f"Přihlášení je dočasně zablokované. Zkus to za {max(1, round(locked / 60))} min.", 429)
+            return again(f"Sign-in is temporarily locked. Try again in {max(1, round(locked / 60))} min.", 429)
 
         ok = await anyio.to_thread.run_sync(self.guard.attempt, password, code)
         if not ok:
             self.store.bump_auth_request_attempts(req.txn_hash)
             self.audit.event("auth.login_failed", client=client.name, src=ctx.source)
-            return again("Neplatné heslo nebo kód.", 401)
+            return again("Invalid password or code.", 401)
 
         self.store.delete_auth_request(req.txn_hash)
         auth_code = new_token()

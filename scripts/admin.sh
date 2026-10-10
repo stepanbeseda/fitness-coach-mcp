@@ -12,7 +12,7 @@ require_docker
 case "${1:-}" in
   audit)
     lines="${2:-50}"
-    [[ "$lines" =~ ^[0-9]+$ ]] || die "N musí být číslo."
+    [[ "$lines" =~ ^[0-9]+$ ]] || die "N must be a number."
     dc exec -T gateway tail -n "$lines" /data/audit.jsonl
     ;;
   grants|mint-token|check-config)

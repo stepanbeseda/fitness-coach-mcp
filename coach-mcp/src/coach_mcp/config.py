@@ -11,6 +11,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from .messages import DEFAULT_LANGUAGE, LANGUAGES
+
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 _TIME_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
@@ -114,6 +116,8 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8000
     timezone: str = "Europe/Prague"
+    # Language of the text sent to the athlete (morning briefing push): a key of messages.LANGUAGES.
+    language: str = DEFAULT_LANGUAGE
     log_level: str = "INFO"
     # Optional Host allowlist (enables the SDK's DNS-rebinding check when set).
     allowed_hosts: list[str] = field(default_factory=list)
@@ -159,6 +163,10 @@ class Settings:
             ZoneInfo(timezone)
         except Exception:
             raise ValueError(f"TZ is not a known time zone: {timezone!r}") from None
+
+        language = _opt(env, "COACH_LANGUAGE", DEFAULT_LANGUAGE).lower()
+        if language not in LANGUAGES:
+            raise ValueError(f"COACH_LANGUAGE must be one of {', '.join(LANGUAGES)}")
 
         log_level = _text(env, "COACH_MCP_LOG_LEVEL", "INFO").upper()
         if log_level not in LOG_LEVELS:
@@ -218,6 +226,7 @@ class Settings:
             host=_text(env, "COACH_MCP_HOST", "0.0.0.0"),
             port=port,
             timezone=timezone,
+            language=language,
             log_level=log_level,
             allowed_hosts=_split(env.get("COACH_MCP_ALLOWED_HOSTS")),
             telegram_chat_id=telegram_chat_id,

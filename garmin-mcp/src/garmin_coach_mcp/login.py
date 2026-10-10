@@ -77,9 +77,9 @@ def _enable_utf8_erase() -> None:
 
 def _input_problem(value: str) -> str | None:
     if any(0xD800 <= ord(ch) <= 0xDFFF for ch in value):
-        return "obsahuje rozbitý znak (diakritika nedorazila jako UTF-8, typicky po opravě Backspacem)"
+        return "contains a broken character (an accented letter did not arrive as UTF-8, typically after a Backspace correction)"
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
-        return "obsahuje řídicí znak (terminál neprovedl Backspace nebo šipku)"
+        return "contains a control character (the terminal did not process Backspace or an arrow key)"
     return None
 
 
@@ -91,9 +91,9 @@ def _prompt(label: str, *, secret: bool) -> str:
         problem = _input_problem(value)
         if problem is None:
             return value
-        print(f"{label} {problem}. Zadej ho znovu bez oprav, případně zkontroluj rozložení klávesnice.",
+        print(f"{label} {problem}. Enter it again without corrections, or check your keyboard layout.",
               file=sys.stderr)
-    raise ValueError(f"{label}: neplatný vstup")
+    raise ValueError(f"{label}: invalid input")
 
 
 def _normalize_tokens_dir(raw: str) -> Path:
@@ -113,14 +113,14 @@ def _ensure_writable(tokens_dir: Path) -> str | None:
     """Create the token directory and prove it is writable before contacting Garmin,
     so a successful login is never lost on a bad path."""
     if tokens_dir.is_symlink():
-        return f"{tokens_dir} je symlink, zvol jiný adresář"
+        return f"{tokens_dir} is a symlink, choose a different directory"
     try:
         _prepare_dir(tokens_dir)
         probe = tokens_dir / ".write-test"
         probe.write_text("", encoding="utf-8")
         probe.unlink()
     except OSError as exc:
-        return f"do {tokens_dir} nejde zapisovat ({exc.strerror or exc})"
+        return f"{tokens_dir} is not writable ({exc.strerror or exc})"
     return None
 
 
@@ -133,9 +133,9 @@ def _describe_tokens(tokens_dir: Path) -> str:
     access = _jwt_exp(data.get("di_token"))
     refresh = _jwt_exp(data.get("di_refresh_token"))
     if access:
-        parts.append(f"access token do {access:%Y-%m-%d %H:%M} (obnovuje se automaticky)")
+        parts.append(f"access token until {access:%Y-%m-%d %H:%M} (renewed automatically)")
     if refresh:
-        parts.append(f"refresh token do {refresh:%Y-%m-%d %H:%M}")
+        parts.append(f"refresh token until {refresh:%Y-%m-%d %H:%M}")
     return "; ".join(parts)
 
 
@@ -146,23 +146,23 @@ def _verify(tokens_dir: Path) -> str:
     summary = client.get_user_summary(date.today().isoformat())
     steps = summary.get("totalSteps") if isinstance(summary, dict) else None
     who = client.get_full_name() or "?"
-    return f"přihlášen jako {who}; dnešní kroky: {steps if steps is not None else 'n/a'}"
+    return f"logged in as {who}; steps today: {steps if steps is not None else 'n/a'}"
 
 
 def interactive_login(tokens_dir: Path, email: str | None) -> int:
-    print("Garmin Connect login pro fitness-coach-mcp.")
-    print(f"Heslo se nikam neukládá; uloží se jen tokeny do {tokens_dir / TOKEN_FILE_NAME} (0600).")
+    print("Garmin Connect login for fitness-coach-mcp.")
+    print(f"The password is not stored anywhere; only the tokens are saved to {tokens_dir / TOKEN_FILE_NAME} (0600).")
     if problem := _ensure_writable(tokens_dir):
-        print(f"Tokeny nepůjde uložit: {problem}. Použij např. --tokens-dir ~/garmin-tokens.", file=sys.stderr)
+        print(f"Cannot save the tokens: {problem}. Use e.g. --tokens-dir ~/garmin-tokens.", file=sys.stderr)
         return EXIT_FAIL
     try:
         email = email or _prompt("Garmin e-mail", secret=False)
-        password = _prompt("Garmin heslo", secret=True)
+        password = _prompt("Garmin password", secret=True)
     except ValueError as exc:
-        print(f"{exc}. Do Garminu jsem nic neposlal.", file=sys.stderr)
+        print(f"{exc}. Nothing was sent to Garmin.", file=sys.stderr)
         return EXIT_FAIL
     if not email or not password:
-        print("E-mail i heslo jsou povinné.", file=sys.stderr)
+        print("Both e-mail and password are required.", file=sys.stderr)
         return EXIT_FAIL
 
     client = Garmin(email=email, password=password, return_on_mfa=True)
@@ -171,61 +171,61 @@ def interactive_login(tokens_dir: Path, email: str | None) -> int:
         status, state = client.login()
         if status == "needs_mfa":
             for attempt in range(1, MAX_MFA_ATTEMPTS + 1):
-                code = _prompt("MFA kód (z e-mailu / SMS / aplikace)", secret=False)
+                code = _prompt("MFA code (from e-mail / SMS / app)", secret=False)
                 try:
                     client.resume_login(state, code)
                     break
                 except GarminConnectAuthenticationError:
                     if attempt == MAX_MFA_ATTEMPTS:
                         raise
-                    print("Kód nesedí, zkus to znovu.", file=sys.stderr)
+                    print("Wrong code, try again.", file=sys.stderr)
         client.password = None
         _prepare_dir(tokens_dir)
         client.client.dump(str(tokens_dir))
-        print("Tokeny uložené, ověřuji...")
+        print("Tokens saved, verifying...")
         print("OK:", _verify(tokens_dir))
         details = _describe_tokens(tokens_dir)
         if details:
-            print("Platnost:", details)
+            print("Validity:", details)
         return EXIT_OK
     except GarminConnectAuthenticationError as exc:
-        print(f"Přihlášení selhalo (špatný e-mail/heslo/MFA kód nebo zamčený účet): {exc}", file=sys.stderr)
+        print(f"Login failed (wrong e-mail/password/MFA code or locked account): {exc}", file=sys.stderr)
         return EXIT_BAD_CREDENTIALS
     except GarminConnectTooManyRequestsError:
         print(
-            "Garmin/Cloudflare přihlášení blokuje (HTTP 429). Zkus to za pár minut, případně se přihlas "
-            "z domácí sítě a token importuj (garmin-mcp/README.md, sekce 'Záložní login').",
+            "Garmin/Cloudflare is blocking the login (HTTP 429). Try again in a few minutes, or log in "
+            "from your home network and import the token (garmin-mcp/README.md, section 'Fallback login').",
             file=sys.stderr,
         )
         return EXIT_RATE_LIMITED
     except GarminConnectConnectionError as exc:
-        print(f"Chyba spojení s Garminem: {exc}", file=sys.stderr)
+        print(f"Connection error talking to Garmin: {exc}", file=sys.stderr)
         return EXIT_FAIL
     except ValueError as exc:
-        print(f"{exc}. Přihlášení zrušeno.", file=sys.stderr)
+        print(f"{exc}. Login cancelled.", file=sys.stderr)
         return EXIT_FAIL
 
 
 def check(tokens_dir: Path) -> int:
     token_file = tokens_dir / TOKEN_FILE_NAME
     if not token_file.is_file() or token_file.stat().st_size == 0:
-        print(f"CHYBÍ: {token_file} neexistuje. Spusť scripts/garmin-login.sh.")
+        print(f"MISSING: {token_file} does not exist. Run scripts/garmin-login.sh.")
         return EXIT_FAIL
     try:
         info = _verify(tokens_dir)
     except GarminConnectAuthenticationError:
-        print("NEPLATNÉ: Garmin uložené tokeny odmítl (vypršely/odvolané). Spusť scripts/garmin-login.sh.")
+        print("INVALID: Garmin rejected the stored tokens (expired/revoked). Run scripts/garmin-login.sh.")
         return EXIT_FAIL
     except GarminConnectTooManyRequestsError:
-        print("NEOVĚŘENO: Garmin vrací HTTP 429 (rate limit), zkus to později.")
+        print("UNVERIFIED: Garmin returns HTTP 429 (rate limit), try again later.")
         return EXIT_FAIL
     except GarminConnectConnectionError as exc:
-        print(f"NEOVĚŘENO: chyba spojení s Garminem: {exc}")
+        print(f"UNVERIFIED: connection error talking to Garmin: {exc}")
         return EXIT_FAIL
     print("OK:", info)
     details = _describe_tokens(tokens_dir)
     if details:
-        print("Platnost:", details)
+        print("Validity:", details)
     return EXIT_OK
 
 
@@ -238,11 +238,11 @@ def import_tokens(tokens_dir: Path, source: str, verify: bool) -> int:
     try:
         holder.loads(raw)
     except GarminConnectConnectionError:
-        print("Soubor nevypadá jako garmin_tokens.json z python-garminconnect 0.3.x.", file=sys.stderr)
+        print("The file does not look like a garmin_tokens.json from python-garminconnect 0.3.x.", file=sys.stderr)
         return EXIT_FAIL
     _prepare_dir(tokens_dir)
     holder.dump(str(tokens_dir))
-    print(f"Tokeny importované do {tokens_dir / TOKEN_FILE_NAME}.")
+    print(f"Tokens imported to {tokens_dir / TOKEN_FILE_NAME}.")
     return check(tokens_dir) if verify else EXIT_OK
 
 
@@ -268,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
             return import_tokens(tokens_dir, args.import_file, verify=not args.no_verify)
         return interactive_login(tokens_dir, args.email)
     except KeyboardInterrupt:
-        print("\nPřerušeno.", file=sys.stderr)
+        print("\nInterrupted.", file=sys.stderr)
         return EXIT_FAIL
 
 

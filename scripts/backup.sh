@@ -28,18 +28,18 @@ done
 
 dir="${opt_dir:-${BACKUP_DIR:-}}"
 keep="${opt_keep:-${BACKUP_KEEP:-14}}"
-[[ -n "$dir" ]] || die "Nastav BACKUP_DIR v .env: absolutní cesta k adresáři mimo repo."
-[[ "$dir" == /* ]] || die "BACKUP_DIR musí být absolutní cesta (je: $dir)."
+[[ -n "$dir" ]] || die "Set BACKUP_DIR in .env: an absolute path to a directory outside the repo."
+[[ "$dir" == /* ]] || die "BACKUP_DIR must be an absolute path (is: $dir)."
 real_dir="$(realpath -m -- "$dir")"
 real_repo="$(realpath -- "$REPO_ROOT")"
 if [[ "$real_dir" == "$real_repo" || "$real_dir" == "$real_repo"/* ]]; then
-  die "BACKUP_DIR nesmí být uvnitř repa ($REPO_ROOT): archivy obsahují osobní data a Garmin tokeny."
+  die "BACKUP_DIR must not be inside the repo ($REPO_ROOT): the archives hold personal data and Garmin tokens."
 fi
-[[ "$keep" =~ ^[1-9][0-9]{0,2}$ ]] || die "BACKUP_KEEP musí být číslo 1 až 999."
+[[ "$keep" =~ ^[1-9][0-9]{0,2}$ ]] || die "BACKUP_KEEP must be a number from 1 to 999."
 
 mkdir -p -- "$dir"
 exec 9>>"$dir/.backup.lock"
-flock -n 9 || die "Jiná záloha do $dir právě běží."
+flock -n 9 || die "Another backup into $dir is already running."
 # Under the lock no other run owns a staging directory: what is left is from a killed run (it holds copies of the data).
 find "$dir" -mindepth 1 -maxdepth 1 -type d -name '.backup-tmp.*' -exec rm -rf -- {} +
 
@@ -60,11 +60,11 @@ take_part() {
     return 0
   fi
   if [[ "$part" == garmin_tokens.json ]] && grep -q 'No such file' "$err"; then
-    problems+=("$part: chybí Garmin tokeny (přihlas se: scripts/garmin-login.sh)")
+    problems+=("$part: Garmin tokens missing (log in: scripts/garmin-login.sh)")
     return 0
   fi
   line="$(sed '/^[[:space:]]*$/d' "$err" | tail -n 1)"
-  problems+=("$part: $svc: ${line:-prázdný výstup}")
+  problems+=("$part: $svc: ${line:-empty output}")
 }
 
 take_part coach.db coach-mcp python -m coach_mcp backup
@@ -76,21 +76,21 @@ import json, sys
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
 sys.exit(0 if isinstance(doc, dict) and isinstance(doc.get("di_token"), str) and doc["di_token"] else 1)
 ' "$stage/garmin_tokens.json" 2>/dev/null; then
-  problems+=("garmin_tokens.json: není platný soubor tokenů")
+  problems+=("garmin_tokens.json: not a valid token file")
 fi
 
 if [[ ${#problems[@]} -gt 0 ]]; then
   for problem in "${problems[@]}"; do
     fail "$problem"
   done
-  die "Záloha nevytvořena (${#problems[@]} problémů); starší archivy zůstaly beze změny."
+  die "No backup written (${#problems[@]} problem(s)); older archives left unchanged."
 fi
 
 tar -C "$stage" -czf "$stage/archive.tgz" coach.db gateway.sqlite3 garmin_tokens.json \
-  || die "Archiv nejde vytvořit (tar selhal; místo na disku?); starší archivy zůstaly beze změny."
+  || die "Cannot create the archive (tar failed; disk space?); older archives left unchanged."
 chmod 600 "$stage/archive.tgz"
-[[ ! -e "$dir/$name" ]] || die "Archiv $name už existuje (dvě zálohy ve stejné sekundě?)."
-ln "$stage/archive.tgz" "$dir/$name" 2>/dev/null || die "Archiv $name nejde zapsat do $dir."
+[[ ! -e "$dir/$name" ]] || die "Archive $name already exists (two backups in the same second?)."
+ln "$stage/archive.tgz" "$dir/$name" 2>/dev/null || die "Cannot write archive $name to $dir."
 
 # Rotation: the archive written by this run is never touched. Of the other files that look like our archives
 # the newest keep-1 stay, so at most $keep archives remain; anything else in the directory is never touched.
@@ -101,14 +101,14 @@ done < <(find "$dir" -maxdepth 1 -type f -name 'fitness-coach-backup-*.tgz' -pri
 # A newer name than the one just written (clock was ahead, foreign archive) would pose as the freshest backup.
 for file in "${others[@]}"; do
   if [[ "$file" > "$name" ]]; then
-    warn "Archiv $file má novější čas než právě vytvořený $name (posunuté hodiny nebo cizí archiv?); zkontroluj BACKUP_DIR."
+    warn "Archive $file has a newer time than the one just written, $name (clock was ahead or a foreign archive?); check BACKUP_DIR."
   fi
 done
 excess=$(( ${#others[@]} - (keep - 1) ))
 for (( i = 0; i < excess; i++ )); do
   rm -f -- "$dir/${others[$i]}"
-  [[ $QUIET == 1 ]] || info "Smazán starý archiv: ${others[$i]}"
+  [[ $QUIET == 1 ]] || info "Removed old archive: ${others[$i]}"
 done
-[[ -f "$dir/$name" ]] || die "Archiv $name po rotaci chybí."
+[[ -f "$dir/$name" ]] || die "Archive $name is missing after rotation."
 
-[[ $QUIET == 1 ]] || ok "Záloha: $dir/$name ($(du -h -- "$dir/$name" | cut -f1))"
+[[ $QUIET == 1 ]] || ok "Backup: $dir/$name ($(du -h -- "$dir/$name" | cut -f1))"

@@ -22,7 +22,7 @@ from coach_mcp.store import MIGRATIONS, SCHEMA_VERSION, Store
 DAY = date(2026, 10, 7)
 NOW = datetime(2026, 10, 9, 10, 15, 0, tzinfo=UTC)
 LATER = datetime(2026, 10, 9, 11, 0, 0, tzinfo=UTC)
-ASIDE = "pred-obnovou-20261009T101500Z"
+ASIDE = "before-restore-20261009T101500Z"
 
 
 def make_db(path: Path, titles=("Run a marathon", "Sleep 8 h"), notes: int = 8) -> Path:
@@ -547,7 +547,7 @@ def test_restore_back_from_the_aside_copy(tmp_path):
 
     assert restore_command(target, str(vol / f"coach.db.{ASIDE}"), now=lambda: LATER) == 0
     assert titles_on_disk(target) == ["Original"]
-    assert (vol / "coach.db.pred-obnovou-20261009T110000Z").exists()
+    assert (vol / "coach.db.before-restore-20261009T110000Z").exists()
 
 
 def test_restore_applies_a_hot_journal_paired_with_the_source_copy(tmp_path):

@@ -50,7 +50,7 @@ def _headers(extra_form_action: str | None = None) -> dict[str, str]:
 
 def _page(title: str, body: str) -> str:
     return (
-        '<!doctype html><html lang="cs"><head><meta charset="utf-8">'
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         '<meta name="robots" content="noindex">'
         f"<title>{escape(title)}</title><style>{_STYLE}</style></head>"
@@ -78,30 +78,30 @@ def consent_page(
     redirect_origin = f"{redirect.scheme}://{redirect.netloc}"
     error_html = f'<p class="error" role="alert">{escape(error)}</p>' if error else ""
     body = f"""
-<h1>Povolit přístup?</h1>
-<p class="muted">fitness-coach-mcp · OAuth přihlášení</p>
+<h1>Allow access?</h1>
+<p class="muted">fitness-coach-mcp · OAuth sign-in</p>
 {error_html}
 <dl>
-  <dt>Aplikace</dt><dd>{escape(client_name)}</dd>
-  <dt>Klient</dt><dd class="muted">{escape(client_id)}</dd>
-  <dt>Přesměrování</dt><dd class="muted">{escape(redirect_origin)}</dd>
-  <dt>Přístup k</dt><dd><strong>{escape(resource_title)}</strong><br><span class="muted">{escape(resource)}</span></dd>
+  <dt>Application</dt><dd>{escape(client_name)}</dd>
+  <dt>Client</dt><dd class="muted">{escape(client_id)}</dd>
+  <dt>Redirect</dt><dd class="muted">{escape(redirect_origin)}</dd>
+  <dt>Access to</dt><dd><strong>{escape(resource_title)}</strong><br><span class="muted">{escape(resource)}</span></dd>
 </dl>
 <form method="post" action="/authorize" autocomplete="off">
   <input type="hidden" name="txn" value="{escape(txn)}">
-  <label for="password">Heslo</label>
+  <label for="password">Password</label>
   <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
-  <label for="totp">Kód z autentizátoru</label>
+  <label for="totp">Authenticator code</label>
   <input id="totp" name="totp" inputmode="numeric" pattern="[0-9 ]{{6,7}}" maxlength="7"
          autocomplete="one-time-code" required>
   <div class="row">
-    <button type="submit" name="decision" value="deny" formnovalidate>Zamítnout</button>
-    <button type="submit" name="decision" value="approve" class="primary">Povolit</button>
+    <button type="submit" name="decision" value="deny" formnovalidate>Deny</button>
+    <button type="submit" name="decision" value="approve" class="primary">Allow</button>
   </div>
 </form>
 """
     return HTMLResponse(
-        _page("Povolit přístup – fitness-coach-mcp", body),
+        _page("Allow access – fitness-coach-mcp", body),
         status_code=status,
         headers=_headers(redirect_origin),
     )

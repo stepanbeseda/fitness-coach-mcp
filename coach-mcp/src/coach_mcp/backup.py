@@ -190,7 +190,7 @@ def restore_command(
     """Replace the database at ``db_path`` with a validated backup (the service must be stopped).
 
     ``source`` is ``-`` (stdin) or a file. The previous database and its journal/WAL files stay
-    next to it as ``<name>.pred-obnovou-<UTC time>[-journal|-wal|-shm]`` (SQLite pairs a hot
+    next to it as ``<name>.before-restore-<UTC time>[-journal|-wal|-shm]`` (SQLite pairs a hot
     journal or WAL with its database by name, so the side copy is restorable too). Exit codes:
     0 ok, 1 failed (``nothing changed`` unless the message says otherwise), 2 refused.
     """
@@ -228,7 +228,7 @@ def _restore(db_path: Path, source: str, now: Callable[[], datetime], stage_in: 
             out.flush()
             os.fsync(out.fileno())
         del data
-        aside = f"{name}.pred-obnovou-{now().strftime('%Y%m%dT%H%M%SZ')}"
+        aside = f"{name}.before-restore-{now().strftime('%Y%m%dT%H%M%SZ')}"
         if any((parent / f"{aside}{s}").exists() for s in ("", *_SIDECARS)):
             raise SnapshotError("previous files from this second already exist; retry in a second")
         existing = [s for s in ("", *_SIDECARS) if (parent / f"{name}{s}").exists()]

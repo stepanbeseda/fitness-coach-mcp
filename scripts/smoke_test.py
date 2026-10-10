@@ -92,7 +92,7 @@ def main() -> int:
         tools = [t["name"] for t in hevy.request("tools/list")["tools"]]
         print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
         assert "feedback" not in tools, "denylisted tool leaked"
-        section("Hevy: poslední 3 workouty (z první stránky, seřazeno podle data)")
+        section("Hevy: last 3 workouts (from the first page, sorted by date)")
         text = hevy.call("get-workouts", {"page": 1, "page_size": 10})
         try:
             data = json.loads(text)
@@ -101,7 +101,7 @@ def main() -> int:
             for w in workouts[:3]:
                 count = w.get("exercise_count", len(w.get("exercises", [])))
                 print(f"- {w.get('start_time') or w.get('startTime')} | {w.get('title')} | "
-                      f"{count} cviků, {w.get('set_count', '?')} sérií, {w.get('duration', '?')}")
+                      f"{count} exercises, {w.get('set_count', '?')} sets, {w.get('duration', '?')}")
         except (ValueError, AttributeError, TypeError):
             print(text[:1500])
     except Exception as exc:  # noqa: BLE001 - report and continue with Garmin
@@ -114,9 +114,9 @@ def main() -> int:
         info = garmin.initialize()
         tools = [t["name"] for t in garmin.request("tools/list")["tools"]]
         print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
-        section(f"Garmin: recovery snapshot {date.today().isoformat()} (HRV, spánek, readiness, Body Battery)")
+        section(f"Garmin: recovery snapshot {date.today().isoformat()} (HRV, sleep, readiness, Body Battery)")
         print(garmin.call("get_recovery_snapshot", {})[:3000])
-        section("Garmin: výkonnostní metriky (předpovědi závodů, tepové zóny)")
+        section("Garmin: performance metrics (race predictions, heart-rate zones)")
         text = garmin.call("get_performance_metrics", {})
         try:
             data = json.loads(text)
@@ -124,11 +124,11 @@ def main() -> int:
                 print(f"{key}: {json.dumps(data.get(key), ensure_ascii=False)[:2000]}")
         except (ValueError, AttributeError):
             print(text[:3000])
-        section("Garmin: tělesné složení za posledních 30 dní (souhrn) a dnešní výživa/hydratace")
+        section("Garmin: body composition over the last 30 days (summary) and today's nutrition/hydration")
         text = garmin.call("get_body_composition", {})
         try:
             data = json.loads(text)
-            print(f"body_composition: {data.get('count')} dní, summary={json.dumps(data.get('summary'), ensure_ascii=False)}"
+            print(f"body_composition: {data.get('count')} days, summary={json.dumps(data.get('summary'), ensure_ascii=False)}"
                   if data.get("count") else f"body_composition: {json.dumps(data, ensure_ascii=False)[:500]}")
         except (ValueError, AttributeError):
             print(text[:1500])
@@ -137,7 +137,7 @@ def main() -> int:
         failures += 1
         print(f"FAIL: {exc}")
 
-    section("Kouč: initialize + tools/list")
+    section("Coach: initialize + tools/list")
     coach = McpSession(f"{base}/coach/mcp", coach_token)
     coach_ready = False
     try:
@@ -145,51 +145,51 @@ def main() -> int:
         coach_ready = True
         tools = [t["name"] for t in coach.request("tools/list")["tools"]]
         print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
-        section("Kouč: get_coach_context (jen počty)")
+        section("Coach: get_coach_context (counts only)")
         data = json.loads(coach.call("get_coach_context", {}))
         print(f"today: {data['today']} | week: {data['week']['iso_week']} ({data['week']['start']} - {data['week']['end']})")
         print(", ".join(f"{key}: {len(data[key])}" for key in ("goals", "constraints", "sessions", "notes")))
-        section("Kouč: get_daily_briefing (jen verdikt, chybějící data a stav Garminu)")
+        section("Coach: get_daily_briefing (verdict, missing data and Garmin state only)")
         data = json.loads(coach.call("get_daily_briefing", {}))
         print(f"briefing: date {data['date']} | verdict {data['verdict']} | missing {', '.join(data['missing']) or '-'} | "
               f"garmin auth {data['garmin']['auth']} | calls {','.join(data['garmin']['calls'].values())}")
-        section("Kouč: historie (jen počty a dostupnost)")
+        section("Coach: history (counts and availability only)")
         data = json.loads(coach.call("get_trends", {"metrics": ["hrv_last_night_ms"], "period": "day"}))
-        print(f"get_trends: {data['start']} - {data['end']} | dní s daty {data['days_with_data']} | "
-              f"nocí s HRV {data['metrics']['hrv_last_night_ms']['summary']['n']}")
+        print(f"get_trends: {data['start']} - {data['end']} | days with data {data['days_with_data']} | "
+              f"nights with HRV {data['metrics']['hrv_last_night_ms']['summary']['n']}")
         data = json.loads(coach.call("get_weekly_report", {}))
         endurance = data["endurance"]
-        print(f"get_weekly_report: {data['week']['iso_week']} | aktivit {endurance.get('total', {}).get('count', 0)} | "
-              f"sporty {', '.join(endurance.get('by_sport', {})) or '-'} | "
-              + ", ".join(f"{key} {'ne' if data[key].get('available') is False else 'ano'}"
+        print(f"get_weekly_report: {data['week']['iso_week']} | activities {endurance.get('total', {}).get('count', 0)} | "
+              f"sports {', '.join(endurance.get('by_sport', {})) or '-'} | "
+              + ", ".join(f"{key} {'no' if data[key].get('available') is False else 'yes'}"
                           for key in ("sleep", "hrv", "resting_hr", "adherence", "strength")))
         data = json.loads(coach.call("get_strength_progress", {}))
         covered = data["coverage"] or {}
         print(f"get_strength_progress: {data['start']} - {data['end']} | "
-              f"dostupné {'ano' if data['available'] else 'ne'} | cviků {len(data['exercises'])} | "
-              f"pokrytí {covered.get('from', '-')} - {covered.get('through', '-')}")
+              f"available {'yes' if data['available'] else 'no'} | exercises {len(data['exercises'])} | "
+              f"coverage {covered.get('from', '-')} - {covered.get('through', '-')}")
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")
 
     if coach_ready:
-        section("Kouč: počasí (bez souřadnic)")
+        section("Coach: weather (no coordinates)")
         try:
             data = json.loads(coach.call("get_weather_forecast", {}))
             first = data["days"][0] if data["days"] else {}
             summary = first.get("summary", {})
-            print(f"počasí: {data['timezone']} | dní {len(data['days'])} | {first.get('date')} "
-                  f"východ {first.get('sunrise')} západ {first.get('sunset')} | "
-                  f"teplota {summary.get('temperature_min_c')} až {summary.get('temperature_max_c')} °C | "
-                  f"oken venku {len(data['best_outdoor_windows'])} | načteno {data['fetched_at']}")
+            print(f"weather: {data['timezone']} | days {len(data['days'])} | {first.get('date')} "
+                  f"sunrise {first.get('sunrise')} sunset {first.get('sunset')} | "
+                  f"temperature {summary.get('temperature_min_c')} to {summary.get('temperature_max_c')} °C | "
+                  f"outdoor windows {len(data['best_outdoor_windows'])} | fetched {data['fetched_at']}")
         except Exception as exc:  # noqa: BLE001
             if "No home location configured" in str(exc):
-                print("počasí: poloha není nastavená (COACH_HOME_LATITUDE a COACH_HOME_LONGITUDE v .env)")
+                print("weather: no location set (COACH_HOME_LATITUDE and COACH_HOME_LONGITUDE in .env)")
             else:
                 failures += 1
                 print(f"FAIL: {exc}")
 
-    print("\nOK" if failures == 0 else f"\n{failures} část(i) selhala")
+    print("\nOK" if failures == 0 else f"\n{failures} part(s) failed")
     return 1 if failures else 0
 
 

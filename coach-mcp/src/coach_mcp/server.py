@@ -285,7 +285,7 @@ def build_server(
         load ratio outside Garmin's optimal range, yesterday's scheduled workout not completed,
         yesterday's planned session without a recorded activity, Garmin login). Reads Garmin through
         garmin-mcp; changes nothing."""
-        return (await compose_briefing(store, garmin, today())).payload
+        return (await compose_briefing(store, garmin, today(), settings.language)).payload
 
     @tool("get_trends", _read("Trends"))
     async def get_trends(
@@ -374,7 +374,8 @@ def build_server(
         """Full-text search in the whole coach notes log (get_coach_context shows only the latest 10 notes):
         notes containing every word of the query, newest first, optionally within a date range or linked to
         one session; more is true when further matches exist. Accents and case are ignored (boli finds
-        bolí). Czech words are not stemmed: search by prefix, e.g. bol* finds bolí, bolest and bolelo.
+        bolí). Words are not stemmed: search by prefix, e.g. run* finds run, runs and running (in Czech
+        bol* finds bolí, bolest and bolelo).
         Syntax: plain words, "exact phrase", OR, NOT, prefix*; put a word with punctuation in double
         quotes, e.g. "low-carb". Search here before asking the athlete about something they may already
         have told the coach."""

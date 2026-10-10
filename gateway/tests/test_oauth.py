@@ -23,7 +23,7 @@ def test_full_flow_claude_ai(h):
     verifier, challenge = pkce_pair()
     page = h.start(challenge=challenge)
     assert page.status_code == 200
-    assert "Povolit přístup" in page.text and "Hevy" in page.text
+    assert "Allow access" in page.text and "Hevy" in page.text
     assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
 
     done = h.submit(h.txn(page))
@@ -61,7 +61,7 @@ def test_tokens_are_stored_hashed(h):
 def test_login_page_not_available_through_funnel(h):
     page = h.start(headers=FUNNEL_ANTHROPIC)
     assert page.status_code == 403
-    assert "tailnetu" in page.text
+    assert "your devices on the tailnet" in page.text
 
 
 def test_login_page_requires_owner_login(h):
@@ -108,7 +108,7 @@ def test_wrong_password_or_code(h):
     page = h.start()
     txn = h.txn(page)
     r = h.submit(txn, password="wrong password!")
-    assert r.status_code == 401 and "Neplatné heslo nebo kód" in r.text
+    assert r.status_code == 401 and "Invalid password or code" in r.text
     r = h.submit(txn, code="000000")
     assert r.status_code == 401
     r = h.submit(txn)
@@ -130,7 +130,7 @@ def test_lockout_after_repeated_failures(h):
     page = h.start()
     locked = h.submit(h.txn(page))
     assert locked.status_code == 429
-    assert "zablokované" in locked.text
+    assert "temporarily locked" in locked.text
 
 
 def test_attempts_per_request_are_limited(h):

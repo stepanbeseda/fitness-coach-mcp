@@ -40,12 +40,12 @@ def cmd_hash_password(args: argparse.Namespace) -> int:
     if args.stdin or not sys.stdin.isatty():
         password = sys.stdin.readline().rstrip("\n")
     else:
-        password = getpass.getpass("Nové heslo: ")
-        if getpass.getpass("Heslo znovu: ") != password:
-            _err("Hesla se neshodují.")
+        password = getpass.getpass("New password: ")
+        if getpass.getpass("Repeat password: ") != password:
+            _err("Passwords do not match.")
             return 1
     if len(password) < MIN_PASSWORD_LENGTH:
-        _err(f"Heslo musí mít aspoň {MIN_PASSWORD_LENGTH} znaků (doporučeno 16+ nebo passphrase).")
+        _err(f"The password must have at least {MIN_PASSWORD_LENGTH} characters (16+ or a passphrase recommended).")
         return 1
     print(PasswordHasher().hash(password))
     return 0
@@ -54,9 +54,9 @@ def cmd_hash_password(args: argparse.Namespace) -> int:
 def cmd_new_totp(args: argparse.Namespace) -> int:
     secret = pyotp.random_base32(length=32)
     uri = pyotp.TOTP(secret).provisioning_uri(name=args.account, issuer_name=args.issuer)
-    _err("Naskenuj QR kód v autentizátoru (Google Authenticator, 1Password, Aegis, ...):\n")
+    _err("Scan the QR code in your authenticator app (Google Authenticator, 1Password, Aegis, ...):\n")
     segno.make(uri, error="m").terminal(out=sys.stderr, compact=True)
-    _err(f"\nNebo zadej ručně: {uri}\n")
+    _err(f"\nOr enter it manually: {uri}\n")
     print(secret)
     return 0
 
@@ -64,12 +64,12 @@ def cmd_new_totp(args: argparse.Namespace) -> int:
 def cmd_verify_totp(args: argparse.Namespace) -> int:
     lines = sys.stdin.read().splitlines()
     if len(lines) < 2:
-        _err("Na stdin čekám dva řádky: secret a kód.")
+        _err("Expected two lines on stdin: secret and code.")
         return 2
     try:
         verifier = TotpVerifier(lines[0].strip())
     except ValueError as exc:
-        _err(f"Neplatný TOTP secret: {exc}")
+        _err(f"Invalid TOTP secret: {exc}")
         return 2
     return 0 if verifier.matching_step(lines[1].strip()) is not None else 1
 
@@ -84,9 +84,9 @@ def cmd_grants(args: argparse.Namespace) -> int:
     if args.action == "list":
         rows = store.list_grants(include_revoked=args.all)
         if not rows:
-            _err("Žádné granty.")
+            _err("No grants.")
             return 0
-        print(f"{'ID':10} {'KLIENT':40} {'RESOURCE':8} {'VYTVOŘENO':16} {'POUŽITO':16} {'REFRESH DO':16} STAV")
+        print(f"{'ID':10} {'CLIENT':40} {'RESOURCE':8} {'CREATED':16} {'LAST USED':16} {'REFRESH UNTIL':16} STATE")
         for grant, refresh_expires in rows:
             client = settings.clients.get(grant.client_id)
             backend = settings.backend_for_resource(grant.resource)
@@ -104,11 +104,11 @@ def cmd_grants(args: argparse.Namespace) -> int:
     if not args.all:
         targets = [g for g in targets if g.id.startswith(args.grant_id or "\0")]
         if len(targets) != 1:
-            _err("Zadej jednoznačný prefix ID grantu (viz `grants list`) nebo --all.")
+            _err("Give an unambiguous grant ID prefix (see `grants list`) or --all.")
             return 1
     for grant in targets:
         store.revoke_grant(grant.id, "revoked by admin", now)
-        _err(f"Zrušen grant {grant.id[:8]}")
+        _err(f"Revoked grant {grant.id[:8]}")
     return 0
 
 
@@ -116,7 +116,7 @@ def cmd_mint_token(args: argparse.Namespace) -> int:
     store, settings = _store()
     backend = next((b for b in settings.backends if b.name == args.backend), None)
     if backend is None:
-        _err(f"Neznámý backend {args.backend}; dostupné: {', '.join(b.name for b in settings.backends)}")
+        _err(f"Unknown backend {args.backend}; available: {', '.join(b.name for b in settings.backends)}")
         return 1
     ttl = max(60, min(args.ttl, 3600))
     now = int(time.time())
@@ -125,7 +125,7 @@ def cmd_mint_token(args: argparse.Namespace) -> int:
     store.create_grant_with_tokens(
         grant, Token(new_id(), hash_token(token), "access", grant.id, now, now + ttl, None, None, None), None
     )
-    _err(f"Access token pro {backend.resource} platný {ttl} s (grant {grant.id[:8]}).")
+    _err(f"Access token for {backend.resource} valid for {ttl} s (grant {grant.id[:8]}).")
     print(token)
     return 0
 
@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except ConfigError as exc:
-        _err(f"Chyba konfigurace: {exc}")
+        _err(f"Configuration error: {exc}")
         return 2
 
 

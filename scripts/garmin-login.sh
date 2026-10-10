@@ -19,13 +19,13 @@ case "${1:-}" in
     ;;
   --import)
     file="${2:-}"
-    [[ -f "$file" ]] || die "Zadej soubor garmin_tokens.json (vytvořený loginem na Macu)."
+    [[ -f "$file" ]] || die "Give the garmin_tokens.json file (created by a login on a Mac)."
     login -T garmin-mcp -m garmin_coach_mcp.login --import-file - < "$file"
-    ok "Tokeny importované (0600). Zdrojový soubor smaž: shred -u $file"
+    ok "Tokens imported (0600). Delete the source file: shred -u $file"
     ;;
   "")
     login -it garmin-mcp -m garmin_coach_mcp.login
-    info "Běžící garmin-mcp si nové tokeny načte sám při dalším volání."
+    info "The running garmin-mcp picks up the new tokens by itself on the next call."
     ;;
   *)
     sed -n '2,8p' "$0"

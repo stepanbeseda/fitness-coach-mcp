@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
+from .messages import DEFAULT_LANGUAGE, Texts, texts
 from .push import PushMessage
 from .reconcile import MATCHED_TYPES
 
@@ -37,9 +38,9 @@ ALERT_KEYS = (
 # Event alerts are about a different object each day (yesterday's workouts and planned sessions), so they are
 # not edge-triggered: "it held yesterday too" must not hide today's new event.
 EVENT_ALERTS = frozenset({"missed_workout", "missed_planned_session"})
-# Garmin acwrStatus values that mean "outside the optimal range", shown in Czech. Any other
-# value (including "OPTIMAL") never fires; the raw string never reaches the message.
-ACWR_OUT = {"LOW": "nízký", "HIGH": "vysoký", "VERY_HIGH": "velmi vysoký"}
+# Garmin acwrStatus values that mean "outside the optimal range" (each catalogue in ``messages`` names
+# them). Any other value (including "OPTIMAL") never fires; the raw string never reaches the message.
+ACWR_OUT = frozenset({"LOW", "HIGH", "VERY_HIGH"})
 
 READINESS_GREEN, READINESS_YELLOW = 70, 40
 SLEEP_GREEN_MIN, SLEEP_YELLOW_MIN = 420, 360
@@ -50,25 +51,9 @@ RESTING_HR_DELTA = 5
 MAX_MESSAGE_BYTES = 4000
 
 _RANK = {"green": 0, "yellow": 1, "red": 2}
-_LEVEL_CS = {"green": "zelená", "yellow": "žlutá", "red": "červená"}
 # Coloured circle per verdict (large green / yellow / red circle) and the warning sign for new alerts.
 _CIRCLE = {"green": "\U0001f7e2", "yellow": "\U0001f7e1", "red": "\U0001f534"}
 _WARNING = "\u26a0\ufe0f"
-_NAME_CS = {"readiness": "readiness", "hrv": "HRV", "sleep": "spánek", "body_battery": "Body Battery"}
-_TYPE_CS = {
-    "running": "běh",
-    "cycling": "kolo",
-    "swimming": "plavání",
-    "strength": "síla",
-    "mobility": "mobilita",
-    "other": "jiné",
-}
-_STATUS_CS = {"done": " – splněno", "skipped": " – přeskočeno", "moved": " – přesunuto"}
-_ADVICE = {
-    "green": "plný plán, můžeš přidat progresi.",
-    "yellow": "sniž objem o 20–30 %, intenzitu nejvýš RPE 7–8, kardio v zóně 2.",
-    "red": "jen regenerace: lehké kardio v zóně 1–2 na 20–40 min, mobilita, nebo volno.",
-}
 _WS = re.compile(r"\s+")
 
 
@@ -91,22 +76,14 @@ def _section(snapshot: Mapping[str, Any] | None, name: str) -> Mapping[str, Any]
     return section
 
 
-def fmt(value: float | int) -> str:
-    """An integer when it is whole, otherwise one decimal with a comma."""
+def fmt(value: float | int, separator: str = ".") -> str:
+    """An integer when it is whole, otherwise one decimal with the language's decimal separator."""
     number = float(value)
-    return str(int(number)) if number.is_integer() else f"{number:.1f}".replace(".", ",")
+    return str(int(number)) if number.is_integer() else f"{number:.1f}".replace(".", separator)
 
 
-def fmt_ratio(value: float | int) -> str:
-    return f"{float(value):.2f}".replace(".", ",")
-
-
-def nights_cs(n: int) -> str:
-    if n == 1:
-        return "1 noc"
-    if 2 <= n <= 4:
-        return f"{n} noci"
-    return f"{n} nocí"
+def fmt_ratio(value: float | int, separator: str = ".") -> str:
+    return f"{float(value):.2f}".replace(".", separator)
 
 
 def _one_line(text: Any, limit: int) -> str:
@@ -286,9 +263,13 @@ def missed_session_condition(yesterday_sessions: Sequence[Mapping[str, Any]]) ->
     return None
 
 
-def _missed_session_names(yesterday_sessions: Sequence[Mapping[str, Any]]) -> list[str]:
+def _type_name(t: Texts, kind: Any) -> str:
+    return t.session_type.get(kind, t.session_type["other"])
+
+
+def _missed_session_names(t: Texts, yesterday_sessions: Sequence[Mapping[str, Any]]) -> list[str]:
     return [
-        f"{_TYPE_CS.get(s.get('type'), 'jiné')} – {_one_line(s.get('description', ''), 80)}"
+        f"{_type_name(t, s.get('type'))} – {_one_line(s.get('description', ''), 80)}"
         for s in _yesterday_matchable(yesterday_sessions)
         if _suggested(s) == "no_activity"
     ]
@@ -356,14 +337,14 @@ class Briefing:
     alert_updates: dict[str, tuple[bool, bool]]
 
 
-def _garmin_today(scheduled: Mapping[str, Any] | None, day: date) -> list[str]:
+def _garmin_today(t: Texts, scheduled: Mapping[str, Any] | None, day: date) -> list[str]:
     entries = _scheduled_entries(scheduled, day) or []
-    return [_one_line(e.get("name") or "bez názvu", 80) for e in entries]
+    return [_one_line(e.get("name") or t.untitled, 80) for e in entries]
 
 
-def _missed_names(scheduled: Mapping[str, Any] | None, day: date) -> list[str]:
+def _missed_names(t: Texts, scheduled: Mapping[str, Any] | None, day: date) -> list[str]:
     entries = _scheduled_entries(scheduled, day - timedelta(days=1)) or []
-    return [_one_line(e.get("name") or "bez názvu", 80) for e in entries if e.get("completed") is False]
+    return [_one_line(e.get("name") or t.untitled, 80) for e in entries if e.get("completed") is False]
 
 
 def hrv_night_present(snapshot: Mapping[str, Any] | None) -> bool:
@@ -372,67 +353,73 @@ def hrv_night_present(snapshot: Mapping[str, Any] | None) -> bool:
     return section is not None and _num(section.get("last_night_avg_ms")) is not None
 
 
-def _missing_reason(data: GarminData, missing: Sequence[str]) -> str:
+def _missing_reason(t: Texts, data: GarminData, missing: Sequence[str]) -> str:
     if data.auth_problem:
-        return "Garmin není přihlášený"
+        return t.reason_auth
     if data.credentials_missing:
-        return "chybí interní token pro garmin-mcp (secrets/garmin_readonly_token)"
+        return t.reason_no_token
     if data.auth is None:
-        return "garmin-mcp neodpovídá"
+        return t.reason_unreachable
     if data.snapshot is None:
-        return "data z Garminu se nepodařilo načíst"
+        return t.reason_no_data
     if list(missing) == ["hrv"] and hrv_night_present(data.snapshot):
-        return "Garmin ji počítá až po zhruba 3 týdnech nošení hodinek"
-    return "hodinky možná ještě nesynchronizovaly"
+        return t.reason_baseline_pending
+    return t.reason_not_synced
 
 
-def _hrv_line(entry: Mapping[str, Any]) -> str:
-    last = fmt(entry["last_night_ms"])
-    low = entry["baseline_ms"][0]
+def _hrv_line(t: Texts, entry: Mapping[str, Any]) -> str:
+    sep = t.decimal_separator
+    last = fmt(entry["last_night_ms"], sep)
+    low = fmt(entry["baseline_ms"][0], sep)
     high = entry["baseline_ms"][1] if len(entry["baseline_ms"]) > 1 else None
-    baseline = f"baseline od {fmt(low)} ms" if high is None else f"baseline {fmt(low)}–{fmt(high)} ms"
+    baseline = t.baseline_from.format(low=low) if high is None else t.baseline_range.format(low=low, high=fmt(high, sep))
     below = ""
     if entry["level"] != "green":
-        below = ", pod baseline"
+        below = t.below_baseline
         nights = entry["nights_below"]
         if nights is not None and nights >= 1:
-            below += f" {nights_cs(nights)} po sobě"
-    return f"HRV: {last} ms, {baseline}{below} ({_LEVEL_CS[entry['level']]})"
+            below += t.in_a_row.format(nights=t.nights(nights))
+    return f"{t.hrv}: {last} ms, {baseline}{below} ({t.level[entry['level']]})"
 
 
-def _session_line(session: Mapping[str, Any]) -> str:
+def _session_line(t: Texts, session: Mapping[str, Any]) -> str:
+    sep = t.decimal_separator
     parts = []
     if session.get("duration_min") is not None:
-        parts.append(f"{fmt(session['duration_min'])} min")
+        parts.append(f"{fmt(session['duration_min'], sep)} min")
     if session.get("distance_km") is not None:
-        parts.append(f"{fmt(session['distance_km'])} km")
+        parts.append(f"{fmt(session['distance_km'], sep)} km")
     if session.get("intensity"):
         parts.append(_one_line(session["intensity"], 120))
     details = f" ({', '.join(parts)})" if parts else ""
-    kind = _TYPE_CS.get(session.get("type"), "jiné")
-    return f"- {kind}: {_one_line(session.get('description', ''), 120)}{details}{_STATUS_CS.get(session.get('status'), '')}"
+    kind = _type_name(t, session.get("type"))
+    status = t.status_suffix.get(session.get("status"), "")
+    return f"- {kind}: {_one_line(session.get('description', ''), 120)}{details}{status}"
 
 
 def _alert_text(
-    key: str, data: GarminData, day: date, nights_below: int | None, missed_sessions: Sequence[str] = ()
+    t: Texts, key: str, data: GarminData, day: date, nights_below: int | None, missed_sessions: Sequence[str] = ()
 ) -> str:
+    sep = t.decimal_separator
     if key == "hrv_below_baseline":
-        return f"HRV pod baseline {nights_cs(nights_below or 0)} po sobě."
+        return t.alert_hrv.format(nights=t.nights(nights_below or 0))
     if key == "resting_hr_elevated":
         rhr = _resting_hr(data.snapshot)
         assert rhr is not None
-        return f"Klidová tepovka {fmt(rhr[0])} bpm, o {fmt(rhr[0] - rhr[1])} víc než 7denní průměr {fmt(rhr[1])} bpm."
+        return t.alert_resting_hr.format(
+            today=fmt(rhr[0], sep), delta=fmt(rhr[0] - rhr[1], sep), avg=fmt(rhr[1], sep)
+        )
     if key == "acwr_out_of_range":
         status, ratio = _acwr(data.snapshot)
-        word = ACWR_OUT[status or ""]
+        word = t.acwr[status or ""]
         if ratio is None:
-            return f"Poměr akutní a chronické zátěže je mimo optimální rozsah Garminu ({word})."
-        return f"Poměr akutní a chronické zátěže {fmt_ratio(ratio)} je mimo optimální rozsah Garminu ({word})."
+            return t.alert_acwr.format(word=word)
+        return t.alert_acwr_ratio.format(ratio=fmt_ratio(ratio, sep), word=word)
     if key == "missed_workout":
-        return f"Včera naplánovaný trénink nebyl splněn: {', '.join(_missed_names(data.scheduled, day))}."
+        return t.alert_missed_workout.format(names=", ".join(_missed_names(t, data.scheduled, day)))
     if key == "missed_planned_session":
-        return f"Včera v plánu bez aktivity v Garminu: {'; '.join(missed_sessions)}."
-    return "Garmin není přihlášený: na serveru spusť scripts/garmin-login.sh."
+        return t.alert_missed_session.format(sessions="; ".join(missed_sessions))
+    return t.alert_garmin_auth
 
 
 def _guard_bytes(text: str, limit: int) -> str:
@@ -456,33 +443,39 @@ def render(
     new_alerts: Sequence[str],
     nights_below: int | None,
     missed_sessions: Sequence[str] = (),
+    language: str = DEFAULT_LANGUAGE,
 ) -> PushMessage:
-    lines = [f"Verdikt: {_LEVEL_CS[verdict]} – {_ADVICE[verdict]}"]
+    t = texts(language)
+    sep = t.decimal_separator
+    lines = [t.verdict.format(level=t.level[verdict], advice=t.advice[verdict])]
 
     def level_of(key: str) -> str:
-        return _LEVEL_CS[criteria[key]["level"]]
+        return t.level[criteria[key]["level"]]
 
     if "readiness" in missing:
-        lines.append("Readiness: chybí")
+        lines.append(f"{t.readiness}: {t.missing_value}")
     else:
-        lines.append(f"Readiness: {fmt(criteria['readiness']['score'])} ({level_of('readiness')})")
-    lines.append("HRV: chybí" if "hrv" in missing else _hrv_line(criteria["hrv"]))
+        lines.append(f"{t.readiness}: {fmt(criteria['readiness']['score'], sep)} ({level_of('readiness')})")
+    lines.append(f"{t.hrv}: {t.missing_value}" if "hrv" in missing else _hrv_line(t, criteria["hrv"]))
     if "sleep" in missing:
-        lines.append("Spánek: chybí")
+        lines.append(f"{t.sleep}: {t.missing_value}")
     else:
         sleep = criteria["sleep"]
         minutes = sleep["minutes"]
-        score = f", skóre {fmt(sleep['score'])}" if "score" in sleep else ""
-        lines.append(f"Spánek: {minutes // 60} h {minutes % 60:02d} min{score} ({level_of('sleep')})")
+        score = t.sleep_score.format(score=fmt(sleep["score"], sep)) if "score" in sleep else ""
+        lines.append(
+            t.sleep_value.format(h=minutes // 60, m=f"{minutes % 60:02d}", score=score, level=level_of("sleep"))
+        )
     if "body_battery" in missing:
-        lines.append("Body Battery ráno: chybí")
+        lines.append(f"{t.body_battery}: {t.missing_value}")
     else:
-        lines.append(f"Body Battery ráno: {fmt(criteria['body_battery']['at_wake'])} ({level_of('body_battery')})")
+        at_wake = fmt(criteria["body_battery"]["at_wake"], sep)
+        lines.append(f"{t.body_battery}: {at_wake} ({level_of('body_battery')})")
 
     if missing:
         night = hrv_night_present(data.snapshot)
-        names = ", ".join("HRV baseline" if key == "hrv" and night else _NAME_CS[key] for key in missing)
-        lines.append(f"Chybí: {names} ({_missing_reason(data, missing)}). Bez těchto dat nemůže být verdikt zelený.")
+        names = ", ".join(t.hrv_baseline if key == "hrv" and night else t.criterion[key] for key in missing)
+        lines.append(t.missing_line.format(names=names, reason=_missing_reason(t, data, missing)))
 
     # Present criteria that are not green; a green verdict has none, so the line is only for yellow / red.
     items = []
@@ -490,31 +483,35 @@ def render(
         if key in missing or criteria[key]["level"] == "green":
             continue
         if key == "readiness":
-            items.append(f"readiness aspoň {READINESS_GREEN}")
+            items.append(t.target_readiness.format(value=READINESS_GREEN))
         elif key == "hrv":
-            items.append(f"HRV zpět aspoň na {fmt(criteria['hrv']['baseline_ms'][0])} ms")
+            items.append(t.target_hrv.format(value=fmt(criteria["hrv"]["baseline_ms"][0], sep)))
         elif key == "sleep":
-            items.append("spánek aspoň 7 h")
+            items.append(t.target_sleep)
         else:
-            items.append(f"Body Battery ráno aspoň {BODY_BATTERY_GREEN}")
+            items.append(t.target_body_battery.format(value=BODY_BATTERY_GREEN))
     if items:
-        lines.append(f"Pro plnou zátěž: {'; '.join(items)}.")
+        lines.append(t.full_load.format(items="; ".join(items)))
 
     if planned:
-        lines.append("Dnes v plánu:")
-        lines.extend(_session_line(s) for s in planned)
+        lines.append(t.today_plan)
+        lines.extend(_session_line(t, s) for s in planned)
     elif garmin_today:
-        lines.append(f"Dnes v Garminu: {', '.join(garmin_today)}")
+        lines.append(t.today_garmin.format(names=", ".join(garmin_today)))
     else:
-        lines.append("Dnes v plánu: nic.")
+        lines.append(t.today_nothing)
 
     if new_alerts:
-        lines.append("Upozornění:")
-        lines.extend(f"- {_alert_text(key, data, day, nights_below, missed_sessions)}" for key in new_alerts)
+        lines.append(t.alerts)
+        lines.extend(f"- {_alert_text(t, key, data, day, nights_below, missed_sessions)}" for key in new_alerts)
 
     alerting = bool(new_alerts)
-    warning = f" {_WARNING}" if alerting else ""
-    title = f"{_CIRCLE[verdict]}{warning} {_LEVEL_CS[verdict].upper()} · ranní briefing {day.day}. {day.month}."
+    title = t.title.format(
+        circle=_CIRCLE[verdict],
+        warning=f" {_WARNING}" if alerting else "",
+        level=t.level[verdict].upper(),
+        day=t.day_title(day),
+    )
     # Title, blank line and body together must fit MAX_MESSAGE_BYTES.
     body = _guard_bytes("\n".join(lines), MAX_MESSAGE_BYTES - len(title.encode()) - 2)
     return PushMessage(title=title, body=body)
@@ -526,7 +523,9 @@ def build_briefing(
     sessions: Sequence[Mapping[str, Any]],
     alert_rows: Mapping[str, Mapping[str, Any]],
     yesterday_sessions: Sequence[Mapping[str, Any]] = (),
+    language: str = DEFAULT_LANGUAGE,
 ) -> Briefing:
+    t = texts(language)
     nights = nights_below_baseline(data.hrv_trend, day)
     criteria = criteria_from_snapshot(data.snapshot, nights)
     verdict, missing = decide_verdict({key: criteria[key]["level"] for key in CRITERIA})
@@ -535,7 +534,7 @@ def build_briefing(
         key: is_new(holds, alert_rows.get(key), day, event=key in EVENT_ALERTS) for key, holds in conditions.items()
     }
     new_alerts = [key for key in ALERT_KEYS if new[key]]
-    garmin_today = _garmin_today(data.scheduled, day)
+    garmin_today = _garmin_today(t, data.scheduled, day)
     planned = list(sessions)
 
     payload_criteria: dict[str, Any] = {}
@@ -554,7 +553,8 @@ def build_briefing(
         garmin_today,
         new_alerts,
         nights,
-        _missed_session_names(yesterday_sessions),
+        _missed_session_names(t, yesterday_sessions),
+        language,
     )
     payload = {
         "date": day.isoformat(),

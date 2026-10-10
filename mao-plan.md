@@ -46,6 +46,13 @@ chapter and a table row; existing chapters are never rewritten, only the
   English. `README.md`, `garmin-mcp/README.md` and
   `docs/coach-instructions.md` are in Czech and stay Czech; text sent to the
   athlete (push messages) is Czech.
+  *Superseded on 2026-10-09 (open-source release):* all documentation,
+  scripts, the gateway pages and CLI output are English. Text sent to the
+  athlete comes from the catalogue in `coach-mcp/src/coach_mcp/messages.py`,
+  chosen by `COACH_LANGUAGE` (`en` default, `cs`); a new athlete-facing
+  string goes into every catalogue. Backup side copies are named
+  `<file>.before-restore-<UTC time>` (was `.pred-obnovou-`). Earlier chapters
+  keep their original Czech references.
 
 ## 2. Common PR conditions
 
