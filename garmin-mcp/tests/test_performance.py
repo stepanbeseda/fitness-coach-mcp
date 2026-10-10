@@ -335,7 +335,8 @@ def test_shape_running_tolerance_entry_shapes():
     shape = performance.shape_running_tolerance
     wrapped = {"userProfilePk": 1, "stats": [{"weekStartDate": "2026-09-28", "load": 2}]}
     assert shape(wrapped) == {"count": 1, "weeks": [{"date": "2026-09-28", "load": 2}]}
-    assert shape({"calendarDate": "2026-09-28", "load": 1}) == {"count": 1, "weeks": [{"date": "2026-09-28", "load": 1}]}
+    single = shape({"calendarDate": "2026-09-28", "load": 1})
+    assert single == {"count": 1, "weeks": [{"date": "2026-09-28", "load": 1}]}
     assert shape([{"date": "2026-09-28T00:00:00", "load": 1}])["weeks"] == [{"date": "2026-09-28", "load": 1}]
     assert shape([{"startDate": "2026-09-21", "load": 1}])["weeks"] == [{"date": "2026-09-21", "load": 1}]
     both = [{"calendarDate": "2026-09-28", "load": 1}, {"load": 2}]

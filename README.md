@@ -6,9 +6,10 @@ OAuth 2.1 gateway on your own server:
 
 - **Garmin Connect** (`garmin-mcp/`, custom server on
   [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect) 0.3.17). It reads HRV, sleep,
-  Body Battery, training readiness, activities, performance metrics (race predictions, lactate threshold,
-  heart-rate and power zones, VO2max), personal records, gear, body composition, nutrition and hydration. It
-  can log a manual weigh-in and create structured run/ride workouts scheduled to the watch.
+  Body Battery, training readiness, activities (with the weather and the sets of strength sessions recorded on
+  the watch), performance metrics (race predictions, lactate threshold, heart-rate and power zones, VO2max),
+  running tolerance, personal records, gear, body composition, nutrition and hydration. It can log a manual
+  weigh-in and create structured run/ride workouts scheduled to the watch.
 - **Hevy** (`hevy-mcp/`, upstream [`chrisdoc/hevy-mcp`](https://github.com/chrisdoc/hevy-mcp) 6.1.16). It covers
   strength-training history, routines, exercise templates and writing routines and workouts.
 - **Coach memory** (`coach-mcp/`, custom server on SQLite). It stores goals, constraints (injuries, available
@@ -322,7 +323,7 @@ scripts/garmin-login.sh --check
 
 ```bash
 scripts/healthcheck.sh             # containers, node, Funnel, discovery, tailnet-only login, Garmin, Hevy, coach database
-scripts/smoke-test.sh              # tools/list on all three endpoints, coach memory summary, last 3 Hevy workouts, today's HRV/sleep, race predictions and HR zones
+scripts/smoke-test.sh              # tools/list on all three endpoints, coach memory summary, last 3 Hevy workouts, today's HRV/sleep, race predictions and HR zones, running tolerance, strength sets and activity weather
 ```
 
 ## Funnel

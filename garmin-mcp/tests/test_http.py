@@ -145,7 +145,8 @@ async def test_running_tolerance_and_activity_signals_over_http(app, fake):
         assert ("get_running_tolerance", ("2026-09-03", "2026-09-30", "weekly")) in fake.calls
 
         assert (await call(client, "get_running_tolerance", {"weeks": 27}, 31))["isError"] is True
-        assert (await call(client, "get_running_tolerance", {"weeks": 26, "end_date": "2026-09-30"}, 32))["isError"] is False
+        edge = await call(client, "get_running_tolerance", {"weeks": 26, "end_date": "2026-09-30"}, 32)
+        assert edge["isError"] is False
 
         fake.responses["get_activity"] = fx.ACTIVITY_STRENGTH
         fake.responses["get_activity_exercise_sets"] = fx.EXERCISE_SETS

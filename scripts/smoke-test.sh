@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against the running stack, over the tailnet (MagicDNS):
 # tools/list on all three endpoints, the last 3 Hevy workouts, today's Garmin
-# recovery data, race predictions and heart-rate zones, the coach memory summary
+# recovery data, race predictions and heart-rate zones, running tolerance, the
+# newest strength activity's sets and an activity's weather, the coach memory summary
 # and today's briefing verdict. Also checks that the public (Funnel) path
 # refuses tokens from non-Anthropic networks.
 #
