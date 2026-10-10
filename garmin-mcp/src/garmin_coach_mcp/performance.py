@@ -1,14 +1,18 @@
-"""Performance metrics, personal records and gear: shaping of raw Garmin payloads + the tool logic."""
+"""Performance metrics, running tolerance, personal records and gear.
+
+Shaping of raw Garmin payloads + the tool logic."""
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
 from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .formatting import as_dict, as_list, clean, clock, km, num, pace_per_km, today
+from .activities import none_if_missing
+from .formatting import as_dict, as_list, clean, clock, km, num, pace_per_km, resolve_date, today
 from .garmin_client import GarminService, is_section_error, section_error
 from .health import UNAVAILABLE, _section
 
@@ -24,6 +28,13 @@ RUNNING_RECORDS = {1: ("1k", 1000.0), 2: ("1_mile", 1609.344), 3: ("5k", 5000.0)
                    4: ("10k", 10000.0), 5: ("half_marathon", 21097.5), 6: ("marathon", 42195.0)}
 LONGEST_RUN = 7
 MIN_WEEKS, MAX_WEEKS = 2, 52
+MIN_TOLERANCE_WEEKS, MAX_TOLERANCE_WEEKS = 1, 26
+# Garmin does not document the running tolerance payload: weeks pass its own fields through (PR 19 D2).
+TOLERANCE_DATE_KEYS = ("calendarDate", "weekStartDate", "startDate", "date")
+MAX_TOLERANCE_FIELDS = 20
+MAX_TOLERANCE_TEXT = 40
+_ID_KEY = re.compile(r"(?:^id$|Id$|ID$|Pk$|PK$|Uuid$|UUID$)")
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 # ------------------------------------------------------------------ helpers
@@ -255,6 +266,54 @@ def shape_vo2max_trend(raw: Any) -> dict[str, Any]:
     )
 
 
+# --------------------------------------------------------- running tolerance
+
+
+def _snake(key: str) -> str:
+    return _CAMEL.sub("_", key).lower()
+
+
+def _tolerance_scalar(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return num(value, 1)
+    if isinstance(value, str) and len(value) <= MAX_TOLERANCE_TEXT:
+        return value
+    return None
+
+
+def _tolerance_week(entry: dict[str, Any]) -> dict[str, Any] | None:
+    day = next((d for d in (_day(entry.get(k)) for k in TOLERANCE_DATE_KEYS) if d), None)
+    fields: dict[str, Any] = {}
+    for key, value in entry.items():
+        if not isinstance(key, str) or key in TOLERANCE_DATE_KEYS or _ID_KEY.search(key):
+            continue
+        if isinstance(value, dict):  # one level: rangeDTO {min, max} -> range_min, range_max
+            prefix = _snake(key).removesuffix("_dto")
+            for sub, inner in value.items():
+                if not isinstance(sub, str) or _ID_KEY.search(sub):
+                    continue
+                kept = _tolerance_scalar(inner)
+                if kept is not None:
+                    fields[f"{prefix}_{_snake(sub)}"] = kept
+            continue
+        kept = _tolerance_scalar(value)
+        if kept is not None:
+            fields[_snake(key)] = kept
+    if not any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in fields.values()):
+        return None
+    return clean({"date": day, **dict(list(fields.items())[:MAX_TOLERANCE_FIELDS])})
+
+
+def shape_running_tolerance(raw: Any) -> dict[str, Any]:
+    weeks = [w for w in (_tolerance_week(e) for e in _entries(raw, "calendarDate")) if w]
+    if not weeks:
+        return dict(UNAVAILABLE)
+    weeks.sort(key=lambda w: str(w.get("date") or ""))
+    return {"count": len(weeks), "weeks": weeks}
+
+
 # ------------------------------------------------------- personal records
 
 
@@ -346,6 +405,24 @@ async def performance_metrics(service: GarminService, weeks: int, end: date | No
         "hill_score": _section(results, "hill_score", shape_hill_score),
         "vo2max": _section(results, "vo2max", shape_vo2max_trend),
     }
+
+
+async def running_tolerance(service: GarminService, weeks: int, end_date: str | None) -> dict[str, Any]:
+    if not MIN_TOLERANCE_WEEKS <= weeks <= MAX_TOLERANCE_WEEKS:
+        raise ToolError(f"weeks must be between {MIN_TOLERANCE_WEEKS} and {MAX_TOLERANCE_WEEKS}")
+    end = resolve_date(end_date, service.settings.timezone, "end_date")
+    try:
+        start = end - timedelta(days=weeks * 7 - 1)
+    except OverflowError as exc:
+        raise ToolError("end_date is out of range") from exc
+    s, e = start.isoformat(), end.isoformat()
+    raw = await service.call(none_if_missing(lambda c: c.get_running_tolerance(s, e, "weekly")))
+    try:
+        shaped = shape_running_tolerance(raw)
+    except Exception as exc:  # unexpected payload shape: degrade, don't fail the tool
+        log.warning("could not shape %s: %s", "running_tolerance", type(exc).__name__)
+        shaped = {"error": "unexpected Garmin response for running_tolerance"}
+    return {"start": s, "end": e, "aggregation": "weekly", **shaped}
 
 
 async def personal_records(service: GarminService) -> dict[str, Any]:

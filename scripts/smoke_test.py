@@ -81,6 +81,40 @@ def section(title: str) -> None:
     print(f"\n=== {title}")
 
 
+def garmin_new_signals(garmin: McpSession) -> None:
+    """PR 19: running tolerance, the newest strength and outdoor activity (units vs. Garmin Connect)."""
+    data = json.loads(garmin.call("get_running_tolerance", {}))
+    weeks = data.get("weeks") or []
+    if weeks:
+        latest = weeks[-1]
+        fields = ", ".join(key for key in latest if key != "date")
+        print(f"running_tolerance: {data['count']} weeks | latest {latest.get('date')} | fields {fields}")
+    else:
+        print(f"running_tolerance: {json.dumps(data, ensure_ascii=False)[:300]}")
+    rows = json.loads(garmin.call("list_activities", {"days": 30}))["activities"]
+    strength = next((a for a in rows if "strength" in str(a.get("type") or "")), None)
+    outdoor = next((a for a in rows if a.get("distance_km") and a is not strength), None)
+    if strength is None:
+        print("exercise_sets: no strength activity in the last 30 days")
+    else:
+        detail = json.loads(garmin.call("get_activity", {"activity_id": strength["id"]}))
+        sets = detail.get("exercise_sets", {})
+        counts = f"active_sets {detail.get('active_sets')} | total_reps {detail.get('total_reps')}"
+        if "count" in sets:
+            first = json.dumps(sets["sets"][0], ensure_ascii=False)
+            print(f"exercise_sets of {strength.get('start_local')}: {sets['count']} sets | "
+                  f"{len(sets.get('exercises', []))} exercises | first set {first} | {counts}")
+        else:
+            text = json.dumps(sets, ensure_ascii=False)
+            print(f"exercise_sets of {strength.get('start_local')}: {text} | {counts}")
+    if outdoor is None:
+        print("weather: no activity with a distance in the last 30 days")
+    else:
+        detail = json.loads(garmin.call("get_activity", {"activity_id": outdoor["id"]}))
+        weather = json.dumps(detail.get("weather", {}), ensure_ascii=False)
+        print(f"weather of {outdoor.get('start_local')} ({outdoor.get('type')}): {weather}")
+
+
 def main() -> int:
     base, hevy_token, garmin_token, coach_token = sys.argv[1:5]
     failures = 0
@@ -133,6 +167,8 @@ def main() -> int:
         except (ValueError, AttributeError):
             print(text[:1500])
         print(f"nutrition: {garmin.call('get_nutrition', {})[:1500]}")
+        section("Garmin: PR 19 signals (running tolerance, strength sets, activity weather)")
+        garmin_new_signals(garmin)
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")

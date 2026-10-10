@@ -518,3 +518,69 @@ NUTRITION_MEALS = {
 }
 NUTRITION_SETTINGS = {"calendarDate": DAY, "calorieGoal": 2400, "proteinGoal": 150, "carbohydrateGoal": 270,
                       "fatGoal": 80}
+
+# PR 19 payloads: key sets and types as captured on 2026-10-10, all values synthetic.
+# running tolerance: the captured list was empty, so the entry keys are a guess
+RUNNING_TOLERANCE = [
+    {"calendarDate": "2026-09-21", "userProfilePk": 1001, "weeklyRunningLoad": 455.4, "toleranceLow": 300.0,
+     "toleranceHigh": 520.0, "toleranceStatus": "WITHIN", "rangeDTO": {"deviceId": 7, "min": 280, "max": 540.25}},
+    {"calendarDate": "2026-09-07", "userProfilePk": 1001, "weeklyRunningLoad": 380.0, "toleranceLow": 290.0,
+     "toleranceHigh": 500.0, "toleranceStatus": "WITHIN", "isValid": True},
+    {"calendarDate": "2026-09-14", "userProfilePk": 1001, "weeklyRunningLoad": 560.0, "toleranceLow": 295.0,
+     "toleranceHigh": 510.0, "toleranceStatus": "ABOVE", "notes": ["x"]},
+    {"calendarDate": "2026-09-28", "userProfilePk": 1001, "weeklyRunningLoad": None, "toleranceStatus": "NO_DATA"},
+]
+RUNNING_TOLERANCE_EMPTY: list = []
+SET_METRIC_KEYS = (
+    "avgConcentricDuration", "avgConcentricMeanPower", "avgConcentricMeanVelocity", "avgConcentricPeakPower",
+    "avgConcentricPeakVelocity", "avgConcentricRom", "avgEccentricDuration", "avgEccentricMeanVelocity",
+    "avgEccentricPeakVelocity", "avgMeanPropulsiveVelocity", "maxConcentricDuration", "maxConcentricMeanPower",
+    "maxConcentricMeanVelocity", "maxConcentricPeakPower", "maxConcentricPeakVelocity", "maxConcentricRom",
+    "maxEccentricDuration", "maxEccentricMeanVelocity", "maxEccentricPeakVelocity", "maxMeanPropulsiveVelocity",
+    "minimalViableThreshold",
+)
+
+
+def exercise_set(index, category, name, probability, reps, weight, duration, set_type, start):
+    return {**dict.fromkeys(SET_METRIC_KEYS), "duration": duration,
+            "exercises": [{"category": category, "name": name, "probability": probability}],
+            "messageIndex": index, "repetitionCount": reps, "setType": set_type,
+            "startTime": f"2026-09-28T05:{start}.0", "weight": weight, "wktStepIndex": None}
+
+
+EXERCISE_SETS = {"activityId": 20003, "exerciseSets": [
+    exercise_set(0, "SQUAT", "BARBELL_BACK_SQUAT", 98.5, 8, 80000.0, 42.0, "ACTIVE", "02:00"),
+    exercise_set(1, "SQUAT", None, 98.5, None, None, 120.0, "REST", "02:42"),
+    exercise_set(2, "SQUAT", "BARBELL_BACK_SQUAT", 97.0, 8, 82500.0, 40.0, "ACTIVE", "04:42"),
+    {**exercise_set(3, "BENCH_PRESS", "DUMBBELL_BENCH_PRESS", 35.0, 10, 60000.0, 35.0, "ACTIVE", "06:00"),
+     "exercises": [{"category": "BENCH_PRESS", "name": "DUMBBELL_BENCH_PRESS", "probability": 35.0},
+                   {"category": "BENCH_PRESS", "name": "BARBELL_BENCH_PRESS", "probability": 61.0}]},
+    exercise_set(4, "PLANK", None, 100.0, None, None, 60.0, "ACTIVE", "08:00"),
+]}
+EXERCISE_SETS_NONE = {"activityId": 20001, "exerciseSets": None}
+ACTIVITY_WEATHER = {"apparentTemp": 57, "dewPoint": 48, "issueDate": "2026-09-29T16:00:00.000+0000",
+                    "latitude": 45.0, "longitude": 7.0, "relativeHumidity": 67, "temp": 59,
+                    "weatherStationDTO": {"id": "XXXX", "name": "Synthetic station", "timezone": None},
+                    "weatherTypeDTO": {"desc": "Mostly Cloudy", "image": None, "weatherTypePk": None},
+                    "windDirection": 200, "windDirectionCompassPoint": "ssw", "windGust": None, "windSpeed": 9}
+ACTIVITY_WEATHER_INDOOR = {**dict.fromkeys(("apparentTemp", "dewPoint", "issueDate", "relativeHumidity", "temp",
+                                            "weatherStationDTO", "weatherTypeDTO", "windDirection",
+                                            "windDirectionCompassPoint", "windGust", "windSpeed")),
+                           "latitude": 45.0, "longitude": 7.0}
+ACTIVITY_STRENGTH = {
+    "activityId": 20003,
+    "activityName": "Síla",
+    "activityTypeDTO": {"typeId": 13, "typeKey": "strength_training"},
+    "eventTypeDTO": {"typeKey": "uncategorized"},
+    "summaryDTO": {
+        "activeSets": 4, "activityTrainingLoad": 35.0, "aerobicTrainingEffectMessage": "MINOR_AEROBIC_BENEFIT_0",
+        "anaerobicTrainingEffect": 0.8, "anaerobicTrainingEffectMessage": "NO_ANAEROBIC_BENEFIT_0",
+        "averageHR": 101.0, "averageMovingSpeed": 0.0, "averageSpeed": 0.0, "bmrCalories": 70.0,
+        "calories": 310.0, "differenceBodyBattery": -8, "distance": 0.0, "duration": 3300.0,
+        "elapsedDuration": 3400.0, "maxHR": 140.0, "minActivityLapDuration": 60.0, "minHR": 70.0,
+        "moderateIntensityMinutes": 10, "movingDuration": 1200.0, "startTimeGMT": "2026-09-28T05:00:00.0",
+        "startTimeLocal": "2026-09-28T07:00:00.0", "steps": 400, "totalExerciseReps": 26,
+        "trainingEffect": 1.5, "trainingEffectLabel": "RECOVERY", "vigorousIntensityMinutes": 0,
+        "waterEstimated": 300.0,
+    },
+}

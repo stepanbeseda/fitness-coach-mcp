@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Literal
 
+from garminconnect.exceptions import GarminConnectNotFoundError
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .formatting import (
@@ -20,12 +22,15 @@ from .formatting import (
     speed_kmh,
 )
 from .garmin_client import GarminService, is_section_error, section_error
+from .health import UNAVAILABLE, _section
 
 ActivityType = Literal[
     "running", "cycling", "swimming", "walking", "hiking", "fitness_equipment", "multi_sport", "other"
 ]
 
 MAX_LAPS = 60
+MAX_SETS = 60
+STRENGTH_MARKER = "strength"
 
 
 def _uses_pace(type_key: str) -> bool:
@@ -104,6 +109,8 @@ def shape_activity_detail(activity: Any) -> dict[str, Any]:
             "te_label": s.get("trainingEffectLabel"),
             "training_load": num(s.get("activityTrainingLoad"), 0),
             "calories": num(s.get("calories"), 0),
+            "active_sets": num(s.get("activeSets"), 0),
+            "total_reps": num(s.get("totalExerciseReps"), 0),
         }
     )
 
@@ -152,6 +159,124 @@ def shape_hr_zones(raw: Any) -> list[dict[str, Any]]:
     ]
 
 
+def _exercise_of(items: Any) -> tuple[str | None, str | None]:
+    """(exercise, category) of the most probable candidate; category only when the name was used."""
+    candidates = [e for e in as_list(items) if isinstance(e, dict)]
+    if not candidates:
+        return None, None
+    best = max(candidates, key=lambda e: num(e.get("probability"), 3) or 0)
+    name, category = best.get("name"), best.get("category")
+    name = name.lower() if isinstance(name, str) and name else None
+    category = category.lower() if isinstance(category, str) and category else None
+    return (name, category) if name else (category, None)
+
+
+def _grams_to_kg(grams: Any) -> float | None:
+    """Garmin's set weight is assumed to be grams (unverified, PR 19 D6)."""
+    g = num(grams, 3)
+    if g is None or g <= 0:
+        return None
+    return num(g / 1000, 2)
+
+
+def shape_exercise_sets(raw: Any) -> dict[str, Any]:
+    sets = [s for s in as_list(as_dict(raw).get("exerciseSets")) if isinstance(s, dict)]
+    rows: list[dict[str, Any]] = []
+    for s in sets:
+        if str(s.get("setType") or "").upper() == "REST":
+            continue
+        exercise, category = _exercise_of(s.get("exercises"))
+        reps = num(s.get("repetitionCount"), 0)
+        weight = _grams_to_kg(s.get("weight"))
+        if exercise is None and reps is None and weight is None:
+            continue
+        rows.append(
+            clean(
+                {
+                    "set": len(rows) + 1,
+                    "exercise": exercise,
+                    "category": category,
+                    "reps": reps,
+                    "weight_kg": weight,
+                    "duration_s": num(s.get("duration"), 0),
+                }
+            )
+        )
+    if not rows:
+        return dict(UNAVAILABLE)
+    summary: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        entry = summary.setdefault(
+            row.get("exercise") or "unknown",
+            {"exercise": row.get("exercise") or "unknown", "sets": 0, "reps": None, "max_weight_kg": None},
+        )
+        entry["sets"] += 1
+        if "reps" in row:
+            entry["reps"] = (entry["reps"] or 0) + row["reps"]
+        if "weight_kg" in row:
+            entry["max_weight_kg"] = max(entry["max_weight_kg"] or 0, row["weight_kg"])
+    out: dict[str, Any] = {
+        "count": len(rows),
+        "exercises": [clean(e) for e in summary.values()],
+        "sets": rows[:MAX_SETS],
+    }
+    if len(rows) > MAX_SETS:
+        out["sets_truncated"] = len(rows)
+    return out
+
+
+def _f_to_c(value: Any) -> float | None:
+    """Garmin's weather temperatures are assumed to be degrees Fahrenheit (unverified, PR 19 D6)."""
+    f = num(value, 3)
+    if f is None:
+        return None
+    c = num((f - 32) * 5 / 9, 1)
+    return c if c is not None and -60 <= c <= 60 else None
+
+
+def _mph_to_kmh(value: Any) -> int | float | None:
+    """Garmin's wind speeds are assumed to be miles per hour (unverified, PR 19 D6)."""
+    v = num(value, 3)
+    if v is None or v < 0:
+        return None
+    return num(v * 1.609344, 0)
+
+
+def shape_activity_weather(raw: Any) -> dict[str, Any]:
+    """Selected weather values only; location, station and issue time are never output."""
+    w = as_dict(raw)
+    humidity = num(w.get("relativeHumidity"), 0)
+    compass = w.get("windDirectionCompassPoint")
+    desc = as_dict(w.get("weatherTypeDTO")).get("desc")
+    out = clean(
+        {
+            "temp_c": _f_to_c(w.get("temp")),
+            "feels_like_c": _f_to_c(w.get("apparentTemp")),
+            "dew_point_c": _f_to_c(w.get("dewPoint")),
+            "humidity_pct": humidity if humidity is not None and 0 <= humidity <= 100 else None,
+            "wind_kmh": _mph_to_kmh(w.get("windSpeed")),
+            "wind_gust_kmh": _mph_to_kmh(w.get("windGust")),
+            "wind_from": compass.upper() if isinstance(compass, str) and 0 < len(compass) <= 3 else None,
+            "conditions": desc if isinstance(desc, str) and 0 < len(desc) <= 60 else None,
+        }
+    )
+    if not any(k in out for k in ("temp_c", "humidity_pct", "wind_kmh", "conditions")):
+        return dict(UNAVAILABLE)
+    return out
+
+
+def none_if_missing(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    """Garmin answers 404 for data that does not exist (no weather, no sets, no tolerance): treat it as empty."""
+
+    def call(client: Any) -> Any:
+        try:
+            return fn(client)
+        except GarminConnectNotFoundError:
+            return None
+
+    return call
+
+
 async def list_activities(
     service: GarminService,
     days: int,
@@ -183,6 +308,8 @@ async def get_activity(service: GarminService, activity_id: int) -> dict[str, An
             "activity": lambda c: c.get_activity(aid),
             "splits": lambda c: c.get_activity_splits(aid),
             "zones": lambda c: c.get_activity_hr_in_timezones(aid),
+            "weather": none_if_missing(lambda c: c.get_activity_weather(aid)),
+            "exercise_sets": none_if_missing(lambda c: c.get_activity_exercise_sets(aid)),
         }
     )
     if is_section_error(results["activity"]):
@@ -197,4 +324,8 @@ async def get_activity(service: GarminService, activity_id: int) -> dict[str, An
         zones = shape_hr_zones(results["zones"])
         if zones:
             detail["hr_zones"] = zones
+    detail["weather"] = _section(results, "weather", shape_activity_weather)
+    sets = _section(results, "exercise_sets", shape_exercise_sets)
+    if STRENGTH_MARKER in type_key or "sets" in sets:
+        detail["exercise_sets"] = sets
     return detail

@@ -42,7 +42,9 @@ data before proposing a specific session.
 
 1. `get_recovery_snapshot` (today): training readiness, HRV, sleep, Body Battery, resting HR, stress.
 2. `get_hrv_trend` for the last 14 days: last night vs. the weekly average and baseline.
-3. `list_activities` for the last 7 days: volume, intensity, training load, last hard session.
+3. `list_activities` for the last 7 days: volume, intensity, training load, last hard session. `get_activity` on one
+   activity adds laps, heart-rate zones, the weather and, for a strength session recorded on the watch, its sets
+   (exercise, reps, weight); Hevy stays the source of strength history.
 4. When the plan includes a run or ride with a target pace, heart rate or power (and at least once per training block): `get_performance_metrics` – race predictions, lactate threshold, heart-rate and power zones, endurance and hill score, VO2max trend. When setting race goals, also `get_personal_records`.
 5. From Hevy, `get-workouts` (the last 3–5) and `get-exercise-history` for key exercises, so you know the current
    weights. For strength development over a longer period use `get_strength_progress`.
@@ -96,6 +98,7 @@ a correlation on its own as a reason to change the plan; repeat the warning from
   intervals or a long run; at most two intense cardio sessions a week, unless I say otherwise.
 - **Derive paces and zones from measured values, not from estimates.** Tempo runs and threshold intervals around `lactate_threshold.pace` and `heart_rate`, 3–5 min intervals around the 5–10 km pace from `race_predictions`, easy and long runs in zone 2 according to `heart_rate_zones` (profile `running` for running, `cycling` for cycling, otherwise `default`), on the bike power according to `power_zones` and FTP. In the proposal, state which value the target is based on. When a value is missing (`available: false` or `error`), say so and estimate the target conservatively.
 - **Shoes:** every now and then (and before a long run or race) check `get_gear`. Mark running shoes over the Garmin limit (`max_km`), or over 700 km when there is no limit, as worn out and recommend replacing them.
+- **Running volume:** before raising weekly running volume (more kilometres, a longer long run or an extra run), call `get_running_tolerance` and compare the running load of the last weeks with Garmin's tolerance (the field names come from Garmin). When the last full week is already at or above the tolerance, do not raise the volume; otherwise keep the new week within it. When the tool returns `available: false` or `error`, say so and raise the volume by at most about 10 % a week.
 - **Weather** (`get_weather_forecast`; apparent temperature is `apparent_temperature_c`):
   - Put outdoor sessions preferably into a window from `best_outdoor_windows` (daylight, apparent −5 to 25 °C,
     precipitation at most 30 %, wind at most 25 km/h). A day without a window is not a ban: decide by the rules

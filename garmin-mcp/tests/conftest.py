@@ -71,6 +71,9 @@ class FakeGarmin:
             "get_nutrition_daily_food_log": copy.deepcopy(fx.NUTRITION_FOOD_LOG),
             "get_nutrition_daily_meals": copy.deepcopy(fx.NUTRITION_MEALS),
             "get_nutrition_daily_settings": copy.deepcopy(fx.NUTRITION_SETTINGS),
+            "get_running_tolerance": copy.deepcopy(fx.RUNNING_TOLERANCE),
+            "get_activity_exercise_sets": copy.deepcopy(fx.EXERCISE_SETS_NONE),
+            "get_activity_weather": copy.deepcopy(fx.ACTIVITY_WEATHER),
         }
         self.profile_id: int | None = 1001  # fake; the real library sets it at login
         self.gear_stats_fail: dict[str, Exception] = {}

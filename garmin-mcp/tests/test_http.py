@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import fixtures as fx
 from conftest import BACKEND_TOKEN, MCP_HEADERS, auth_headers, running_client
 
 EXPECTED_TOOLS = {
@@ -21,6 +22,7 @@ EXPECTED_TOOLS = {
     "list_scheduled_workouts",
     "unschedule_workout",
     "get_performance_metrics",
+    "get_running_tolerance",
     "get_personal_records",
     "get_gear",
     "get_body_composition",
@@ -128,6 +130,31 @@ async def test_performance_tools_over_http(app, fake):
         result = r.json()["result"]
         assert result["isError"] is False, result
         assert json.loads(result["content"][0]["text"])["count"] == 3
+
+
+@pytest.mark.anyio
+async def test_running_tolerance_and_activity_signals_over_http(app, fake):
+    async def call(client, name, arguments, id_):
+        r = await rpc(client, "tools/call", {"name": name, "arguments": arguments}, id_=id_)
+        return r.json()["result"]
+
+    async with running_client(app) as client:
+        result = await call(client, "get_running_tolerance", {"weeks": 4, "end_date": "2026-09-30"}, 30)
+        assert result["isError"] is False, result
+        assert json.loads(result["content"][0]["text"])["count"] == 3
+        assert ("get_running_tolerance", ("2026-09-03", "2026-09-30", "weekly")) in fake.calls
+
+        assert (await call(client, "get_running_tolerance", {"weeks": 27}, 31))["isError"] is True
+        edge = await call(client, "get_running_tolerance", {"weeks": 26, "end_date": "2026-09-30"}, 32)
+        assert edge["isError"] is False
+
+        fake.responses["get_activity"] = fx.ACTIVITY_STRENGTH
+        fake.responses["get_activity_exercise_sets"] = fx.EXERCISE_SETS
+        result = await call(client, "get_activity", {"activity_id": 20003}, 33)
+        assert result["isError"] is False, result
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["exercise_sets"]["count"] == 4 and payload["weather"]["temp_c"] == 15.0
+        assert payload["active_sets"] == 4
 
 
 @pytest.mark.anyio

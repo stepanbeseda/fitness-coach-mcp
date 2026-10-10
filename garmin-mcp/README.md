@@ -1,7 +1,7 @@
 # garmin-mcp (garmin-coach-mcp)
 
 A thin MCP server on top of [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) 0.3.17
-with ~21 selected tools for the coach. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp`
+with ~22 selected tools for the coach. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp`
 in a private Docker network; it is reachable only through the gateway, which sends an internal bearer token
 (`/run/secrets/garmin_backend_token`). Without the token the server rejects all MCP requests (fail closed).
 A second, read-only token (`/run/secrets/garmin_readonly_token`) belongs to `coach-mcp`. With it the server answers
@@ -20,8 +20,9 @@ broke in March 2026; `Taxuspt/garmin_mcp` has 153 tools and is stuck on garminco
 |---|---|
 | `get_recovery_snapshot` – readiness, HRV, sleep, Body Battery, resting HR, stress, training status in one call | `create_workout` – structured run/ride (+ optionally schedule it) |
 | `get_training_readiness`, `get_hrv_trend`, `get_sleep`, `get_body_battery`, `get_daily_summary`, `get_training_status` | `schedule_workout` – on a date (idempotent) |
-| `list_activities`, `get_activity` (laps, HR zones) | `unschedule_workout` – remove from the calendar (destructive) |
+| `list_activities`, `get_activity` (laps, HR zones, weather; for strength activities the sets recorded on the watch: exercise, reps, kg) | `unschedule_workout` – remove from the calendar (destructive) |
 | `get_performance_metrics` – race predictions (time + pace/km), lactate threshold (HR, pace, power), heart-rate zones per sport, cycling power zones, endurance and hill score, weekly VO2max trend | |
+| `get_running_tolerance` – Garmin's weekly running load vs. tolerance (1–26 weeks, default 8; Garmin's own field names) | |
 | `get_personal_records` (personal records), `get_gear` (shoes, bikes: distance covered, activity count, limit, retired) | `log_weight` – manual weigh-in in kg (optional date, not in the future) for athletes without a Garmin scale; not idempotent |
 | `get_body_composition` – weigh-ins for a period (max 366 days, default 30): weight, BMI, body fat %, muscle mass, body water %, bone mass + summary (first/last, change, 7-day average) | |
 | `get_nutrition` – one day: calories vs. goal, protein/carbs/fat vs. goals, meals, hydration vs. goal; whatever Garmin does not have returns `available: false` | |
@@ -93,6 +94,13 @@ docker run --rm -e HOME=/tmp -v "$PWD/garmin-mcp:/work" -w /work \
 Known uncertainty: Garmin's nutrition endpoints (`nutrition-service`) have not been verified on a real account; `get_nutrition`
 looks for values under several key names and returns `available: false` for an unknown response shape (hydration and weigh-ins
 use verified endpoints). Garmin is the primary source for weight; the same weigh-in is not also written to Hevy.
+
+Known uncertainty: the key names of the exercise sets and the activity weather were captured on a real account (values
+were not). Set weights are read as grams and the weather as °F and mph, then converted to kg, °C and km/h; this is not
+verified yet. On the account it was tested with, `get_running_tolerance` returns no weeks (`available: false`), so its entries are
+untested on real data: each week passes Garmin's own field names through (snake_case, identifiers dropped). On a Garmin
+server error the library logs the API path, which contains the activity id (as for the other activity calls), and can
+include Garmin's error message; no health values are logged.
 
 Known uncertainty: a custom cycling power range is sent as `power.zone` + `targetValueOne/Two`
 (the convention of python-garminconnect's typed models); after creating the first such workout, check in Garmin
