@@ -5,7 +5,7 @@ days, equipment), a day-by-day training plan with status, and a notes log. The d
 `coach-data` volume. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp` in a private Docker network; MCP
 clients reach it only through the gateway (`/coach/mcp`), which sends an internal bearer token
 (`/run/secrets/coach_backend_token`). Without the token the server rejects every MCP request (fail closed). The
-only services it calls itself are `garmin-mcp` (four read tools, read-only token `garmin_readonly_token`),
+only services it calls itself are `garmin-mcp` (five read tools, read-only token `garmin_readonly_token`),
 `hevy-mcp` (two read tools, internal token `hevy_backend_token`), optionally the Telegram Bot API (morning
 briefing) and, on request, Open-Meteo (weather forecast, rounded coordinates only). Every night it stores the
 daily history from Garmin and strength workouts from Hevy for trends, the weekly report, correlations and strength
@@ -18,7 +18,7 @@ closed, constraints are marked as resolved, and replaced sessions stay as `super
 |---|---|---|
 | `get_coach_context` | read | active goals (with days left to the target date), active constraints, sessions of the current ISO week, planned sessions of the last 7 days with a suggested status (`to_confirm`) and the latest 10 notes, in one call |
 | `get_plan` | read | sessions in a date range (default this week, max. 92 days) and a completion summary: counts of planned / done / skipped / moved, overdue planned sessions, `completion_rate`; past planned sessions carry a suggested status `suggestion` (see Plan reconciliation) |
-| `set_goal` | write | creates a goal, or (with `goal_id`) changes the given fields; closed with status `achieved` / `abandoned` |
+| `set_goal` | write | creates a goal, or (with `goal_id`) changes the given fields; closed with status `achieved` / `abandoned`; a measurable goal gets a `metric` and a `target_value` (see Goal progress) |
 | `set_constraint` | write | creates a constraint (`kind` + title + details), or changes the given fields; status `resolved` once it no longer applies |
 | `save_plan` | write | saves the plan for one ISO week: replaces planned sessions from today on (the old ones stay as `superseded`), keeps done, skipped, moved and past ones |
 | `update_session` | write | sets a session's status (`planned` / `done` / `skipped` / `moved`); `moved` with `new_date` creates a linked planned copy; optional note |
@@ -28,6 +28,7 @@ closed, constraints are marked as resolved, and replaced sessions stay as `super
 | `get_weekly_report` | read | one ISO week against the average of the previous four: endurance by sport, sleep, HRV, resting HR, plan completion, strength volume and sets per muscle group from Hevy, new records (including estimated 1RM) and warnings; sections without data have `available: false` |
 | `get_strength_progress` | read | estimated 1RM (Epley) per exercise and workout from the stored Hevy history: best set of each training day, best, first and latest value and a plateau flag (`plateau_weeks`, default 4) |
 | `search_notes` | read | full-text search in the whole notes log (`get_coach_context` has only the latest 10): all words of the query, newest first, optionally a date range or a session, max. 50 results and a `more` flag |
+| `get_goal_progress` | read | progress of every active goal with a metric from the stored history: current value, values 4 and 12 weeks ago, trend per week, projection to the target date and `on_track` (see Goal progress) |
 | `list_goals` | read | all goals including achieved (`achieved`) and abandoned (`abandoned`) ones, with status and creation and last-change time |
 | `list_constraints` | read | all constraints, active and resolved (`resolved`), with status and creation and last-change time |
 | `get_correlations` | read | pairwise correlations between 2–6 metrics from the `get_trends` catalogue: Pearson and Spearman and the number of paired days, optionally with a lag of 0–3 days (metric `a` on day D against `b` on day D + lag); under 14 pairs or for a constant series `available: false`; always with a caveat that correlation is not causation |
@@ -95,8 +96,9 @@ scheduler stops unexpectedly, the log has `briefing status=stopped` and `/health
 
 The push text is localized: `COACH_LANGUAGE` is `en` (default) or `cs`. Only the words change; the verdict, the
 rules, the numbers and the JSON from `get_daily_briefing` are the same in every language (apart from its `push`
-text). The catalogue is in `src/coach_mcp/messages.py`; adding a language means one more `Texts` instance in
-`LANGUAGES`. Session titles from the plan and Garmin workout names are shown as stored. Example (English):
+text). The catalogues are in `src/coach_mcp/messages.py`; adding a language means one more `Texts` instance
+in `LANGUAGES` and one more `WeeklyTexts` instance in `WEEKLY_LANGUAGES` (the Monday report). Session titles
+from the plan and Garmin workout names are shown as stored. Example (English):
 
 ```text
 🟡 ⚠️ YELLOW · morning briefing 7 Oct
@@ -122,6 +124,64 @@ docker compose exec coach-mcp python -m coach_mcp send-briefing
 
 Exit code: 0 sent, 1 failed, 2 push not configured or wrong argument.
 
+### Monday report
+
+On Mondays the scheduler sends a second message right after the briefing: last week's numbers (the same as
+`get_weekly_report` for the ISO week that ended yesterday: endurance, strength, sleep, HRV, resting HR, plan, new
+bests, watch-outs) and the progress of the goals with a metric (see Goal progress). The title is
+`📊 Weekly report 2026-W41 · 5 Oct–11 Oct`. It is an event about the reported week, de-duplicated by that week's
+label (table `weekly_reports`), so every Monday sends one.
+- It goes out only after the briefing of that day was sent (in this process or recorded in `briefing_runs`), never
+  instead of it. When the briefing gave up or the service started after the cutoff, there is no Monday report that
+  week (`get_weekly_report`, `get_goal_progress` and `send-weekly-report` still work).
+- The window, the retry interval (`COACH_BRIEFING_RETRY_MINUTES`) and the cutoff are the briefing's: a transient
+  Telegram failure is retried until `COACH_BRIEFING_CUTOFF`, then `weekly status=gave_up`; a permanent one gives
+  up at once. A restart after the briefing but before the cutoff sends the report then.
+- With the history off the report still goes out and says there is no stored data. `COACH_WEEKLY_PUSH=false` turns
+  it off (effective only while push is on).
+- The text comes from the `WeeklyTexts` catalogue in `src/coach_mcp/messages.py` (`COACH_LANGUAGE`); a section
+  without data, an unknown new best and an unknown watch-out are left out. The message is truncated to 4000 bytes.
+- Log lines, outcomes only: `weekly status=sent|waiting|skipped|gave_up|crashed|state_error`.
+
+By hand, for the last complete week on any day (no state is written, `COACH_WEEKLY_PUSH` is ignored):
+
+```bash
+docker compose exec coach-mcp python -m coach_mcp send-weekly-report
+```
+
+It prints `weekly status=<sent|transient|permanent> week=<label> goals=<n>`. Exit code: 0 sent, 1 failed, 2 push
+not configured or wrong argument.
+
+## Goal progress
+
+A goal can be measurable: `set_goal` takes a `metric` and a `target_value`. The target is stored in the unit of
+the metric (seconds for the race metrics, ml/kg/min for VO2max) and shown in the format it was given.
+
+| `metric` | measured by | target format | allowed target |
+|---|---|---|---|
+| `race_5k` | Garmin's 5 km race prediction (lower is better) | time `H:MM:SS` or `MM:SS` | 10:00 – 2:00:00 |
+| `race_10k` | 10 km prediction | the same | 20:00 – 4:00:00 |
+| `race_half_marathon` | half-marathon prediction | the same | 45:00 – 8:00:00 |
+| `race_marathon` | marathon prediction | the same | 1:45:00 – 12:00:00 |
+| `vo2max_running` | running VO2max from the stored history (higher is better) | a number, e.g. `55` | 20 – 95 |
+
+`1:45` is one minute 45 seconds, so a half-marathon target of 1:45:00 must be written in full. Changing the
+metric of a goal that has a target needs a new `target_value` (or an empty string); an empty `metric` clears the
+metric and the target. `get_goal_progress` reads only the stored history (the race predictions come from the
+nightly history, see below) for every active goal with a metric and returns per goal:
+- `current`: the latest stored day, at most 14 days old;
+- `weeks_4_ago` and `weeks_12_ago`: the latest stored value in the 7 days up to 28 and 84 days ago;
+- `trend_per_week`: least squares over the 12 weeks up to the current value; needs at least 14 values spanning
+  4 weeks (`points` says how many were used);
+- `projected`: the current value plus the trend, carried to the target date (at most 26 weeks ahead; a race time
+  must stay above zero);
+- `days_remaining` and `on_track`: the projection reaches `target_value` (a tie counts as on track).
+
+`available: false` comes with the reason `no_recent_value` (no value in the last 14 days) or `too_few_values`.
+With `available: true` a reason explains a missing projection or verdict: `no_target_date`, `target_date_passed`,
+`target_date_too_far` and `trend_too_steep` come with a `null` projection, `no_target_value` with a projection
+and `on_track: null`. Goals without a metric are only counted (`goals_without_metric`).
+
 ## Nightly history
 
 Every night (`COACH_HISTORY_TIME`, default 03:30, time zone `TZ`) the server stores daily values from `garmin-mcp`
@@ -135,10 +195,11 @@ late watch sync. `get_trends`, `get_weekly_report` and `get_correlations` work o
 
 Only missing days are filled in, so after a restart it continues where it stopped (progress is given by the stored
 data). The first run comes one minute after the service starts and loads `COACH_HISTORY_BACKFILL_DAYS` days back
-(default 90): about 470 Garmin Connect calls in 103 `garmin-mcp` calls, with a pause of
+(default 90): about 471 Garmin Connect calls in 104 `garmin-mcp` calls, with a pause of
 `COACH_HISTORY_CALL_DELAY_SECONDS` (15 s) between them, roughly 30 minutes in total. Between
 `COACH_BRIEFING_TIME` and `COACH_BRIEFING_CUTOFF` the run pauses and continues after the cutoff. Every following
-night it is about 16 calls, plus at most 5 answered repair calls (see the last point below).
+night it is about 17 calls (one for the race predictions), plus at most 5 answered repair calls (see the last point
+below).
 
 - Garmin answers 429 (rate limit): the run stops and retries in an hour, then in 2, 4 and at most 8 hours.
 - Garmin is not logged in or `garmin-mcp` does not respond: no calls, next attempt in an hour (at the latest at
@@ -163,6 +224,15 @@ night it is about 16 calls, plus at most 5 answered repair calls (see the last p
   once; when Garmin answers it without an error (also with no data, for example the watch was not worn), the
   day is complete.
 
+Race predictions: after the Garmin part (when it ended `done` or `partial`) one more call, `get_race_predictions`,
+fetches Garmin's daily race predictions (5 km, 10 km, half marathon, marathon, in seconds) for the missing range
+into the `race_predictions` table: on the first run the whole `COACH_HISTORY_BACKFILL_DAYS` range, afterwards the
+last 3 days before the previous sync up to yesterday (late watch syncs), once per local date. Days Garmin does not
+return stay absent. A failed call (any error, an unusable answer) changes no state: the next night asks for the
+whole missed range again, nothing is given up and nothing is counted. A rate limit moves the next run like the
+Garmin part's; a call inside the briefing window waits for the cutoff. Its log line is
+`history status=… part=predictions days=… ms=…` (no line when nothing was due). It is not part of `get_trends`.
+
 Strength workouts from Hevy: after Garmin, the same run loads through `hevy-mcp` the workouts changed since the
 last complete run, including edited and deleted ones (`get-workout-events`, 10 per page), and for each exercise
 its template once to get the primary muscle group (`get-exercise-template`). Only a per-exercise summary is stored
@@ -174,18 +244,19 @@ data stays uncovered (`available: false`) and the next attempt is in an hour, un
 hours; nothing is given up, a failed listing is repeated in full next time and a failed template is retried at
 most once a day.
 
-From `garmin-mcp` the server may call only four read tools (`get_recovery_snapshot`, `get_hrv_trend`,
-`list_scheduled_workouts`, `list_activities`). The coach code does not call its write tools, and `garmin-mcp`
-rejects them with the coach's read-only token before they run. From `hevy-mcp` it may call only
-`get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
+From `garmin-mcp` the server may call only five read tools (`get_recovery_snapshot`, `get_hrv_trend`,
+`list_scheduled_workouts`, `list_activities`, `get_race_predictions`). The coach code does not call its write
+tools, and `garmin-mcp` rejects them with the coach's read-only token before they run. From `hevy-mcp` it may
+call only `get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
 `history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=…`
 (`repaired` = days whose missing sections loaded in a repair call of this run; `reconcile=error kind=…` when plan
-reconciliation fails; the history run does not fail because of it) and one for Hevy:
+reconciliation fails; the history run does not fail because of it), one for the race predictions
+`history status=… part=predictions days=… ms=…` (days stored; only when a call was due) and one for Hevy:
 `history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (no data or values;
-`skipped` = events from Hevy that could not be used). The Hevy part runs before plan reconciliation, so its line
-comes before the Garmin line in the log. With `COACH_HISTORY_TIME` inside the briefing window there is also one
-`history status=config_warning` line after startup. `/healthz` reports a `history` field: `on`, `off`
-(`COACH_HISTORY_ENABLED=false`) or `stopped` (the task ended unexpectedly).
+`skipped` = events from Hevy that could not be used). The race-prediction and Hevy parts run before plan
+reconciliation, so their lines come before the Garmin line in the log. With `COACH_HISTORY_TIME` inside the
+briefing window there is also one `history status=config_warning` line after startup. `/healthz` reports a
+`history` field: `on`, `off` (`COACH_HISTORY_ENABLED=false`) or `stopped` (the task ended unexpectedly).
 
 ## Plan reconciliation
 
@@ -206,7 +277,8 @@ with `no_activity` (alert above).
 
 ## Data
 
-- `goals`: a goal (title, optionally `target`, `target_date`, `target_result`), status `active` / `achieved` / `abandoned`.
+- `goals`: a goal (title, optionally `target`, `target_date`, `target_result`, a measurable `metric` and its
+  `target_value`), status `active` / `achieved` / `abandoned`.
 - `athlete_constraints`: a constraint of kind `injury` / `limitation` / `availability` / `equipment` / `other`
   with a title and free text, status `active` / `resolved`.
 - `sessions`: a session with date, type (`running`, `cycling`, `swimming`, `strength`, `mobility`, `other`),
@@ -229,6 +301,9 @@ with `no_activity` (alert above).
 - `hevy_templates`: Hevy exercise templates (title, type, primary muscle group), or a note that the template does
   not exist in Hevy.
 - `hevy_sync`: from where and until when the strength history is complete (last complete run).
+- `race_predictions`: Garmin's predicted 5 km, 10 km, half-marathon and marathon times in seconds per day.
+- `prediction_sync`: the range the prediction history is complete from and the date of the last complete fetch.
+- `weekly_reports`: the ISO weeks (`2026-W41`) whose Monday report was sent.
 
 The schema version is in `PRAGMA user_version`; migrations are forward-only (an ordered list of SQL scripts, each
 in one transaction). An older image refuses to open a newer database so that it does not damage it. Online backups
@@ -236,6 +311,25 @@ in one transaction). An older image refuses to open a newer database so that it 
 root `README.md` (section Backups); the `coach-data` volume is the only copy of this data.
 
 Run `scripts/backup.sh` before moving to an older version.
+
+**Going back to a version without goal progress** (schema 8 → 7). An older image refuses a database with
+schema 8 (`database schema version 8 is newer`). Before deploying the older version, drop the three new tables
+(`weekly_reports`, `prediction_sync`, `race_predictions`) and the two goal columns (`target_value` first, then
+`metric`: `target_value` has a check that names `metric`); every goal, plan, note, briefing state and history row
+stays, only the goal metrics and targets and the prediction history are lost (the history is fetched again in one
+call after the next upgrade, within `COACH_HISTORY_BACKFILL_DAYS`). The service must be stopped; run the commands
+one at a time:
+
+```bash
+docker compose stop coach-mcp
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 8 or sys.exit(f"schema version {v}, expected 8: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE weekly_reports; DROP TABLE prediction_sync; DROP TABLE race_predictions; ALTER TABLE goals DROP COLUMN target_value; ALTER TABLE goals DROP COLUMN metric; PRAGMA user_version = 7; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+The second command must print `schema version 7`. Then deploy the older version (`git checkout <commit before
+PR 14>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
+does not have schema 8 and nothing changed. On an empty volume it ends with the error `unable to open database
+file` and creates nothing. To go back to an even older version, run this 8 → 7 procedure first and then the ones
+below.
 
 **Going back to a version without history repair** (schema 7 → 6). An older image refuses a database with
 schema 7 (`database schema version 7 is newer`). Before deploying the older version, drop only the three repair
@@ -250,9 +344,9 @@ docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --ent
 The second command must print `schema version 6`. Then deploy the older version (`git checkout <commit before
 PR 18>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
 does not have schema 7 and nothing changed. On an empty volume it ends with the error `unable to open database
-file` and creates nothing. To go back to an even older version, run this 7 → 6 procedure first and then the ones
-below. When the newer version is deployed again, its migration marks the missing sections anew (see "Nightly
-history").
+file` and creates nothing. To go back to an even older version, run the 8 → 7 procedure above, then this 7 → 6
+one, then the ones below. When the newer version is deployed again, its migration marks the missing sections
+anew (see "Nightly history").
 
 **Going back to a version without note search** (schema 6 → 5). An older image refuses a database with schema 6
 (`database schema version 6 is newer`). Before deploying the older version, drop only the full-text index of the
@@ -377,7 +471,7 @@ Weather data: [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0 licence).
 | `COACH_MCP_HOST` | `0.0.0.0` | address the server listens on |
 | `COACH_MCP_PORT` | `8000` | port (1 to 65535) |
 | `TZ` | `Europe/Prague` | what "today" means; in compose it is set through `ATHLETE_TZ` in `.env` |
-| `COACH_LANGUAGE` | `en` | language of the morning briefing push text: `en` or `cs` (case-insensitive); see Morning briefing |
+| `COACH_LANGUAGE` | `en` | language of the Telegram messages (morning briefing, Monday report): `en` or `cs` (case-insensitive); see Morning briefing |
 | `COACH_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR`; logs: only the tool name, result and duration, never arguments or stored texts |
 | `COACH_MCP_ALLOWED_HOSTS` | *(empty)* | enables Host header checking (e.g. `coach-mcp:8000`) |
 | `COACH_TELEGRAM_CHAT_ID` | *(empty)* | chat id of your chat with the bot (integer, negative for groups); enables the morning briefing; never logged |
@@ -389,6 +483,7 @@ Weather data: [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0 licence).
 | `COACH_BRIEFING_TIME` | `06:30` | when the scheduler starts (`HH:MM`, time zone `TZ`) |
 | `COACH_BRIEFING_CUTOFF` | `09:30` | latest send time, even with missing data (later than the start time) |
 | `COACH_BRIEFING_RETRY_MINUTES` | `15` | pause between attempts when sleep or HRV is missing (1 to 180) |
+| `COACH_WEEKLY_PUSH` | `true` | Monday report after the briefing (`true` / `false`); effective only while push is on |
 | `COACH_HISTORY_ENABLED` | `true` | nightly history from Garmin and Hevy (`true` / `false`) |
 | `COACH_HISTORY_TIME` | `03:30` | when (`HH:MM`, `TZ`); a time inside the briefing window moves the run to the cutoff |
 | `COACH_HISTORY_BACKFILL_DAYS` | `90` | how many days back to load (1 to 366) |

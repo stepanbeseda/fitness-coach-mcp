@@ -67,6 +67,7 @@ async def main() -> int:
     arguments = {
         "get_recovery_snapshot": {"date": today},
         "list_activities": {"start_date": today, "end_date": today},
+        "get_race_predictions": {"start_date": today, "end_date": today},
     }
     reader = GarminReader(settings)
     for name in HISTORY_TOOLS:

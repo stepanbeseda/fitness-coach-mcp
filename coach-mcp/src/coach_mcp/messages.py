@@ -1,7 +1,8 @@
-"""Text of the morning briefing per language (``COACH_LANGUAGE``): English (default) and Czech.
+"""Text of the morning briefing and the Monday report per language (``COACH_LANGUAGE``): English (default) and Czech.
 
-Only words live here; the rules, numbers and layout stay in ``briefing.py``. Every catalogue has the
-same fields, so adding a language means adding one more ``Texts`` instance and a ``LANGUAGES`` entry.
+Only words live here; the rules, numbers and layout stay in ``briefing.py`` and ``weekly.py``. Every catalogue has the
+same fields, so adding a language means adding one more ``Texts`` instance and a ``LANGUAGES`` entry (and a
+``WeeklyTexts`` instance with a ``WEEKLY_LANGUAGES`` entry for the Monday report).
 """
 
 from __future__ import annotations
@@ -210,3 +211,182 @@ LANGUAGES: Mapping[str, Texts] = {"en": EN, "cs": CS}
 def texts(language: str) -> Texts:
     """The catalogue for ``language``; ``config.Settings`` only accepts keys of ``LANGUAGES``."""
     return LANGUAGES[language]
+
+@dataclass(frozen=True)
+class WeeklyTexts:
+    """Words of the Monday report (``weekly.render_weekly``); the layout and the numbers stay there."""
+
+    title: str  # {week} {days}
+    hours_minutes: str  # {h} {m}
+    minutes_only: str  # {m}
+    activities: Callable[[int], str]
+    workouts: Callable[[int], str]
+    endurance: str  # {activities} {time} {km} {load} {average}
+    endurance_average: str  # {time} {load}
+    strength: str  # {workouts} {sets} {volume} {average}
+    strength_average: str  # {sets} {volume}
+    average: str  # {value}
+    sleep: str  # {time} {average}
+    hrv: str  # {value} {average}
+    resting_hr: str  # {value} {average}
+    plan: str  # {done} {skipped} {moved} {planned} {rate}
+    plan_rate: str  # {rate}
+    new_bests: str  # {items}
+    best: Mapping[str, str]  # metric of get_weekly_report new_bests -> {value} {previous} {exercise}
+    flags: str  # {items}
+    flag: Mapping[str, str]  # flag of get_weekly_report flags -> {pct} {minutes} {bpm}
+    no_data: str
+    goals: str
+    goal_metric: Mapping[str, str]  # goal metric -> name
+    goal_line: str  # {title} {metric} {current} {ago} {trend} {outlook}
+    goal_ago: str  # {value}
+    goal_trend: str  # {change}
+    goal_on_track: str  # {projected} {date} {target}
+    goal_behind: str  # {projected} {date} {target}
+    goal_projection: str  # {projected} {date}
+    goal_reason: str  # {reason}
+    goal_unavailable: str  # {title} {metric} {reason}
+    goal_reasons: Mapping[str, str]  # reason code of get_goal_progress -> text
+    goals_without_metric: str  # {n}
+
+
+
+def _plural_en(one: str, many: str) -> Callable[[int], str]:
+    return lambda n: f"1 {one}" if n == 1 else f"{n} {many}"
+
+
+def _plural_cs(one: str, few: str, many: str) -> Callable[[int], str]:
+    return lambda n: f"1 {one}" if n == 1 else f"{n} {few}" if 2 <= n <= 4 else f"{n} {many}"
+
+WEEKLY_EN = WeeklyTexts(
+    title="\U0001f4ca Weekly report {week} · {days}",
+    hours_minutes="{h} h {m} min", minutes_only="{m} min",
+    activities=_plural_en("activity", "activities"), workouts=_plural_en("workout", "workouts"),
+    endurance="Endurance: {activities}, {time}, {km} km, load {load}{average}",
+    endurance_average=" (4-week average {time}, load {load})",
+    strength="Strength (Hevy): {workouts}, working sets {sets}, volume {volume} kg{average}",
+    strength_average=" (4-week average: sets {sets}, volume {volume} kg)",
+    average=" (4-week average {value})",
+    sleep="Sleep: average {time}{average}",
+    hrv="HRV: average {value} ms{average}",
+    resting_hr="Resting HR: average {value} bpm{average}",
+    plan="Plan: done {done}, skipped {skipped}, moved {moved}, still planned {planned}{rate}",
+    plan_rate=" – completion {rate} %",
+    new_bests="New bests: {items}.",
+    best={
+        "vo2max_running": "VO2max running {value} (was {previous})",
+        "vo2max_cycling": "VO2max cycling {value} (was {previous})",
+        "running_distance_km": "running {value} km in a week (was {previous} km)",
+        "cycling_distance_km": "cycling {value} km in a week (was {previous} km)",
+        "swimming_distance_km": "swimming {value} km in a week (was {previous} km)",
+        "endurance_duration_min": "endurance time {value} in a week (was {previous})",
+        "endurance_training_load": "endurance load {value} in a week (was {previous})",
+        "e1rm_kg": "estimated 1RM {exercise} {value} kg (was {previous} kg)",
+    },
+    flags="Watch: {items}.",
+    flag={
+        "endurance_load_up": "endurance load {pct} % above the 4-week average",
+        "endurance_load_down": "endurance load {pct} % below the 4-week average",
+        "endurance_time_up": "endurance time {pct} % above the 4-week average",
+        "sleep_down": "sleep {minutes} min a night shorter than the 4-week average",
+        "hrv_down": "HRV {pct} % below the 4-week average",
+        "resting_hr_up": "resting HR {bpm} bpm above the 4-week average",
+        "strength_volume_up": "strength volume {pct} % above the 4-week average",
+    },
+    no_data="No stored data for this week (the nightly history is off or still loading).",
+    goals="Goals:",
+    goal_metric={
+        "race_5k": "5 km prediction",
+        "race_10k": "10 km prediction",
+        "race_half_marathon": "half marathon prediction",
+        "race_marathon": "marathon prediction",
+        "vo2max_running": "VO2max running",
+    },
+    goal_line="- {title} ({metric}): now {current}{ago}{trend}{outlook}",
+    goal_ago=", 4 weeks ago {value}",
+    goal_trend=", {change} a week",
+    goal_on_track="; at this trend {projected} on {date}, target {target}: on track",
+    goal_behind="; at this trend {projected} on {date}, target {target}: behind",
+    goal_projection="; at this trend {projected} on {date}",
+    goal_reason="; {reason}",
+    goal_unavailable="- {title} ({metric}): not enough data yet ({reason})",
+    goal_reasons={
+        "no_recent_value": "no value in the last 14 days",
+        "too_few_values": "fewer than 14 values over 4 weeks",
+        "no_target_date": "no target date",
+        "target_date_passed": "the target date has passed",
+        "target_date_too_far": "the target date is more than 26 weeks away",
+        "trend_too_steep": "the trend is too steep to project",
+    },
+    goals_without_metric="Goals without a measurable metric: {n}.",
+)
+
+WEEKLY_CS = WeeklyTexts(
+    title="\U0001f4ca Týdenní report {week} · {days}",
+    hours_minutes="{h} h {m} min", minutes_only="{m} min",
+    activities=_plural_cs("aktivita", "aktivity", "aktivit"), workouts=_plural_cs("trénink", "tréninky", "tréninků"),
+    endurance="Vytrvalost: {activities}, {time}, {km} km, zátěž {load}{average}",
+    endurance_average=" (průměr 4 týdnů {time}, zátěž {load})",
+    strength="Síla (Hevy): {workouts}, pracovní série {sets}, objem {volume} kg{average}",
+    strength_average=" (průměr 4 týdnů: série {sets}, objem {volume} kg)",
+    average=" (průměr 4 týdnů {value})",
+    sleep="Spánek: průměr {time}{average}",
+    hrv="HRV: průměr {value} ms{average}",
+    resting_hr="Klidová tepovka: průměr {value} bpm{average}",
+    plan="Plán: splněno {done}, přeskočeno {skipped}, přesunuto {moved}, zbývá v plánu {planned}{rate}",
+    plan_rate=" – plnění {rate} %",
+    new_bests="Nové rekordy: {items}.",
+    best={
+        "vo2max_running": "VO2max běh {value} (dříve {previous})",
+        "vo2max_cycling": "VO2max kolo {value} (dříve {previous})",
+        "running_distance_km": "běh {value} km za týden (dříve {previous} km)",
+        "cycling_distance_km": "kolo {value} km za týden (dříve {previous} km)",
+        "swimming_distance_km": "plavání {value} km za týden (dříve {previous} km)",
+        "endurance_duration_min": "vytrvalost {value} za týden (dříve {previous})",
+        "endurance_training_load": "vytrvalostní zátěž {value} za týden (dříve {previous})",
+        "e1rm_kg": "odhad 1RM {exercise} {value} kg (dříve {previous} kg)",
+    },
+    flags="Pozor: {items}.",
+    flag={
+        "endurance_load_up": "vytrvalostní zátěž o {pct} % nad průměrem 4 týdnů",
+        "endurance_load_down": "vytrvalostní zátěž o {pct} % pod průměrem 4 týdnů",
+        "endurance_time_up": "čas vytrvalosti o {pct} % nad průměrem 4 týdnů",
+        "sleep_down": "spánek o {minutes} min za noc kratší než průměr 4 týdnů",
+        "hrv_down": "HRV o {pct} % pod průměrem 4 týdnů",
+        "resting_hr_up": "klidová tepovka o {bpm} bpm nad průměrem 4 týdnů",
+        "strength_volume_up": "objem síly o {pct} % nad průměrem 4 týdnů",
+    },
+    no_data="Pro tento týden nejsou uložená data (noční historie je vypnutá nebo se ještě načítá).",
+    goals="Cíle:",
+    goal_metric={
+        "race_5k": "predikce 5 km",
+        "race_10k": "predikce 10 km",
+        "race_half_marathon": "predikce půlmaratonu",
+        "race_marathon": "predikce maratonu",
+        "vo2max_running": "VO2max běh",
+    },
+    goal_line="- {title} ({metric}): teď {current}{ago}{trend}{outlook}",
+    goal_ago=", před 4 týdny {value}",
+    goal_trend=", {change} za týden",
+    goal_on_track="; tímto tempem {projected} k {date}, cíl {target}: na dobré cestě",
+    goal_behind="; tímto tempem {projected} k {date}, cíl {target}: zaostává",
+    goal_projection="; tímto tempem {projected} k {date}",
+    goal_reason="; {reason}",
+    goal_unavailable="- {title} ({metric}): zatím málo dat ({reason})",
+    goal_reasons={
+        "no_recent_value": "žádná hodnota za posledních 14 dní",
+        "too_few_values": "méně než 14 hodnot za 4 týdny",
+        "no_target_date": "bez cílového data",
+        "target_date_passed": "cílové datum už minulo",
+        "target_date_too_far": "cílové datum je dál než 26 týdnů",
+        "trend_too_steep": "trend je příliš strmý na odhad",
+    },
+    goals_without_metric="Cíle bez měřitelné metriky: {n}.",
+)
+
+WEEKLY_LANGUAGES: Mapping[str, WeeklyTexts] = {"en": WEEKLY_EN, "cs": WEEKLY_CS}
+
+
+def weekly_texts(language: str) -> WeeklyTexts:
+    """The Monday-report catalogue for ``language``; same keys as ``LANGUAGES``."""
+    return WEEKLY_LANGUAGES[language]

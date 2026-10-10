@@ -30,6 +30,14 @@ from garmin_payloads import (
 from hevy_payloads import events_page, hevy_template
 
 
+RACE_PREDICTIONS_PAYLOAD = {
+    "start": "2026-09-28",
+    "end": "2026-09-30",
+    "count": 1,
+    "days": [{"date": "2026-09-30", "5k_seconds": 1290, "10k_seconds": 2700}],
+}
+
+
 class RawText(str):
     """A fake garmin-mcp answer sent as is (not JSON encoded), for the non-JSON case."""
 
@@ -80,10 +88,12 @@ HistoryOutcome = tuple[str, dict[str, Any] | None]
 
 
 class FakeHistorySource:
-    """A ``HistorySource``: ``recovery(day, index)`` and ``activities(start, end, index)`` return ``(outcome, payload)``.
+    """A ``HistorySource``: ``recovery(day, index)``, ``activities(start, end, index)`` and ``predictions(start, end,
+    index)`` return ``(outcome, payload)``.
 
-    ``index`` counts every history call so far (0 for the first). Defaults: a full snapshot of the day and an
-    empty activity list. ``calls`` records ``(name, args)``, ``times`` the clock reading of each call.
+    ``index`` counts every history call so far (0 for the first). Defaults: a full snapshot of the day, an
+    empty activity list and an empty race-prediction answer. ``calls`` records ``(name, args)``, ``times`` the
+    clock reading of each call, ``prediction_ranges`` the asked ranges of ``get_race_predictions``.
     """
 
     def __init__(
@@ -92,11 +102,18 @@ class FakeHistorySource:
         auth: str | None = "ok",
         recovery: Callable[[date, int], HistoryOutcome] | None = None,
         activities: Callable[[date, date, int], HistoryOutcome] | None = None,
+        predictions: Callable[[date, date, int], HistoryOutcome] | None = None,
         clock: FakeClock | None = None,
     ) -> None:
         self.auth = auth
         self._recovery = recovery or (lambda day, index: ("ok", history_snapshot(day.isoformat())))
         self._activities = activities or (lambda start, end, index: ("ok", activities_payload([])))
+        self._predictions = predictions or (
+            lambda start, end, index: (
+                "ok",
+                {"start": start.isoformat(), "end": end.isoformat(), "count": 0, "days": [], "available": False},
+            )
+        )
         self.clock = clock
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.times: list[datetime | None] = []
@@ -107,18 +124,29 @@ class FakeHistorySource:
         return self.auth
 
     async def history_call(self, name: str, args: dict[str, Any]) -> HistoryOutcome:
-        if name not in ("get_recovery_snapshot", "list_activities"):
+        if name not in ("get_recovery_snapshot", "list_activities", "get_race_predictions"):
             raise ValueError(f"tool {name!r} is not allowed")
         index = len(self.calls)
         self.calls.append((name, dict(args)))
         self.times.append(self.clock.now() if self.clock else None)
         if name == "get_recovery_snapshot":
             return self._recovery(date.fromisoformat(args["date"]), index)
-        return self._activities(date.fromisoformat(args["start_date"]), date.fromisoformat(args["end_date"]), index)
+        start, end = date.fromisoformat(args["start_date"]), date.fromisoformat(args["end_date"])
+        if name == "get_race_predictions":
+            return self._predictions(start, end, index)
+        return self._activities(start, end, index)
 
     @property
     def snapshot_days(self) -> list[date]:
         return [date.fromisoformat(a["date"]) for n, a in self.calls if n == "get_recovery_snapshot"]
+
+    @property
+    def prediction_ranges(self) -> list[tuple[date, date]]:
+        return [
+            (date.fromisoformat(a["start_date"]), date.fromisoformat(a["end_date"]))
+            for n, a in self.calls
+            if n == "get_race_predictions"
+        ]
 
     @property
     def activity_ranges(self) -> list[tuple[date, date]]:
@@ -156,6 +184,7 @@ def fake_garmin_app(
     hang: frozenset[str] = frozenset(),
     snapshot: Any = GREEN_SNAPSHOT,
     activities: Any = None,
+    predictions: Any = None,
 ) -> tuple[BearerAuthMiddleware, list[tuple[str, dict[str, Any]]]]:
     """A garmin-mcp look-alike (Streamable HTTP + /healthz behind the bearer check) and its call log."""
     errors = errors or {}
@@ -200,10 +229,21 @@ def fake_garmin_app(
         }
         return await respond("list_activities", arguments, activities or activities_payload([]))
 
+    async def get_race_predictions(start_date: str | None = None, end_date: str | None = None) -> str:
+        arguments = {"start_date": start_date, "end_date": end_date}
+        return await respond("get_race_predictions", arguments, predictions or RACE_PREDICTIONS_PAYLOAD)
+
     async def create_workout() -> str:
         return await respond("create_workout", {}, {"created": True})
 
-    for fn in (get_recovery_snapshot, get_hrv_trend, list_scheduled_workouts, list_activities, create_workout):
+    for fn in (
+        get_recovery_snapshot,
+        get_hrv_trend,
+        list_scheduled_workouts,
+        list_activities,
+        get_race_predictions,
+        create_workout,
+    ):
         server.add_tool(fn, name=fn.__name__, description=fn.__name__, structured_output=False)
 
     @server.custom_route("/healthz", methods=["GET"])

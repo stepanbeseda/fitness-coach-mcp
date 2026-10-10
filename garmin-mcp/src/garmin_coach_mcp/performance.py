@@ -12,7 +12,7 @@ from typing import Any
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .activities import none_if_missing
-from .formatting import as_dict, as_list, clean, clock, km, num, pace_per_km, resolve_date, today
+from .formatting import as_dict, as_list, clean, clock, km, num, pace_per_km, resolve_date, resolve_range, today
 from .garmin_client import GarminService, is_section_error, section_error
 from .health import UNAVAILABLE, _section
 
@@ -85,6 +85,48 @@ def shape_race_predictions(raw: Any) -> dict[str, Any]:
             out[name] = part
             found = True
     return clean(out) if found else dict(UNAVAILABLE)
+
+
+MAX_PREDICTION_SECONDS = 86400
+
+
+def _prediction_seconds(raw: Any) -> int | None:
+    """One predicted time in whole seconds, or None. A string is no value (`num` would convert it)."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    v = num(raw, 0)
+    return v if v is not None and 0 < v <= MAX_PREDICTION_SECONDS else None
+
+
+def shape_race_prediction_days(raw: Any, start: date, end: date) -> dict[str, Any]:
+    """Daily race predictions as {"count", "days": [{"date", "5k_seconds", ...}]}.
+
+    The shape of the daily answer is unverified until the capture on the test host (PR 14 spec, section 11):
+    every shape other than a list of entries keyed `calendarDate` degrades to "available": false.
+    """
+    by_day: dict[str, dict[str, Any]] = {}
+    for entry in _entries(raw, "calendarDate"):
+        text = _day(entry.get("calendarDate"))
+        if text is None:
+            continue
+        try:
+            day = date.fromisoformat(text)
+        except ValueError:
+            continue
+        if not start <= day <= end:
+            continue
+        values = {}
+        for name, key, _meters in RACE_DISTANCES:
+            seconds = _prediction_seconds(entry.get(key))
+            if seconds is not None:
+                values[f"{name}_seconds"] = seconds
+        if values:
+            by_day[day.isoformat()] = values  # a repeated date: the later entry wins
+    days = [{"date": d, **by_day[d]} for d in sorted(by_day)]
+    out: dict[str, Any] = {"count": len(days), "days": days}
+    if not days:
+        out["available"] = False
+    return out
 
 
 # ---------------------------------------------------------- lactate threshold
@@ -405,6 +447,22 @@ async def performance_metrics(service: GarminService, weeks: int, end: date | No
         "hill_score": _section(results, "hill_score", shape_hill_score),
         "vo2max": _section(results, "vo2max", shape_vo2max_trend),
     }
+
+
+async def race_predictions(service: GarminService, start_date: str | None, end_date: str | None) -> dict[str, Any]:
+    try:
+        start, end = resolve_range(start_date, end_date, service.settings.timezone, default_days=28, max_days=366)
+    except OverflowError as exc:
+        raise ToolError("start_date or end_date is out of range") from exc
+    s, e = start.isoformat(), end.isoformat()
+    # positional arguments: the library signature is (startdate, enddate, _type)
+    raw = await service.call(none_if_missing(lambda c: c.get_race_predictions(s, e, "daily")))
+    try:
+        shaped = shape_race_prediction_days(raw, start, end)
+    except Exception as exc:  # unexpected payload shape: degrade, don't fail the tool
+        log.warning("could not shape %s: %s", "race_predictions", type(exc).__name__)
+        shaped = {"error": "unexpected Garmin response for race_predictions"}
+    return {"start": s, "end": e, **shaped}
 
 
 async def running_tolerance(service: GarminService, weeks: int, end_date: str | None) -> dict[str, Any]:

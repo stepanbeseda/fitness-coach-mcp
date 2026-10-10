@@ -12,11 +12,17 @@ ACTIVITY_ID = 20003
 WEATHER_PATH = f"/activity-service/activity/{ACTIVITY_ID}/weather"
 SETS_PATH = f"/activity-service/activity/{ACTIVITY_ID}/exerciseSets"
 TOLERANCE_PATH = "/metrics-service/metrics/runningtolerance/stats"
+RACE_PATH = "/metrics-service/metrics/racepredictions/daily/athlete"
 
+# (call, path, logs_debug). The DEBUG line is the positive control that the logger is listening; a call without
+# one (the daily race predictions) gets its control from the 503 test, which captures its ERROR line through the
+# same caplog set-up.
 CALLS = {
-    "weather": (lambda g: g.get_activity_weather(ACTIVITY_ID), WEATHER_PATH),
-    "exercise_sets": (lambda g: g.get_activity_exercise_sets(ACTIVITY_ID), SETS_PATH),
-    "running_tolerance": (lambda g: g.get_running_tolerance("2026-08-06", "2026-09-30", "weekly"), TOLERANCE_PATH),
+    "weather": (lambda g: g.get_activity_weather(ACTIVITY_ID), WEATHER_PATH, True),
+    "exercise_sets": (lambda g: g.get_activity_exercise_sets(ACTIVITY_ID), SETS_PATH, True),
+    "running_tolerance": (
+        lambda g: g.get_running_tolerance("2026-08-06", "2026-09-30", "weekly"), TOLERANCE_PATH, True),
+    "race_predictions": (lambda g: g.get_race_predictions("2026-09-01", "2026-09-30", "daily"), RACE_PATH, False),
 }
 
 
@@ -36,6 +42,7 @@ class Stub:
 
 def _garmin(exc: Exception | None) -> tuple[Garmin, Stub]:
     garmin = Garmin(retry_attempts=0)
+    garmin.display_name = "athlete"  # else the library first asks /userprofile-service/socialProfile
     stub = Stub(exc)
     garmin.client = stub
     return garmin, stub
@@ -44,7 +51,7 @@ def _garmin(exc: Exception | None) -> tuple[Garmin, Stub]:
 @pytest.mark.parametrize("name", list(CALLS))
 @pytest.mark.parametrize("exc", [None, GarminConnectNotFoundError("API Error 404")], ids=["success", "404"])
 def test_new_calls_log_nothing_on_success_or_404(caplog, name, exc):
-    call, path = CALLS[name]
+    call, path, logs_debug = CALLS[name]
     garmin, stub = _garmin(exc)
     caplog.set_level(logging.DEBUG, logger="garminconnect")
     if exc is None:
@@ -54,13 +61,13 @@ def test_new_calls_log_nothing_on_success_or_404(caplog, name, exc):
             call(garmin)
     assert stub.paths == [path]
     records = [r for r in caplog.records if r.name.startswith("garminconnect")]
-    assert any(r.levelno == logging.DEBUG for r in records)  # positive control: the logger is listening
+    assert any(r.levelno == logging.DEBUG for r in records) is logs_debug  # control: the logger is listening
     assert [r for r in records if r.levelno >= logging.WARNING] == []
 
 
 @pytest.mark.parametrize("name", list(CALLS))
 def test_new_calls_log_path_on_server_error(caplog, name):
-    call, path = CALLS[name]
+    call, path, _ = CALLS[name]
     garmin, _ = _garmin(GarminConnectConnectionError("API Error 503 - x"))
     caplog.set_level(logging.DEBUG, logger="garminconnect")
     with pytest.raises(GarminConnectConnectionError):

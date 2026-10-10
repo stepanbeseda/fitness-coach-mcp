@@ -1,7 +1,7 @@
 # garmin-mcp (garmin-coach-mcp)
 
 A thin MCP server on top of [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) 0.3.17
-with ~22 selected tools for the coach. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp`
+with ~23 selected tools for the coach. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp`
 in a private Docker network; it is reachable only through the gateway, which sends an internal bearer token
 (`/run/secrets/garmin_backend_token`). Without the token the server rejects all MCP requests (fail closed).
 A second, read-only token (`/run/secrets/garmin_readonly_token`) belongs to `coach-mcp`. With it the server answers
@@ -22,6 +22,7 @@ broke in March 2026; `Taxuspt/garmin_mcp` has 153 tools and is stuck on garminco
 | `get_training_readiness`, `get_hrv_trend`, `get_sleep`, `get_body_battery`, `get_daily_summary`, `get_training_status` | `schedule_workout` – on a date (idempotent) |
 | `list_activities`, `get_activity` (laps, HR zones, weather; for strength activities the sets recorded on the watch: exercise, reps, kg) | `unschedule_workout` – remove from the calendar (destructive) |
 | `get_performance_metrics` – race predictions (time + pace/km), lactate threshold (HR, pace, power), heart-rate zones per sport, cycling power zones, endurance and hill score, weekly VO2max trend | |
+| `get_race_predictions` – Garmin's daily race predictions for a period (1–366 days, default 28): seconds per distance (5 km, 10 km, half marathon, marathon); days without a prediction are left out | |
 | `get_running_tolerance` – Garmin's weekly running load vs. tolerance (1–26 weeks, default 8; Garmin's own field names) | |
 | `get_personal_records` (personal records), `get_gear` (shoes, bikes: distance covered, activity count, limit, retired) | `log_weight` – manual weigh-in in kg (optional date, not in the future) for athletes without a Garmin scale; not idempotent |
 | `get_body_composition` – weigh-ins for a period (max 366 days, default 30): weight, BMI, body fat %, muscle mass, body water %, bone mass + summary (first/last, change, 7-day average) | |
@@ -101,6 +102,12 @@ verified yet. On the account it was tested with, `get_running_tolerance` returns
 untested on real data: each week passes Garmin's own field names through (snake_case, identifiers dropped). On a Garmin
 server error the library logs the API path, which contains the activity id (as for the other activity calls), and can
 include Garmin's error message; no health values are logged.
+
+Known uncertainty: the shape of Garmin's daily race-prediction answer (`get_race_predictions`) has not been
+captured on a real account. The tool expects a list of entries keyed `calendarDate`, `time5K`, `time10K`,
+`timeHalfMarathon` and `timeMarathon` like the latest answer and returns `available: false` or an `error` section
+for any other shape. On a Garmin server error the library logs the API path, which contains the Garmin display
+name, as for the other calls.
 
 Known uncertainty: a custom cycling power range is sent as `power.zone` + `targetValueOne/Two`
 (the convention of python-garminconnect's typed models); after creating the first such workout, check in Garmin

@@ -17,8 +17,8 @@ from coach_mcp.store import (
 
 # The schema version of the strength tables: the only number that changes when this migration is renumbered.
 STRENGTH_VERSION = 5
-# The latest schema version (history repair, PR 18); the other number pinned by hand.
-LATEST_VERSION = 7
+# The latest schema version (goal progress, PR 14); the other number pinned by hand.
+LATEST_VERSION = 8
 
 
 def _tables(path) -> set[str]:
@@ -52,6 +52,9 @@ def test_empty_file_gets_schema_and_version(db_path):
         "strength_workouts",
         "hevy_templates",
         "hevy_sync",
+        "race_predictions",
+        "prediction_sync",
+        "weekly_reports",
     } <= _tables(db_path)
     assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == LATEST_VERSION
     assert s.check() == SCHEMA_VERSION
@@ -1104,3 +1107,170 @@ def test_upsert_history_recovery_missing_is_optional(store):
     assert store.history_rows(None, D3)[0]["recovery_missing"] == ""
     store.upsert_history_recovery(D2, {"readiness": 60}, D3)  # a new row without ``missing`` stays NULL
     assert store.history_rows(D2, D2)[0]["recovery_missing"] is None
+
+
+# ------------------------------------------------- goal progress (migration 8, PR 14)
+
+PREDICTION_VERSION = next(i + 1 for i, script in enumerate(MIGRATIONS) if "race_predictions" in script)
+# Keep in sync with the 8 -> 7 downgrade command in coach-mcp/README.md.
+DOWNGRADE_8_SQL = (
+    "BEGIN IMMEDIATE; DROP TABLE weekly_reports; DROP TABLE prediction_sync; DROP TABLE race_predictions; "
+    "ALTER TABLE goals DROP COLUMN target_value; ALTER TABLE goals DROP COLUMN metric; "
+    "PRAGMA user_version = 7; COMMIT;"
+)
+NEW_TABLES = {"race_predictions", "prediction_sync", "weekly_reports"}
+
+
+def _old_store(db_path, monkeypatch) -> Store:
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: PREDICTION_VERSION - 1])
+        old = Store(db_path)
+    assert _user_version(db_path) == PREDICTION_VERSION - 1
+    return old
+
+
+def _raw(db_path, sql: str, params: tuple = ()) -> None:
+    """Run one statement on a fresh connection (the CHECK constraints are the subject)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        with conn:
+            conn.execute(sql, params)
+    finally:
+        conn.close()
+
+
+def test_migration_8_upgrades_a_version_7_file_with_data(db_path, monkeypatch):
+    old = _old_store(db_path, monkeypatch)
+    goal_id = old.insert_goal({"title": "Keep me", "target": "1:40", "target_date": date(2027, 4, 5)})
+    constraint_id = old.insert_constraint({"kind": "injury", "title": "Left knee"})
+    session_id = _one_session(old)
+    note_id = old.insert_note(date(2026, 10, 7), "A note", session_id)
+    old.record_briefing_sent(date(2026, 10, 7), "yellow", {"hrv_below_baseline": (True, True)})
+    old.upsert_history_recovery(D1, {"readiness": 70, "hrv_last_night_ms": 55.5}, D2)
+    old.upsert_history_activities({D1: '{"running":{"count":1}}'}, D3)
+    goals_before = old.list_goals()
+    history_before = old.history_rows(None, D3)
+    assert NEW_TABLES.isdisjoint(_tables(db_path))
+    new = Store(db_path)
+    assert _user_version(db_path) == SCHEMA_VERSION
+    assert NEW_TABLES <= _tables(db_path)
+    (goal,) = new.list_goals()
+    assert {k: goal[k] for k in goals_before[0]} == goals_before[0]
+    assert goal["metric"] is None and goal["target_value"] is None
+    assert new.history_rows(None, D3) == history_before
+    constraint = new.get_constraint(constraint_id)
+    assert constraint is not None and constraint["title"] == "Left knee"
+    session, note = new.get_session(session_id), new.get_note(note_id)
+    assert session is not None and session["description"] == "Easy run"
+    assert note is not None and note["text"] == "A note"
+    assert new.briefing_sent(date(2026, 10, 7)) is True
+    assert [n["id"] for n in new.search_notes("note", None, None, None, 10)] == [note_id]
+
+
+def test_migration_8_checks(store, db_path):
+    gid = store.insert_goal({"title": "Goal"})
+    goal = "UPDATE goals SET metric = ?, target_value = ? WHERE id = ?"
+    for bad in (("race_1k", None), (None, 1800.0), ("race_5k", 0), ("race_5k", 1000000)):
+        with pytest.raises(sqlite3.IntegrityError):
+            _raw(db_path, goal, (*bad, gid))
+    _raw(db_path, goal, ("race_5k", 999999.9, gid))
+    _raw(db_path, goal, (None, None, gid))  # clearing both in one statement
+    with pytest.raises(sqlite3.IntegrityError):  # metric NULL alone while a target is stored
+        _raw(db_path, goal, ("race_5k", 1800.0, gid))
+        _raw(db_path, "UPDATE goals SET metric = NULL WHERE id = ?", (gid,))
+    insert = (
+        "INSERT INTO race_predictions (date, {col}, fetched_on, updated_at) VALUES (?, ?, '2026-10-07', 'x')"
+    )
+    for column in ("time_5k_s", "time_10k_s", "time_half_marathon_s", "time_marathon_s"):
+        for bad in (0, 86401):
+            with pytest.raises(sqlite3.IntegrityError):
+                _raw(db_path, insert.format(col=column), ("2026-10-01", bad))
+    _raw(db_path, insert.format(col="time_5k_s"), ("2026-10-01", 86400))
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw(db_path, insert.format(col="time_5k_s"), ("2026-10-0", 1290))
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw(db_path, "INSERT INTO prediction_sync (id, covered_from, synced_on, updated_at) VALUES (2, 'a', 'b', 'c')")
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw(db_path, "INSERT INTO weekly_reports (week, sent_at) VALUES ('2026-W4', 'x')")
+    _raw(db_path, "INSERT INTO weekly_reports (week, sent_at) VALUES ('2026-W41', 'x')")
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw(db_path, "INSERT INTO weekly_reports (week, sent_at) VALUES ('2026-W41', 'y')")
+
+
+def test_store_race_predictions_upserts_whole_days(store):
+    d1, d2 = date(2026, 10, 5), date(2026, 10, 6)
+    store.store_race_predictions(
+        {d1: {"time_5k_s": 1300, "time_10k_s": 2700}, d2: {"time_5k_s": 1290, "time_marathon_s": 12000.5}},
+        date(2026, 10, 7), date(2026, 9, 27),
+    )
+    assert store.prediction_sync_state() == {"covered_from": "2026-09-27", "synced_on": "2026-10-07"}
+    rows = {r["date"]: r for r in store.race_prediction_rows(None, date(2026, 10, 7))}
+    assert (rows["2026-10-05"]["time_5k_s"], rows["2026-10-05"]["time_10k_s"]) == (1300, 2700)
+    assert rows["2026-10-05"]["time_half_marathon_s"] is None and rows["2026-10-06"]["time_marathon_s"] == 12000.5
+    store.store_race_predictions({d2: {"time_5k_s": 1280}}, date(2026, 10, 8), date(2026, 9, 20))
+    rows = {r["date"]: r for r in store.race_prediction_rows(None, date(2026, 10, 7))}
+    assert rows["2026-10-06"]["time_5k_s"] == 1280 and rows["2026-10-06"]["time_marathon_s"] is None  # all four replaced
+    assert rows["2026-10-06"]["fetched_on"] == "2026-10-08"
+    assert rows["2026-10-05"]["time_10k_s"] == 2700 and rows["2026-10-05"]["fetched_on"] == "2026-10-07"
+    assert store.prediction_sync_state() == {"covered_from": "2026-09-20", "synced_on": "2026-10-08"}
+    store.store_race_predictions({}, date(2026, 10, 9), date(2026, 9, 20))
+    assert store.prediction_sync_state()["synced_on"] == "2026-10-09" and len(store.race_prediction_rows(None, d2)) == 2
+    with pytest.raises(ValueError, match="unknown column"):
+        store.store_race_predictions({d1: {"time_1k_s": 1}}, date(2026, 10, 9), date(2026, 9, 20))
+
+
+def test_race_prediction_rows_range(store):
+    days = [date(2026, 10, n) for n in (1, 2, 3, 4)]
+    store.store_race_predictions({d: {"time_5k_s": 1300 + d.day} for d in days}, date(2026, 10, 7), days[0])
+    assert [r["date"] for r in store.race_prediction_rows(date(2026, 10, 2), date(2026, 10, 3))] == [
+        "2026-10-02", "2026-10-03"]
+    assert [r["date"] for r in store.race_prediction_rows(None, date(2026, 10, 2))] == ["2026-10-01", "2026-10-02"]
+
+
+def test_store_race_predictions_is_one_transaction(store):
+    d1, d2 = date(2026, 10, 5), date(2026, 10, 6)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.store_race_predictions({d1: {"time_5k_s": 1290}, d2: {"time_5k_s": 0}}, date(2026, 10, 7), d1)
+    assert store.race_prediction_rows(None, date(2026, 10, 7)) == []
+    assert store.prediction_sync_state() is None
+
+
+def test_weekly_report_sent_records_once(store):
+    assert store.weekly_report_sent("2026-W41") is False
+    store.record_weekly_report_sent("2026-W41")
+    assert store.weekly_report_sent("2026-W41") is True and store.weekly_report_sent("2026-W42") is False
+    with pytest.raises(sqlite3.IntegrityError):
+        store.record_weekly_report_sent("2026-W41")
+
+
+def test_downgrade_8_sql_returns_to_a_version_7_file(db_path, monkeypatch):
+    # It is an 8 -> 7 recipe: the file is built at the prediction version.
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:PREDICTION_VERSION])
+        new = Store(db_path)
+    goal_id = new.insert_goal({"title": "Keep me", "metric": "race_10k", "target_value": 2700.0})
+    new.upsert_history_recovery(D1, {"readiness": 70}, D2)
+    new.store_race_predictions({D1: {"time_5k_s": 1290}}, D3, D1)
+    new.record_weekly_report_sent("2026-W41")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_8_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == PREDICTION_VERSION - 1
+    assert NEW_TABLES.isdisjoint(_tables(db_path))
+    conn = sqlite3.connect(db_path)
+    try:
+        assert not {"metric", "target_value"} & {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+    finally:
+        conn.close()
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[: PREDICTION_VERSION - 1])
+    old = Store(db_path)
+    goal = old.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    assert old.history_rows(None, D3)[0]["readiness"] == 70
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:PREDICTION_VERSION])
+    again = Store(db_path)
+    assert _user_version(db_path) == PREDICTION_VERSION
+    goal = again.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me" and goal["metric"] is None

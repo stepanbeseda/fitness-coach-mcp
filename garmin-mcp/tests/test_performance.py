@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from garminconnect import GarminConnectNotFoundError
@@ -8,6 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 import fixtures as fx
 from conftest import AUTH_ERROR, CONN_ERROR
 from garmin_coach_mcp import performance
+from garmin_coach_mcp.formatting import today
 
 END = date(2026, 9, 30)
 
@@ -463,3 +464,113 @@ async def test_running_tolerance_captured_empty(service, fake):
     fake.responses["get_running_tolerance"] = fx.RUNNING_TOLERANCE_EMPTY
     out = await performance.running_tolerance(service, 8, "2026-09-30")
     assert out == {"start": "2026-08-06", "end": "2026-09-30", "aggregation": "weekly", "available": False}
+
+
+# ------------------------------------------------- daily race predictions (PR 14)
+
+DAILY_START, DAILY_END = date(2026, 9, 28), date(2026, 9, 30)
+
+
+def test_shape_race_prediction_days_daily_list():
+    out = performance.shape_race_prediction_days(fx.RACE_PREDICTIONS_DAILY, DAILY_START, DAILY_END)
+    assert out["count"] == 3 and "available" not in out
+    assert [d["date"] for d in out["days"]] == ["2026-09-28", "2026-09-29", "2026-09-30"]  # sorted, 09-20 dropped
+    assert out["days"][0] == {"date": "2026-09-28", "5k_seconds": 1300, "10k_seconds": 2720,
+                              "half_marathon_seconds": 6010, "marathon_seconds": 12400}
+    assert all(isinstance(v, int) for d in out["days"] for k, v in d.items() if k != "date")
+
+
+def test_shape_race_prediction_days_entry_shapes():
+    shape = performance.shape_race_prediction_days
+    single = shape(fx.RACE_PREDICTIONS, DAILY_START, DAILY_END)
+    assert single["count"] == 1 and single["days"][0]["date"] == "2026-09-30"
+    wrapped = shape(fx.RACE_PREDICTIONS_WRAPPED, DAILY_START, DAILY_END)
+    assert [d["date"] for d in wrapped["days"]] == ["2026-09-28", "2026-09-29"]
+    for raw in (None, [], {}, "x", 5):
+        assert shape(raw, DAILY_START, DAILY_END) == {"count": 0, "days": [], "available": False}
+
+
+def test_shape_race_prediction_days_values():
+    def entry(**kw):
+        return {"calendarDate": "2026-09-30", **kw}
+
+    shape = performance.shape_race_prediction_days
+    odd = entry(time5K=0, time10K=-5, timeHalfMarathon=86401, timeMarathon=True)
+    assert shape([odd], DAILY_START, DAILY_END)["count"] == 0
+    assert shape([entry(time5K="1290", time10K=None)], DAILY_START, DAILY_END)["count"] == 0  # a string is no value
+    kept = shape([entry(time5K=86400, time10K=1, timeHalfMarathon=1290.6, timeMarathon=float("nan"))],
+                 DAILY_START, DAILY_END)
+    assert kept["days"] == [{"date": "2026-09-30", "5k_seconds": 86400, "10k_seconds": 1, "half_marathon_seconds": 1291}]
+    partial = shape([entry(time5K=1290, time10K="x", timeHalfMarathon=0)], DAILY_START, DAILY_END)
+    assert partial["days"] == [{"date": "2026-09-30", "5k_seconds": 1290}]
+
+
+def test_shape_race_prediction_days_dates():
+    shape = performance.shape_race_prediction_days
+    entries = [{"calendarDate": c, "time5K": 1290} for c in ("2026-13-01", None, "2026-9-1", 20260930)]
+    entries.append({"time5K": 1290})
+    assert shape(entries, DAILY_START, DAILY_END)["count"] == 0
+    stamped = shape([{"calendarDate": "2026-09-30T00:00:00.0", "time5K": 1290}], DAILY_START, DAILY_END)
+    assert stamped["days"][0]["date"] == "2026-09-30"
+    twice = shape([{"calendarDate": "2026-09-30", "time5K": 1290, "time10K": 2700},
+                   {"calendarDate": "2026-09-30", "time5K": 1280}], DAILY_START, DAILY_END)
+    assert twice["days"] == [{"date": "2026-09-30", "5k_seconds": 1280}]
+    edges = shape([{"calendarDate": "2026-09-27", "time5K": 1}, {"calendarDate": "2026-10-01", "time5K": 1},
+                   {"calendarDate": "2026-09-28", "time5K": 1}, {"calendarDate": "2026-09-30", "time5K": 1}],
+                  DAILY_START, DAILY_END)
+    assert [d["date"] for d in edges["days"]] == ["2026-09-28", "2026-09-30"]
+
+
+@pytest.mark.anyio
+async def test_race_predictions_tool_positional_call(service, fake):
+    fake.responses["get_race_predictions"] = fx.RACE_PREDICTIONS_DAILY
+    out = await performance.race_predictions(service, "2026-09-03", "2026-09-30")
+    assert ("get_race_predictions", ("2026-09-03", "2026-09-30", "daily")) in fake.calls
+    assert out["start"] == "2026-09-03" and out["end"] == "2026-09-30" and out["count"] == 4
+
+
+@pytest.mark.anyio
+async def test_race_predictions_tool_defaults(service, fake):
+    out = await performance.race_predictions(service, None, None)
+    end = today(service.settings.timezone)
+    assert out["end"] == end.isoformat() and out["start"] == (end - timedelta(days=27)).isoformat()
+    assert ("get_race_predictions", (out["start"], out["end"], "daily")) in fake.calls
+
+
+@pytest.mark.anyio
+async def test_race_predictions_range_limits(service, fake):
+    ok = await performance.race_predictions(service, "2025-10-01", "2026-10-01")  # 366 days
+    assert ok["start"] == "2025-10-01"
+    with pytest.raises(ToolError, match="date range too long"):
+        await performance.race_predictions(service, "2025-09-30", "2026-10-01")
+    with pytest.raises(ToolError, match="on or before"):
+        await performance.race_predictions(service, "2026-10-02", "2026-10-01")
+    calls = len(fake.calls)
+    with pytest.raises(ToolError, match="out of range"):
+        await performance.race_predictions(service, None, "0001-01-01")
+    assert len(fake.calls) == calls
+    far = await performance.race_predictions(service, "9999-12-01", "9999-12-31")
+    assert ("get_race_predictions", ("9999-12-01", "9999-12-31", "daily")) in fake.calls
+    assert far["end"] == "9999-12-31"
+
+
+@pytest.mark.anyio
+async def test_race_predictions_failures(service, fake, monkeypatch):
+    fake.fail["get_race_predictions"] = GarminConnectNotFoundError("API Error 404")
+    out = await performance.race_predictions(service, "2026-09-28", "2026-09-30")
+    assert out == {"start": "2026-09-28", "end": "2026-09-30", "count": 0, "days": [], "available": False}
+    fake.fail["get_race_predictions"] = CONN_ERROR
+    with pytest.raises(ToolError, match="Garmin Connect request failed"):
+        await performance.race_predictions(service, "2026-09-28", "2026-09-30")
+    fake.fail["get_race_predictions"] = AUTH_ERROR
+    with pytest.raises(ToolError, match="garmin-login.sh"):
+        await performance.race_predictions(service, "2026-09-28", "2026-09-30")
+    del fake.fail["get_race_predictions"]
+
+    def boom(raw, start, end):
+        raise KeyError("x")
+
+    monkeypatch.setattr(performance, "shape_race_prediction_days", boom)
+    out = await performance.race_predictions(service, "2026-09-28", "2026-09-30")
+    assert out == {"start": "2026-09-28", "end": "2026-09-30",
+                   "error": "unexpected Garmin response for race_predictions"}

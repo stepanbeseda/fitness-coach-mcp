@@ -7,14 +7,15 @@ OAuth 2.1 gateway on your own server:
 - **Garmin Connect** (`garmin-mcp/`, custom server on
   [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect) 0.3.17). It reads HRV, sleep,
   Body Battery, training readiness, activities (with the weather and the sets of strength sessions recorded on
-  the watch), performance metrics (race predictions, lactate threshold, heart-rate and power zones, VO2max),
-  running tolerance, personal records, gear, body composition, nutrition and hydration. It can log a manual
-  weigh-in and create structured run/ride workouts scheduled to the watch.
+  the watch), performance metrics (race predictions and their daily history, lactate threshold, heart-rate and
+  power zones, VO2max), running tolerance, personal records, gear, body composition, nutrition and hydration. It
+  can log a manual weigh-in and create structured run/ride workouts scheduled to the watch.
 - **Hevy** (`hevy-mcp/`, upstream [`chrisdoc/hevy-mcp`](https://github.com/chrisdoc/hevy-mcp) 6.1.16). It covers
   strength-training history, routines, exercise templates and writing routines and workouts.
 - **Coach memory** (`coach-mcp/`, custom server on SQLite). It stores goals, constraints (injuries, available
   days, equipment), a dated training plan with status, and a notes log. On top of that it computes:
   - a deterministic morning briefing (green / yellow / red), optionally pushed to Telegram;
+  - goal progress (race predictions, VO2max) and a Monday weekly report in Telegram;
   - nightly Garmin and Hevy history for trends beyond 28 days, a weekly report, strength progress (estimated
     1RM) and correlations;
   - plan reconciliation against recorded activities;
@@ -416,6 +417,7 @@ gateway login opens.
 | Change the password / new TOTP | `scripts/setup-secrets.sh password` / `scripts/setup-secrets.sh totp` |
 | Rotate internal tokens | `scripts/setup-secrets.sh backend-tokens` (including the read-only token `coach-mcp` uses for `garmin-mcp`) |
 | Morning briefing by hand | `docker compose exec coach-mcp python -m coach_mcp send-briefing` |
+| Weekly report by hand | `docker compose exec coach-mcp python -m coach_mcp send-weekly-report` |
 | Nightly history (progress) | `docker compose logs coach-mcp` (lines `history status=…`) |
 | Backup | `scripts/backup.sh` (for cron: `--quiet`, exit 1 = no archive was created) |
 | Telegram bot | `scripts/setup-secrets.sh telegram-token` (token from @BotFather, prints the chat id), `scripts/setup-secrets.sh telegram-chat-id` (the chat id again) |
@@ -462,10 +464,10 @@ It is computed without an LLM, and the `get_daily_briefing` tool computes it the
 data. The text is in English by default; `COACH_LANGUAGE=cs` switches it to Czech (catalogue in
 `coach-mcp/src/coach_mcp/messages.py`).
 
-**Privacy:** the message contains health data. It leaves your server and tailnet for Telegram's servers and
-stays in the chat history until you delete it; bot chats are not end-to-end encrypted. The bot token
-(`secrets/telegram_bot_token`) gives full control of the bot. If it leaks, revoke it with @BotFather and store
-the new one with `scripts/setup-secrets.sh telegram-token`.
+**Privacy:** the messages contain health data and the Monday report also your goal titles. They leave your server
+and tailnet for Telegram's servers and stay in the chat history until you delete them; bot chats are not
+end-to-end encrypted. The bot token (`secrets/telegram_bot_token`) gives full control of the bot. If it leaks,
+revoke it with @BotFather and store the new one with `scripts/setup-secrets.sh telegram-token`.
 
 To turn it on:
 
@@ -497,6 +499,20 @@ gave_up`, `push status=…`, `garmin status=…`), never the message content, nu
 `send-briefing` runs as a separate process: it prints the same lines to the terminal only, not to the
 container log.
 
+**Monday report.** On Mondays, right after the briefing, a second message follows: last week's numbers from
+`get_weekly_report` (endurance, strength, sleep, HRV, resting HR, plan, new bests and watch-outs) and the
+progress of your goals with a metric (`get_goal_progress`). It goes out once per ISO week (the week it reports)
+and never without the briefing: when the briefing was not sent that day (it gave up, or the service started after
+the cutoff), there is no Monday report that week. It uses the same retry interval and cutoff as the briefing.
+`COACH_WEEKLY_PUSH=false` in `.env` turns it off (the briefing stays). By hand, for a look at the last complete
+week on any day (no state is written, the setting is ignored):
+
+```bash
+docker compose exec coach-mcp python -m coach_mcp send-weekly-report
+```
+
+The log words are `weekly status=sent|waiting|skipped|gave_up|crashed|state_error`.
+
 ### Nightly history
 
 `get_hrv_trend` reaches only 28 days back and `get_body_battery` 31. So the coach can see further, `coach-mcp`
@@ -505,15 +521,22 @@ HR, Body Battery, stress, readiness, load, VO2max and activity totals per sport.
 - `get_trends` reads them by day, week or month.
 - `get_weekly_report` builds the weekly review from them.
 - `get_correlations` computes correlations (association, not cause).
+- `get_goal_progress` follows the goals that have a metric: Garmin's race predictions and running VO2max.
+
+Once a night, after the Garmin part, one more call (`get_race_predictions`) fetches Garmin's daily race
+predictions for the missing range (on the first run the whole backfill range) into the same database. Its log
+line is `history status=… part=predictions days=… ms=…`. A failed call changes nothing, and the next night asks
+for the whole missed range again.
 
 The data stays on the server, so no personal data is newly exposed. From the stored activities the server
 suggests a status for the planned sessions of the last 7 days every night (`matched` / `no_activity`). It
 never changes the status itself; the coach confirms it with `update_session`.
 
-The first run is the largest. A minute after deployment it starts loading 90 days back: about 470 Garmin
-Connect calls in 103 `garmin-mcp` calls with a 15 s pause, roughly 30 minutes in total. After that it is about
-16 calls a night, plus at most 5 answered repair calls for days on which Garmin answered a section with an error
-(they are asked for again on later nights, see `coach-mcp/README.md`). Nothing is called between
+The first run is the largest. A minute after deployment it starts loading 90 days back: about 471 Garmin
+Connect calls in 104 `garmin-mcp` calls (one of them for the race predictions of the whole range) with a 15 s
+pause, roughly 30 minutes in total. After that it is about 17 calls a night (one for the race predictions), plus
+at most 5 answered repair calls for days on which Garmin answered a section with an error (they are asked for
+again on later nights, see `coach-mcp/README.md`). Nothing is called between
 `COACH_BRIEFING_TIME` and `COACH_BRIEFING_CUTOFF`, so the morning briefing and the history do not share Garmin's
 rate limit; the run continues after the cutoff. If `COACH_HISTORY_TIME` falls inside this window, the nightly run
 starts only at `COACH_BRIEFING_CUTOFF` (logged once as `history status=config_warning`).
@@ -757,6 +780,7 @@ last `COACH_HISTORY_BACKFILL_DAYS` days from Garmin after startup. The Hevy stre
 | The briefing and history have no Garmin data, the `garmin-mcp` log says `read-only token file missing or too short` | `secrets/garmin_readonly_token` is empty → `scripts/setup-secrets.sh` fills it; running services pick up the new token by themselves. |
 | `coach-mcp` keeps restarting, log says `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | `.env` has a chat id but the token is missing or corrupt → `scripts/setup-secrets.sh telegram-token`, or delete the chat id from `.env` (briefing off). |
 | `get_trends` / `get_weekly_report` have no data, `get_correlations` returns `too_few_pairs` | The history is still loading (first run ~30 min, outside the briefing window) or Garmin is not logged in: `docker compose logs coach-mcp`, lines `history status=…` (`rate_limited` = Garmin limited the calls, next attempt in 1 to 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect or the internet did not work, next attempt in 1 to 8 h, the days do not count; `given_up` > 0 = days that failed three times although Garmin returned other days). |
+| `get_goal_progress` shows `available: false` or a goal without a projection | `reason` says why. `available: false`: `no_recent_value` / `too_few_values` = no value in the last 14 days or fewer than 14 values over 4 weeks (the race predictions need a night of history first; `docker compose logs coach-mcp`, lines `part=predictions`). `available: true` without a projection: `no_target_date`, `target_date_passed`, `target_date_too_far` (needs a target date within 26 weeks), `trend_too_steep`; `no_target_value` = projection but no verdict (give `set_goal` a `target_value`). A goal without `metric` is not listed (give it one with `set_goal`). |
 | `get_plan` has no `suggestion` on a past session | The session is not `planned`, is of type `mobility` / `other`, the day has not loaded yet (first the day after the session at 03:30), it is more than 7 days older than the deployment, or the history is off (`COACH_HISTORY_ENABLED=false`); see the `history status=… matched=… no_activity=…` line in `docker compose logs coach-mcp`. |
 | `get_strength_progress` or the strength part of `get_weekly_report` has no data | The strength history is still loading or `hevy-mcp` does not work: `docker compose logs coach-mcp`, lines `history status=… part=strength` (`no_credentials` = the `coach-mcp` container has no `hevy_backend_token`, after an update run `docker compose up -d coach-mcp`; `unreachable` = `hevy-mcp` does not respond; `auth` = invalid Hevy key, `scripts/setup-secrets.sh hevy-key`; `rate_limited` = Hevy limited the calls, next attempt in 1 to 8 h; `service_error` = Hevy returned an error or an unexpected page, next attempt in 1 to 8 h). |
 | `get_weather_forecast`: "No home location configured" | `COACH_HOME_LATITUDE` and `COACH_HOME_LONGITUDE` are missing from `.env` → add both and `docker compose up -d coach-mcp`; or pass coordinates as arguments. |

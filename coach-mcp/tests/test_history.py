@@ -29,6 +29,8 @@ from coach_mcp.history import (
     missing_sections,
     missing_text,
     needs_fetch,
+    prediction_range,
+    prediction_values,
     recovery_values,
     repair_sections,
     section_errors,
@@ -2527,3 +2529,326 @@ async def test_an_answered_repair_charges_the_held_errors_of_the_run(store):
     assert source.snapshot_days == [yesterday, first, second]
     # The answered repair of `first` showed that the call works, so yesterday's error is charged to it.
     assert rows_by_date(store)["2026-10-06"]["recovery_failures"] == 1
+
+
+# -------------------------------------------------- race predictions part (PR 14)
+
+
+def prediction_payload(start: date, end: date, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"start": start.isoformat(), "end": end.isoformat(), "count": len(entries), "days": entries}
+
+
+def prediction_day(day: str, **seconds: Any) -> dict[str, Any]:
+    return {"date": day, **seconds}
+
+
+def two_days(start: date, end: date, index: int):
+    entries = [
+        prediction_day("2026-09-29", **{"5k_seconds": 1300, "10k_seconds": 2720}),
+        prediction_day("2026-10-05", **{"5k_seconds": 1290, "10k_seconds": 2700, "marathon_seconds": 12310}),
+    ]
+    return "ok", prediction_payload(start, end, [e for e in entries if start <= date.fromisoformat(e["date"]) <= end])
+
+
+def prediction_lines(caplog) -> list[logging.LogRecord]:
+    return [r for r in history_lines(caplog) if "part=predictions" in r.getMessage()]
+
+
+def stored_predictions(store) -> dict[str, dict[str, Any]]:
+    return {r["date"]: r for r in store.race_prediction_rows(None, date(2030, 1, 1))}
+
+
+@pytest.mark.anyio
+async def test_first_run_asks_for_the_whole_range_once_after_the_garmin_calls(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=10, predictions=source)
+    await run_first(job, clock)
+    assert source.prediction_ranges == [(date(2026, 9, 27), date(2026, 10, 6))]
+    names = [n for n, _ in source.calls]
+    assert names.count("get_race_predictions") == 1 and names[-1] == "get_race_predictions"
+    assert len(names) == 10 + 2 + 1
+    assert source.calls[-1][1] == {"start_date": "2026-09-27", "end_date": "2026-10-06"}
+    rows = stored_predictions(store)
+    assert sorted(rows) == ["2026-09-29", "2026-10-05"]
+    assert (rows["2026-10-05"]["time_5k_s"], rows["2026-10-05"]["time_marathon_s"]) == (1290, 12310)
+    assert rows["2026-09-29"]["time_half_marathon_s"] is None
+    assert store.prediction_sync_state() == {"covered_from": "2026-09-27", "synced_on": "2026-10-07"}
+    (line,) = prediction_lines(caplog)
+    assert line.levelno == logging.INFO and line.getMessage().startswith("history status=done part=predictions days=2 ms=")
+    plain = [m for m in garmin_lines(caplog) if "part=" not in m]  # the Garmin line is separate and unchanged
+    assert len(plain) == 1 and plain[0].startswith("history status=done fetched=")
+
+
+@pytest.mark.anyio
+async def test_second_run_the_same_day_makes_no_predictions_call(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=10, predictions=source)
+    await run_first(job, clock)
+    assert await job.run_once() == "done"
+    assert len(source.prediction_ranges) == 1 and len(prediction_lines(caplog)) == 1  # synced_on == today: nothing due
+
+
+@pytest.mark.anyio
+async def test_next_night_refetches_the_last_three_days_only(store):
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=10, predictions=source)
+    delay = await run_first(job, clock)
+    await next_run(job, clock, delay)  # 2026-10-08 03:30
+    assert source.prediction_ranges[1] == (date(2026, 10, 4), date(2026, 10, 7))
+    assert store.prediction_sync_state() == {"covered_from": "2026-09-27", "synced_on": "2026-10-08"}
+    assert sorted(stored_predictions(store)) == ["2026-09-29", "2026-10-05"]  # nothing was removed
+
+
+@pytest.mark.anyio
+async def test_a_longer_backfill_asks_for_the_older_range(store):
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=10, predictions=source)
+    await run_first(job, clock)
+    longer, clock2 = make_job(
+        store, source, local(date(2026, 10, 8), 3, 29), history_backfill_days=20, predictions=source
+    )
+    await run_first(longer, clock2)
+    assert source.prediction_ranges[1] == (date(2026, 9, 18), date(2026, 10, 7))
+    assert store.prediction_sync_state() == {"covered_from": "2026-09-18", "synced_on": "2026-10-08"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "answer",
+    [("error", None), ("ok", {"start": "2026-09-27", "end": "2026-10-06", "error": "unexpected Garmin response"})],
+    ids=["call-error", "error-section"],
+)
+async def test_a_failed_predictions_call_changes_no_state_and_retries_the_whole_range(store, caplog, answer):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    failing = {"on": True}
+
+    def predictions(start, end, index):
+        return answer if failing["on"] else two_days(start, end, index)
+
+    source = FakeHistorySource(predictions=predictions)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=10, predictions=source)
+    delay = await run_first(job, clock)
+    assert stored_predictions(store) == {} and store.prediction_sync_state() is None
+    (line,) = prediction_lines(caplog)
+    assert line.levelno == logging.WARNING and line.getMessage().startswith("history status=error part=predictions days=0 ms=")
+    assert clock.now() + timedelta(seconds=delay) == local(date(2026, 10, 8), 3, 30)  # as for done
+    failing["on"] = False
+    await next_run(job, clock, delay)
+    assert source.prediction_ranges[1] == (date(2026, 9, 28), date(2026, 10, 7))  # the full range again
+    assert store.prediction_sync_state() == {"covered_from": "2026-09-28", "synced_on": "2026-10-08"}
+
+
+@pytest.mark.anyio
+async def test_predictions_rate_limit_backs_off_an_hour_and_retries(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    answers = iter([("rate_limited", None)])
+    source = FakeHistorySource(predictions=lambda s, e, i: next(answers, None) or two_days(s, e, i))
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=3, predictions=source)
+    delay = await run_first(job, clock)
+    assert delay == 3600.0
+    (line,) = prediction_lines(caplog)
+    assert line.levelno == logging.WARNING and line.getMessage().startswith("history status=rate_limited part=predictions")
+    assert store.prediction_sync_state() is None
+    await next_run(job, clock, delay)
+    assert len(source.prediction_ranges) == 2 and store.prediction_sync_state() is not None
+    assert len(source.snapshot_days) == 3  # the Garmin part was done and not repeated
+
+
+@pytest.mark.anyio
+async def test_predictions_auth_error_is_scheduled_like_done(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    source = FakeHistorySource(predictions=lambda s, e, i: ("auth_error", None))
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=3, predictions=source)
+    delay = await run_first(job, clock)
+    assert clock.now() + timedelta(seconds=delay) == local(date(2026, 10, 8), 3, 30)
+    (line,) = prediction_lines(caplog)
+    assert line.getMessage().startswith("history status=auth part=predictions days=0")
+    assert line.levelno == logging.WARNING
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["unreachable", "no_credentials"])
+async def test_predictions_unreachable_or_no_credentials_change_nothing(store, caplog, outcome):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    source = FakeHistorySource(predictions=lambda s, e, i: (outcome, None))
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=3, predictions=source)
+    delay = await run_first(job, clock)
+    assert clock.now() + timedelta(seconds=delay) == local(date(2026, 10, 8), 3, 30)
+    assert store.prediction_sync_state() is None
+    (line,) = prediction_lines(caplog)
+    assert line.getMessage().startswith(f"history status={outcome} part=predictions days=0")
+
+
+@pytest.mark.anyio
+async def test_predictions_run_in_the_briefing_window_pause_until_the_cutoff(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    yesterday = date(2026, 10, 6)
+    seed_day(store, yesterday, fetched_on=TODAY, readiness=50)
+    seed_activities(store, yesterday, {}, fetched_on=TODAY)  # the Garmin part has nothing to do
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(store, source, local(TODAY, 6, 59), history_backfill_days=1, predictions=source)
+    delay = await run_first(job, clock)  # 07:00:00
+    assert source.calls == [] and source.auth_checks == 0
+    (line,) = prediction_lines(caplog)
+    assert line.levelno == logging.INFO and line.getMessage().startswith("history status=paused part=predictions days=0")
+    assert clock.now() + timedelta(seconds=delay) == local(TODAY, 9, 30)
+    await next_run(job, clock, delay)
+    assert source.times == [local(TODAY, 9, 30)] and source.prediction_ranges == [(yesterday, yesterday)]
+    assert store.prediction_sync_state() == {"covered_from": "2026-10-06", "synced_on": "2026-10-07"}
+
+
+@pytest.mark.anyio
+async def test_no_predictions_call_after_a_garmin_part_that_stopped(store):
+    source = FakeHistorySource(recovery=rate_limited_from(0), predictions=two_days)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=3, predictions=source)
+    await run_first(job, clock)
+    assert source.prediction_ranges == []
+    missing = FakeHistorySource(auth="missing", predictions=two_days)
+    job, clock = make_job(Store(store.path.with_name("other.db")), missing, local(TODAY, 10, 0),
+                          history_backfill_days=3, predictions=missing)
+    await run_first(job, clock)
+    assert missing.prediction_ranges == []
+
+
+@pytest.mark.anyio
+async def test_predictions_run_after_a_partial_garmin_part(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    bad = date(2026, 10, 5)
+    source = FakeHistorySource(
+        recovery=lambda day, index: ("error", None) if day == bad else ("ok", history_snapshot(day.isoformat())),
+        predictions=two_days,
+    )
+    job, clock = make_job(store, source, AFTER_WINDOW, history_backfill_days=3, predictions=source)
+    assert await run_first(job, clock) == 3600.0  # partial keeps its hourly retry
+    assert len(source.prediction_ranges) == 1 and store.prediction_sync_state() is not None
+    assert "history status=partial fetched=3 failed=1" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_prediction_values_are_validated_and_replace_whole_days(store):
+    entries = [
+        prediction_day("2026-09-20", **{"5k_seconds": 1290}),  # outside the range
+        prediction_day("2026-09-28", **{"5k_seconds": 0, "10k_seconds": -5, "half_marathon_seconds": 86401,
+                                        "marathon_seconds": True}),
+        prediction_day("2026-09-29", **{"5k_seconds": 1290, "10k_seconds": "1290", "half_marathon_seconds": 86400,
+                                        "marathon_seconds": None}),
+        prediction_day("2026-09-30", **{"5k_seconds": 86400, "10k_seconds": 1}),
+        prediction_day("2026-10-01", **{"5k_seconds": float("nan"), "10k_seconds": 2700.5}),
+        prediction_day("2026-13-01", **{"5k_seconds": 1}),
+        {"5k_seconds": 1},
+        "junk",
+        prediction_day("2026-10-05", **{"5k_seconds": 1300, "10k_seconds": 2700}),
+    ]
+    later = {"on": False}
+
+    def predictions(start, end, index):
+        if later["on"]:
+            return "ok", prediction_payload(start, end, [prediction_day("2026-10-05", **{"5k_seconds": 1280})])
+        return "ok", prediction_payload(start, end, entries)
+
+    source = FakeHistorySource(predictions=predictions)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=10, predictions=source)
+    delay = await run_first(job, clock)
+    rows = stored_predictions(store)
+    assert sorted(rows) == ["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-05"]
+    assert [rows["2026-09-29"][c] for c in ("time_5k_s", "time_10k_s", "time_half_marathon_s", "time_marathon_s")] == [
+        1290, None, 86400, None]
+    assert (rows["2026-09-30"]["time_5k_s"], rows["2026-09-30"]["time_10k_s"]) == (86400, 1)
+    assert (rows["2026-10-01"]["time_5k_s"], rows["2026-10-01"]["time_10k_s"]) == (None, 2700.5)
+    later["on"] = True
+    await next_run(job, clock, delay)
+    row = stored_predictions(store)["2026-10-05"]
+    assert (row["time_5k_s"], row["time_10k_s"]) == (1280, None)  # a later answer replaces all four columns
+
+
+@pytest.mark.anyio
+async def test_a_store_error_in_the_predictions_part_still_logs_and_runs_the_strength_part(store, caplog, monkeypatch):
+    from fakes import FakeStrengthSource
+
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("disk")
+
+    monkeypatch.setattr(store, "store_race_predictions", boom)
+    source = FakeHistorySource(predictions=two_days)
+    strength = FakeStrengthSource()
+    await run_job(
+        store, source, local(TODAY, 10, 0), settings_overrides={"history_backfill_days": 3},
+        stop_when=lambda: "history status=crashed" in caplog.text, strength=strength, predictions=source,
+    )
+    assert "history status=crashed kind=OperationalError" in caplog.text
+    assert any(line.startswith("history status=done fetched=") for line in garmin_lines(caplog))
+    assert strength.calls  # the strength part still ran
+    assert "disk" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_without_a_predictions_source_there_is_no_predictions_call(store, caplog):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=3)
+    await run_first(job, clock)
+    assert source.prediction_ranges == [] and prediction_lines(caplog) == []
+
+
+@pytest.mark.anyio
+async def test_prediction_logs_carry_no_dates_or_values(store, caplog):
+    caplog.set_level(logging.DEBUG)
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(store, source, local(TODAY, 10, 0), history_backfill_days=10, predictions=source)
+    await run_first(job, clock)
+    (line,) = prediction_lines(caplog)
+    assert not any(bad in line.getMessage() for bad in ("2026-", "1290", "12310", "2700"))
+
+
+def test_prediction_range_table():
+    first, last, today = date(2026, 9, 27), date(2026, 10, 6), date(2026, 10, 7)
+
+    def state(covered: Any, synced: Any) -> dict[str, Any]:
+        return {"covered_from": covered, "synced_on": synced}
+
+    assert prediction_range(None, first, last, today) == (first, last)
+    assert prediction_range(state("2026-09-28", "2026-10-06"), first, last, today) == (first, last)  # covers less
+    assert prediction_range(state("2026-09-27", "2026-10-07"), first, last, today) is None  # synced today
+    assert prediction_range(state("2026-09-27", "2026-10-08"), first, last, today) is None  # clock went back
+    assert prediction_range(state("2026-09-27", "2026-10-06"), first, last, today) == (date(2026, 10, 3), last)
+    assert prediction_range(state("2026-09-01", "2026-10-06"), first, last, today) == (date(2026, 10, 3), last)
+    assert prediction_range(state("2026-09-27", "2026-09-30"), first, last, today) == (date(2026, 9, 27), last)
+    assert prediction_range(state("2026-09-27", "2026-08-01"), first, last, today) == (first, last)  # 30+ days ago
+    for bad in ("garbage", None, 5, ""):
+        assert prediction_range(state(bad, "2026-10-06"), first, last, today) == (first, last)
+        assert prediction_range(state("2026-09-27", bad), first, last, today) == (first, last)
+    assert prediction_range(state("0001-01-01", "0001-01-02"), first, last, today) == (first, last)
+    year_one = prediction_range(state("2026-09-27", "0001-01-02"), date(1, 1, 1), last, today)
+    assert year_one == (date(1, 1, 1), last)  # synced - 3 days underflows the calendar: ask for everything
+
+
+def test_prediction_values_helper():
+    start, end = date(2026, 10, 1), date(2026, 10, 7)
+    assert prediction_values({"error": "x"}, start, end) is None
+    assert prediction_values({"days": "x"}, start, end) is None
+    assert prediction_values({"days": []}, start, end) == {}
+    got = prediction_values(
+        {"days": [prediction_day("2026-10-01", **{"5k_seconds": 1}), prediction_day("2026-10-07", **{"5k_seconds": 2}),
+                  prediction_day("2026-09-30", **{"5k_seconds": 3}), prediction_day("2026-10-08", **{"5k_seconds": 4})]},
+        start, end,
+    )
+    assert sorted(got) == [date(2026, 10, 1), date(2026, 10, 7)]  # both ends of the range are inside
+    assert got[date(2026, 10, 7)] == {
+        "time_5k_s": 2, "time_10k_s": None, "time_half_marathon_s": None, "time_marathon_s": None}
+
+
+@pytest.mark.anyio
+async def test_the_predictions_call_is_paced_like_every_other_call(store):
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(
+        store, source, local(TODAY, 10, 0), history_backfill_days=1, history_call_delay_seconds=20, predictions=source
+    )
+    await run_first(job, clock)
+    names = [n for n, _ in source.calls]
+    assert names[-1] == "get_race_predictions" and len(names) == 3
+    gaps = [(b - a).total_seconds() for a, b in zip(source.times, source.times[1:])]
+    assert gaps == [20.0, 20.0]  # the call after the last Garmin call waits the configured delay too

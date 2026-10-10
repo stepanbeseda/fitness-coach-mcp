@@ -26,6 +26,7 @@ def test_from_env_defaults():
     assert s.briefing_time == dt.time(6, 30)
     assert s.briefing_cutoff == dt.time(9, 30)
     assert s.briefing_retry_minutes == 15
+    assert s.weekly_push is True
     assert s.history_enabled is True
     assert s.history_time == dt.time(3, 30)
     assert s.history_backfill_days == 90
@@ -155,6 +156,7 @@ def test_blank_briefing_values_fall_back_to_defaults():
         "COACH_BRIEFING_TIME",
         "COACH_BRIEFING_CUTOFF",
         "COACH_BRIEFING_RETRY_MINUTES",
+        "COACH_WEEKLY_PUSH",
         "COACH_HISTORY_ENABLED",
         "COACH_HISTORY_TIME",
         "COACH_HISTORY_BACKFILL_DAYS",
@@ -258,6 +260,15 @@ def test_chat_id_with_valid_token_enables_push(tmp_path):
     s = Settings.from_env({"COACH_TELEGRAM_CHAT_ID": "123456789", "COACH_TELEGRAM_TOKEN_FILE": str(token_file)})
     assert s.push_enabled is True
     assert all(token not in str(v) for v in s.__dict__.values())
+
+
+def test_weekly_push_switch():
+    assert Settings.from_env({"COACH_WEEKLY_PUSH": ""}).weekly_push is True
+    assert Settings.from_env({"COACH_WEEKLY_PUSH": "true"}).weekly_push is True
+    assert Settings.from_env({"COACH_WEEKLY_PUSH": "false"}).weekly_push is False
+    assert Settings.from_env({"COACH_WEEKLY_PUSH": "FALSE"}).weekly_push is False
+    with pytest.raises(ValueError, match="COACH_WEEKLY_PUSH must be true or false"):
+        Settings.from_env({"COACH_WEEKLY_PUSH": "yes"})
 
 
 def test_history_overrides():

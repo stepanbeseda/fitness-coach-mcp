@@ -27,6 +27,7 @@ export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://fitness-mcp.example.ts.net}"
 export OWNER_TAILSCALE_LOGIN="e2e-owner@test"
 # The morning briefing push stays off in the e2e stack, whatever the caller's .env says.
 export COACH_TELEGRAM_CHAT_ID=""
+export COACH_WEEKLY_PUSH=""
 # The nightly history job stays off too: no Garmin login and no internet in the e2e stack.
 export COACH_HISTORY_ENABLED="false"
 # No home location in the e2e stack either: get_weather_forecast must answer with its "no location" error.

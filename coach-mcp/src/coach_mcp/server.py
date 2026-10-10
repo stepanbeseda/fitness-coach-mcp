@@ -23,7 +23,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from . import __version__, strength, tools, trends
+from . import __version__, goals, strength, tools, trends
 from . import correlations
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
@@ -68,6 +68,9 @@ INSTRUCTIONS = (
     "(optionally a few days apart); a correlation is not a cause, say so when you use it."
     " get_weather_forecast returns the 7-day forecast and each day's best outdoor window at the athlete's home "
     "(or given coordinates): check it before placing outdoor sessions."
+    " A race or VO2max goal carries a metric and a target_value (set_goal); get_goal_progress returns its current "
+    "value, the values 4 and 12 weeks ago, the trend per week and the projection to the target date, from the "
+    "stored history."
 )
 
 GoalStatus = Literal["active", "achieved", "abandoned"]
@@ -211,9 +214,26 @@ def build_server(
         target_date: Annotated[str | None, Field(description="YYYY-MM-DD; empty string clears it.")] = None,
         target_result: Annotated[str | None, Field(max_length=200, description="Measurable result, e.g. '1:45:00'.")] = None,
         status: Annotated[GoalStatus | None, Field(description="active (default), achieved or abandoned.")] = None,
+        metric: Annotated[
+            Literal["race_5k", "race_10k", "race_half_marathon", "race_marathon", "vo2max_running", ""] | None,
+            Field(
+                description="race_5k, race_10k, race_half_marathon, race_marathon (Garmin race predictions) or "
+                "vo2max_running; an empty string clears metric and target_value."
+            ),
+        ] = None,
+        target_value: Annotated[
+            str | Annotated[float, Field(strict=True, allow_inf_nan=False)] | None,
+            Field(
+                description="Target of the metric: a time H:MM:SS or MM:SS for a race metric (e.g. '1:45:00'), a "
+                "number for vo2max_running (e.g. 55); an empty string clears it."
+            ),
+        ] = None,
     ) -> Any:
         """Create a goal (omit goal_id) or change one (give goal_id and only the fields to change; an empty
-        string clears target, target_date or target_result). Close goals with status achieved or
+        string clears target, target_date or target_result). A measurable goal gets a metric (race_5k,
+        race_10k, race_half_marathon, race_marathon from Garmin's race predictions, or vo2max_running) and a
+        target_value (a time H:MM:SS or MM:SS for a race metric, a number for VO2max); get_goal_progress then
+        tracks it. An empty metric clears metric and target_value. Close goals with status achieved or
         abandoned; nothing is deleted. Only after the athlete confirmed."""
         return tools.set_goal(
             store,
@@ -224,6 +244,8 @@ def build_server(
             target_date=target_date,
             target_result=target_result,
             status=status,
+            metric=metric,
+            target_value=target_value,
         )
 
     @tool("set_constraint", _write("Set constraint"))
@@ -390,6 +412,18 @@ def build_server(
         created_at / updated_at in UTC; for a closed goal updated_at is when it was closed or last changed."""
         return tools.list_goals(store, today())
 
+    @tool("get_goal_progress", _read("Goal progress"))
+    async def get_goal_progress() -> Any:
+        """Progress of every active goal that has a metric (set_goal metric and target_value), from the stored
+        nightly history: Garmin's race predictions (5 km, 10 km, half marathon, marathon; value in seconds with
+        time H:MM:SS, lower is better) or running VO2max. Per goal: the current value (the latest stored day,
+        at most 14 days old), the values 4 and 12 weeks ago, the trend per week (least squares over the 12
+        weeks up to the current value; needs at least 14 values spanning 4 weeks), the value projected at
+        that trend to the target date (at most 26 weeks ahead), the days remaining and on_track (the
+        projection reaches target_value). available false and on_track null come with a reason. Goals without
+        a metric are only counted. Reads the stored history only."""
+        return goals.get_goal_progress(store, today())
+
     @tool("list_constraints", _read("All constraints"))
     async def list_constraints() -> Any:
         """Every constraint ever recorded, active and resolved (get_coach_context lists only active ones):
@@ -505,6 +539,7 @@ def create_app(
             now=now,
             sleep=history_sleep or asyncio.sleep,
             strength=strength_source or HevyReader(settings),
+            predictions=history_source or reader,
         )
         if settings.history_enabled
         else None

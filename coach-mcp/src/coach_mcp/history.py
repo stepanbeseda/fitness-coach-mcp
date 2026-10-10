@@ -10,6 +10,10 @@ for the planned sessions of the last seven days (``reconcile``); it never change
 A day whose snapshot had sections in error keeps them in ``recovery_missing``; after the re-fetch window such a
 day is fetched again, a few per night, and only its missing sections are written (``repair_sections``).
 
+With a predictions source (``create_app`` passes the Garmin reader) the run then asks Garmin once for the daily
+race predictions of the missing range and stores them in ``race_predictions`` (PR 14); a failed call changes no
+state, so the next night asks for the whole missed range again.
+
 With a strength source the same run then syncs Hevy workouts (``strength.py``): events since the last
 complete listing, exercise templates once; the Garmin part never depends on it.
 """
@@ -283,6 +287,71 @@ def repair_sections(row: Mapping[str, Any], day: date, today: date) -> frozenset
     return missing_sections(row)
 
 
+PREDICTION_KEYS = {
+    "5k_seconds": "time_5k_s",
+    "10k_seconds": "time_10k_s",
+    "half_marathon_seconds": "time_half_marathon_s",
+    "marathon_seconds": "time_marathon_s",
+}
+MAX_PREDICTION_SECONDS = 86400
+
+
+def _parse_day(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def prediction_range(
+    state: Mapping[str, Any] | None, first: date, last: date, today: date
+) -> tuple[date, date] | None:
+    """The range of race predictions to ask Garmin for, or None when nothing is due.
+
+    Everything from ``first`` when the stored range does not reach back that far (or nothing was ever
+    synced); else only the last ``REFETCH_DAYS`` days before the previous sync (late watch syncs), and not at
+    all when the previous sync was today.
+    """
+    if state is None:
+        return first, last
+    covered, synced = _parse_day(state.get("covered_from")), _parse_day(state.get("synced_on"))
+    if covered is None or covered > first or synced is None:
+        return first, last
+    if synced >= today:
+        return None
+    try:
+        return max(first, synced - timedelta(days=REFETCH_DAYS)), last
+    except OverflowError:
+        return first, last
+
+
+def prediction_values(
+    payload: Mapping[str, Any], start: date, end: date
+) -> dict[date, dict[str, float | None]] | None:
+    """Columns of ``race_predictions`` per day from a ``get_race_predictions`` payload.
+
+    None when the payload has no list of days (also the ``error`` section: nothing is stored then). A value
+    that is not a finite number in (0, 86400] is NULL; a day without any valid value is left out.
+    """
+    days = payload.get("days")
+    if not isinstance(days, list):
+        return None
+    out: dict[date, dict[str, float | None]] = {}
+    for entry in days:
+        if not isinstance(entry, dict):
+            continue
+        day = _parse_day(entry.get("date"))
+        if day is None or not start <= day <= end:
+            continue
+        values: dict[str, float | None] = {}
+        for key, column in PREDICTION_KEYS.items():
+            value = _number(entry.get(key))
+            values[column] = value if value is not None and 0 < value <= MAX_PREDICTION_SECONDS else None
+        if any(v is not None for v in values.values()):
+            out[day] = values
+    return out
+
+
 def day_activities(rows: Sequence[Mapping[str, Any]]) -> dict[str, DayActivities]:
     """Stored activity totals per date (``history_days`` rows) for ``reconcile.suggest``.
 
@@ -375,11 +444,13 @@ class HistoryJob:
         now: Callable[[], datetime],
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         strength: StrengthSource | None = None,
+        predictions: HistorySource | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._source = source
         self._strength = strength
+        self._predictions = predictions
         self._now = now
         self._sleep = sleep
         self._zone = ZoneInfo(settings.timezone)
@@ -453,10 +524,11 @@ class HistoryJob:
     # ------------------------------------------------------------------ run
 
     async def run_once(self) -> str:
-        """One collection run, the Hevy part and the reconcile step; returns its outcome word.
+        """One collection run, the race predictions, the Hevy part and the reconcile step; returns its outcome word.
 
-        Logs one line for the Hevy part (with a strength source) and one for the Garmin part and the reconcile
-        step. The Hevy part runs before the reconcile step, so last night's workouts are used by the matching.
+        Logs one line for the predictions part (with a predictions source, when it had a call due), one for the
+        Hevy part (with a strength source) and one for the Garmin part and the reconcile step. The Hevy part
+        runs before the reconcile step, so last night's workouts are used by the matching.
         """
         started = time.monotonic()
         run = _Run()
@@ -465,6 +537,16 @@ class HistoryJob:
         except _Stop as stop:
             outcome = stop.outcome  # the held errors of the run are dropped, not charged
         level = logging.WARNING if outcome in _WARNING_OUTCOMES else logging.INFO
+        predictions_outcome: str | None = None
+        predictions_crash: Exception | None = None
+        predictions_seconds = 0.0
+        if self._predictions is not None and outcome in ("done", "partial"):
+            predictions_started = time.monotonic()
+            try:
+                predictions_outcome = await self._run_predictions(run)  # logs its own line when it had work
+            except Exception as exc:  # BaseException (cancellation) propagates at once
+                predictions_crash = exc
+            predictions_seconds = time.monotonic() - predictions_started
         strength_outcome: str | None = None
         strength_crash: Exception | None = None
         strength_seconds = 0.0
@@ -490,13 +572,17 @@ class HistoryJob:
             run.failed,
             len(run.pending),
             run.given_up,
-            (time.monotonic() - started - strength_seconds) * 1000,
+            (time.monotonic() - started - strength_seconds - predictions_seconds) * 1000,
             run.repaired,
             step,
         )
-        if strength_crash is not None:
-            raise strength_crash  # after the reconcile step and the Garmin line: run() logs "crashed" and retries
-        return outcome if strength_outcome is None else combined_outcome(outcome, strength_outcome)
+        crash = predictions_crash or strength_crash
+        if crash is not None:
+            raise crash  # after the reconcile step and the Garmin line: run() logs "crashed" and retries
+        scheduled = outcome
+        if outcome == "done" and predictions_outcome in ("rate_limited", "paused"):
+            scheduled = predictions_outcome  # the only two outcomes of the predictions part that steer scheduling
+        return scheduled if strength_outcome is None else combined_outcome(scheduled, strength_outcome)
 
     def _reconcile(self, today: date) -> tuple[int, int]:
         """Store a suggestion for every planned session of the last RECONCILE_DAYS days; changes no status.
@@ -719,6 +805,46 @@ class HistoryJob:
         self._store.repair_history_recovery(day, values, missing_text(rest), today, charged=charged)
         if not rest:
             run.repaired += 1
+
+    # ---------------------------------------------------------- predictions
+
+    async def _run_predictions(self, run: _Run) -> str | None:
+        """The race-prediction part: one call for the missing range; None when nothing was due (no line)."""
+        assert self._predictions is not None
+        started = time.monotonic()
+        today = self._today(self._now())
+        first, last = today - timedelta(days=self._settings.history_backfill_days), today - timedelta(days=1)
+        state = self._store.prediction_sync_state()
+        asked = prediction_range(state, first, last, today)
+        if asked is None:
+            return None
+        days = 0
+        try:
+            if self._in_briefing_window(self._now()):
+                raise _Stop("paused")
+            await self._pace(run)
+            args = {"start_date": asked[0].isoformat(), "end_date": asked[1].isoformat()}
+            outcome, payload = await self._predictions.history_call("get_race_predictions", args)
+            if outcome in _STOP_OUTCOMES:
+                raise _Stop(_STOP_OUTCOMES[outcome])
+            values = prediction_values(payload, *asked) if outcome == "ok" and payload is not None else None
+            if values is None:
+                status = "error"
+            else:
+                stored = _parse_day(state["covered_from"]) if state is not None else None
+                covered_from = first if stored is None or stored > first else stored
+                self._store.store_race_predictions(values, today, covered_from)
+                status, days = "done", len(values)
+        except _Stop as stop:
+            status = stop.outcome
+        log.log(
+            logging.WARNING if status in _WARNING_OUTCOMES or status == "error" else logging.INFO,
+            "history status=%s part=predictions days=%d ms=%.0f",
+            status,
+            days,
+            (time.monotonic() - started) * 1000,
+        )
+        return status
 
     # ------------------------------------------------------------- strength
 
