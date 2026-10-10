@@ -29,9 +29,96 @@ the week and writes it to the plan, Garmin and Hevy only after you confirm.
 > credentials, which is fine for personal use but not for running a service for others. It is not affiliated
 > with Garmin, Hevy, Tailscale or Anthropic.
 
-**Contents:** [Design notes](#design-notes) · [Architecture](#architecture) · [Security model](#security-model) ·
-[Installation](#installation) · [Adding the connectors](#adding-the-connectors) · [Operations](#operations) ·
-[Troubleshooting](#troubleshooting) · [Repository layout](#repository-layout)
+**Contents:** [Demo](#demo) · [Design notes](#design-notes) · [Architecture](#architecture) ·
+[Security model](#security-model) · [Installation](#installation) · [Adding the connectors](#adding-the-connectors) ·
+[Operations](#operations) · [Troubleshooting](#troubleshooting) · [Repository layout](#repository-layout)
+
+## Demo
+
+One morning with the coach, start to finish. The numbers are synthetic; the tool names, the rules the coach
+follows and the briefing text are the real ones. The briefing below was rendered by `coach-mcp`'s own
+`build_briefing` from synthetic Garmin data.
+
+**06:30 — the morning briefing arrives in Telegram** (computed by rules, no LLM; `COACH_LANGUAGE=en`, Czech
+with `cs`):
+
+```text
+🟡 ⚠️ YELLOW · morning briefing 12 Oct
+
+Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7–8, cardio in zone 2.
+Readiness: 58 (yellow)
+HRV: 49 ms, baseline 52–68 ms, below baseline 2 nights in a row (yellow)
+Sleep: 6 h 24 min, score 71 (yellow)
+Body Battery at wake: 46 (yellow)
+For full load: readiness at least 70; HRV back to at least 52 ms; sleep at least 7 h; Body Battery at wake at least 50.
+Today's plan:
+- strength: Lower body A: back squat 4×5, RDL 3×8, split squat 3×10 (60 min)
+Alerts:
+- Resting HR 54 bpm, 5 above the 7-day average of 49 bpm.
+```
+
+**07:10 — in the claude.ai "Fitness coach" project:**
+
+> **Athlete:** Got a yellow this morning. What should I do today, and can you plan the rest of the week?
+
+<details>
+<summary>Tool calls the coach makes before answering (all read-only)</summary>
+
+| # | Tool | What it returns here |
+|---|---|---|
+| 1 | Coach `get_coach_context` | Goal: half marathon under 1:40 on 22 Nov; constraint: left knee, no deep lunges; this week's plan; yesterday's long run in `to_confirm` with suggestion `matched` |
+| 2 | Coach `get_daily_briefing` | The verdict above with its numbers |
+| 3 | Garmin `get_recovery_snapshot` | Fresh readiness, HRV, sleep, Body Battery, resting HR, training status |
+| 4 | Garmin `get_hrv_trend` (14 days) | Two nights below the 52 ms baseline after a stable week around 60 ms |
+| 5 | Garmin `list_activities` (7 days) | Sunday 18 km long run, acute load 1.1× chronic (optimal) |
+| 6 | Garmin `get_performance_metrics` | Lactate threshold 4:35 /km at 168 bpm, half-marathon prediction 1:39:50, HR zones |
+| 7 | Hevy `get-workouts`, `get-exercise-history` | Last squat session 4×5 at 100 kg, RPE 8 |
+| 8 | Coach `get_weather_forecast` | Thursday 75 % rain all day; Friday best window 07:00–10:00, 9 °C |
+
+</details>
+
+> **Coach:** Where you are this morning:
+> - Readiness **58** (yellow), HRV **49 ms**, under your 52–68 ms baseline for the **2nd night**.
+> - Sleep **6 h 24 min**, Body Battery **46** at wake, resting HR **+5 bpm** over your 7-day average.
+> - Load is fine: acute/chronic 1.1, so this looks like poor recovery (short sleep), not overreaching.
+>
+> **Today:** keep Lower body A but cut it by about 25 %: back squat **3×5 at 90 kg** (RPE 7, not 4×5 at
+> 100 kg), RDL 2×8. Dropping split squats entirely: your knee constraint says no deep lunges, and today is not
+> the day to test it. Full load again once readiness is ≥ 70 and HRV is back above 52 ms.
+>
+> **The rest of the week** (the threshold run moves from Thursday to Friday because of the rain):
+>
+> | Day | Session | Target and why |
+> |---|---|---|
+> | Tue | Easy run 45 min | Zone 2, HR ≤ 148 (your `running` zones) |
+> | Wed | Upper body A | Normal load if tomorrow's verdict is green |
+> | Thu | Mobility 30 min, indoors | 75 % rain all day; the indoor swap keeps intervals off a wet day |
+> | Fri | Threshold 3×10 min, 3 min jog rest | 4:35–4:40 /km, 166–170 bpm, from your lactate threshold; 07:00–10:00 window |
+> | Sat | Upper body B, light | No heavy legs the day before the long run |
+> | Sun | Long run 16 km | Zone 2; down from 18 km while HRV recovers |
+>
+> Also, Sunday's 18 km long run matches a Garmin activity: shall I mark it **done**?
+>
+> Should I save this? That would: save the week to the plan, mark Sunday done, update today's routine in Hevy,
+> and send Friday's threshold run to your watch.
+
+> **Athlete:** Yes, save it all.
+
+<details>
+<summary>Writes, only after that confirmation</summary>
+
+| Tool | Change |
+|---|---|
+| Coach `save_plan` | This week's sessions from today on (the replaced ones are kept as `superseded`) |
+| Coach `update_session` | Sunday's long run → `done` |
+| Hevy `search-exercise-templates`, `update-routine` | "Lower body A": squat 3×5 at 90 kg, RDL 2×8, split squat removed |
+| Garmin `create_workout`, `schedule_workout` | "Threshold 3×10" with pace and HR targets, scheduled for Friday |
+| Coach `add_note` | "Yellow day 12 Oct (short sleep, HRV 2 nights below baseline): lower body cut 25 %, threshold moved to Fri for rain." |
+
+</details>
+
+> **Coach:** Done. Sync your watch to get Friday's run. I'll check tomorrow's verdict before Wednesday's upper
+> body session.
 
 ## Design notes
 
@@ -62,24 +149,6 @@ The parts most relevant to building LLM agents that act on real, personal data:
   end-to-end test runs the full OAuth + MCP flow in a throwaway Compose project (`scripts/check.sh`).
 - **Plan-driven, AI-assisted development.** The project was built in small reviewed PRs from a written plan
   ([`mao-plan.md`](mao-plan.md): decisions, boundaries and a brief for each PR), largely with Claude Code.
-
-Example morning briefing (Telegram; `COACH_LANGUAGE=en`, Czech is available with `cs`):
-
-```text
-🟡 ⚠️ YELLOW · morning briefing 7 Oct
-
-Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7–8, cardio in zone 2.
-Readiness: 61 (yellow)
-HRV: missing
-Sleep: 6 h 15 min, score 70 (yellow)
-Body Battery at wake: missing
-Missing: HRV, Body Battery (the watch may not have synced yet). Without these data the verdict cannot be green.
-For full load: readiness at least 70; sleep at least 7 h.
-Today in Garmin: Easy run 40 min
-Alerts:
-- Resting HR 58 bpm, 6 above the 7-day average of 52 bpm.
-- Yesterday's scheduled workout was not completed: Intervals 6×800 m.
-```
 
 ## Architecture
 
