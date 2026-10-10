@@ -93,8 +93,8 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 15 | Searchable coach memory | 03 | done |
 | 16 | Correlations | 05 | done |
 | 17 | Sync-aware briefing | 04 | planned |
-| 18 | History repair | 05 | planned |
-| 19 | More Garmin signals | — | planned |
+| 18 | History repair | 05 | done |
+| 19 | More Garmin signals | — | done |
 | 20 | Operations alerts via Telegram | 08 | planned |
 | 21 | Static checks in the test stage | — | planned |
 | 22 | Two-way Telegram | 08 | planned |
@@ -1259,6 +1259,47 @@ was not worn (no section error), the activity part.
 
 **Requested:** 2026-10-09, by the owner, from the project review (item U7).
 
+**Delivered:** 2026-10-10, PR #26 (`mao/pr18-history-repair`), squash-merged
+into `main` as `0c53bac`, no rebase needed. `coach-mcp` schema 6 to 7: migration
+7 adds three columns to `history_days`, `recovery_missing` (comma list of
+sections never read without an error), `recovery_repairs` (charged answered
+repair calls, `NOT NULL DEFAULT 0`) and `recovery_repaired_on`; the regular
+fetch records which sections stayed in error, and after the D+3 window such a
+day is fetched again, newest first, up to 3 charged answered attempts per day
+and 5 answered repair calls per local date. Repairs run before the final probe,
+so their errors follow the held-error / probe rule; a section that fails for
+every day of the run is not asked for and nothing is charged (the outage
+scenario gives up no day). New `repair_history_recovery` writes only the
+repaired sections and never touches `recovery_fetched_on`; the run log line
+gets a `repaired=` counter. Rows stored before migration 7 do not know their
+section errors: the migration marks every recovery section whose columns are
+all empty as missing, so each such day gets one more call (days without data
+because the watch was not worn are among them, since old rows cannot tell them
+apart; at most 5 calls a night); rows that never loaded keep no mark. The N8
+guard tests T21 (probe `isinstance`) and T22 (`given_up` for recovery only,
+`any`) are in. `README.md` and `coach-mcp/README.md` (nightly history, log
+line, data bullet, a 7 to 6 downgrade recipe, run on scratch volumes by the
+implementer and the reviewer) updated. No tool, config value, secret,
+dependency, athlete-facing text or `garmin-mcp` change. All four criteria met
+offline (`CHECK OK tree=f67a034bc850 garmin=186 gateway=80 coach=1060
+e2e=OK`; the reviewer ran 31 mutants against the two test files, every one
+of the spec's table red). Deviations: three test setups differ from the spec
+text (T9 cuts the backfill with a 429 because candidates are read at the start
+of a run, T16 asserts the exact call lists of the three outage nights, T20
+seeds `fetched_on = D+3`; the reviewer judged all three correct), and the
+legacy-row treatment above widens the chapter's "watch not worn is out of
+scope" for old rows only. Review took two rounds: round 1 APPROVED with six
+non-blocking findings, O1, O2 (tests for the "every" charge rule and for
+repair answers not counting as evidence, with `_confirm` pinned), O4, O5 and
+O6 (wording and wrapping) fixed in round 2, a delta review APPROVED; O3 stays
+open (section 5). Spec check found one blocking error, T19 expected
+`unreachable` for `auth = "missing"` where the code gives `auth` (found by
+running the test, fixed in the spec before implementation). Still needs the
+test host or the deploy: how Garmin answers a section of a day without data
+(an error or an empty section; it decides how many legacy days settle after one
+call) and the nightly `repaired=` counter on the live database, which may
+still be at schema 3 and then migrates 3 to 7 in one start.
+
 ### PR 19 — More Garmin signals
 
 `garminconnect` 0.3.17 has calls the coach does not use yet. Add to
@@ -1286,6 +1327,46 @@ sessions (a later chapter), per-activity training-load metrics (already in
    are returned.
 
 **Requested:** 2026-10-09, by the owner, from the project review (feature 8).
+
+**Delivered:** 2026-10-10, PR #27 (`mao/pr19-more-garmin-signals`),
+squash-merged into `main` as `2723b83`, rebased after PR 18 (clean, no
+conflicts). `garmin-mcp` only: new read tool `get_running_tolerance` (weekly
+load tolerance, `weeks` 1 to 26 and optional `end_date`; an unknown, empty or
+404 answer is `available: false`, a library error a tool error) and two
+fail-soft `get_activity` sections, `exercise_sets` (exercise, reps, weight,
+capped at 60 sets) and `weather` (location fields never output); each
+degrades to `available: false` or `error` and survives a failed HR-zones
+call. `get_activity` also returns `active_sets` and `total_reps` from the
+activity summary (not in the chapter, added from the capture so the coach sees
+the volume when the per-set endpoint has no usable sets). New fixtures,
+`FakeGarmin.responses` keys, shaper and HTTP tests, and `test_library_logs.py`,
+which runs the real `garminconnect` client against a stub and checks the
+library's own log lines (success and 404 log nothing at WARNING or above, a
+5xx logs the API path, the logger stays at WARNING or above under DEBUG).
+`garmin-mcp/README.md`, `README.md`, `docs/coach-instructions.md` (use the
+tolerance when raising weekly running volume), `INSTRUCTIONS` and
+`scripts/smoke_test.py` (a "Garmin: PR 19 signals" block as evidence for
+criterion 5) updated. No coach-mcp, schema (stays 7), config, secret,
+compose or dependency change. Criteria 1 to 4 met offline (`CHECK OK
+tree=a86c1c9d32b4 garmin=245 gateway=80 coach=1060 e2e=OK`; 46 mutants run,
+none survives after round 2). Deviations: the tolerance part of criterion 5
+cannot be met on the owner's account, because Garmin returns an empty list for
+weekly 56 and 182 days and for daily 28 days (only 1 run in 56 days, so the
+account has no data and the request is not the cause); the tool answers
+`available: false` and stays in for watches that have the feature. The
+fixtures are synthetic, built from the shape-only captures of 2026-10-10 (the
+chapter said "captured from the owner's account"; no values leave the
+account). The library's 5xx log lines are accepted explicitly: the API path
+(with the activity id for the two activity calls) and Garmin's own error
+message, as `get_activity` already does. Review took two rounds: round 1
+APPROVED, 18 mutants run, 4 survivors that were test gaps on correct code (max
+weight, lower-case `REST`, probability tie, nested key type guard), covered in
+round 2; round 2 was a delta review after the rebase, APPROVED. Spec check: 0
+blocking, 6 non-blocking, all folded in. Still needs the test host (criterion
+5, after the deploy): `scripts/smoke-test.sh`, the sets of one strength
+activity (or `active_sets` and `total_reps` with `available: false`), a real
+non-empty tolerance entry, and the units of weight (grams), temperature (°F)
+and wind (mph) compared with Garmin Connect.
 
 ### PR 20 — Operations alerts via Telegram
 
@@ -1405,7 +1486,9 @@ from Telegram, media messages.
   blocks, so the recovery backfill is delayed until activities work again
   (nothing is lost). N8: two guard branches have no failing test, the
   `isinstance(..., list)` check of the activities probe and `given_up`
-  counted for activities (`history.py`).
+  counted for activities (`history.py`). Update 2026-10-10: N5 and N8 are
+  resolved by PR 18 (per-day record of sections in error with bounded repairs,
+  and the guard tests T21 and T22); N6 and N7 stay open.
 - **Parallel run of 2026-10-09 is merged but not deployed.** PR 06, 09, 11, 12,
   13, 15 and 16 were squash-merged on 2026-10-09 with no live deploy; the live
   stack still runs the pre-run images, and PR 07 was left out. Deploy order
@@ -1421,7 +1504,8 @@ from Telegram, media messages.
   (13, then 09, then 15). Add `BACKUP_DIR` (PR 11) and the optional
   `COACH_HOME_LATITUDE` / `COACH_HOME_LONGITUDE` (PR 06) to `.env` with an
   editor. Criteria that still need the test host: PR 06 #7, PR 09 #8, PR 11 #6,
-  PR 12 #6, PR 13 #6; the owner steps are in the PR bodies.
+  PR 12 #6, PR 13 #6; the owner steps are in the PR bodies. PR 18 and PR 19 are
+  merged (2026-10-10) and also wait for the deploy bundle of 2026-10-10.
 - **PR 06 weather.** The CC BY 4.0 attribution sentence in the READMEs comes
   from the designer's knowledge of Open-Meteo's terms; confirm it on
   open-meteo.com. Open-Meteo's behaviour on DST transition days has not been
@@ -1489,6 +1573,34 @@ from Telegram, media messages.
 - **PR 16 correlations.** Hevy strength metrics (volume, sets, e1RM) are not in
   the `get_trends` catalogue, so `get_correlations` cannot pair them; a later
   chapter can add them if the owner wants strength against recovery.
+- **PR 18 history repair, open by decision.** Review O3: a bounded,
+  never-ending repair under two simultaneous faults. A candidate whose missing
+  set holds one section that loads elsewhere but fails for this day, plus one
+  section that is down for every regular day, is asked every night and never
+  charged; it drops out only when it leaves `COACH_HISTORY_BACKFILL_DAYS`. Five
+  such days could starve older candidates; the cost stays within 5 answered
+  repair calls a night. It follows from the "every" rule of the charge (spec
+  decision 5), not from an implementation error. Also: rows stored before
+  migration 7 are treated as having every empty recovery section missing, so
+  each legacy no-data day is asked once more (at most 5 calls a night until the
+  legacy candidates are drained); how Garmin answers a section of a day without
+  data is unverified until the deploy.
+- **PR 19 more Garmin signals.** (a) The running tolerance is empty on the
+  owner's account (weekly 56 and 182 days, daily 28 days; only 1 run in 56
+  days), so the tolerance part of criterion 5 cannot be met there and the shape
+  of a real, non-empty entry is unverified; the tool answers `available:
+  false`. (b) Grams (weight), degrees Fahrenheit (temperature) and mph (wind)
+  are assumptions until criterion 5 is checked against Garmin Connect after the
+  deploy; the converters are isolated, a correction is one line. The `setType`
+  values are unverified too. (c) The `garminconnect` logger writes the API path
+  (with the activity id for `get_activity`, the splits, the HR zones, the new
+  exercise-sets and weather calls) and Garmin's own error message on a 5xx.
+  Proposed: a redacting filter on that logger, masking ids, which would also
+  close PR 01 N2; not part of PR 19. (d) Review-1 O3: `scripts/smoke_test.py`
+  picks the first activity with a distance as the outdoor one, which can be a
+  treadmill run or an indoor ride (the weather then shows `available: false`);
+  the owner may need to pick an outdoor activity by hand for the temperature and
+  wind comparison. Left open because fixing it changes smoke-test behaviour.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between

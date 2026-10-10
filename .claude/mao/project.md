@@ -155,7 +155,7 @@ Always ask the user before:
 Rules live in the plan and docs, linked here, not copied: `mao-plan.md`
 sections 1 and 2; `README.md` (Czech, operations and architecture);
 `garmin-mcp/README.md` (tool table, env); `docs/coach-instructions.md`
-(Czech). Czech docs stay Czech; code, comments, commits and the plan are English.
+(Czech). The rule "Czech docs stay Czech" is superseded by plan section 1 (2026-10-09): all documentation, scripts and CLI output are English; athlete-facing text comes from the `messages.py` catalogues.
 
 ### Designer (in addition to the skill's spec)
 - New Garmin tools follow the pattern in

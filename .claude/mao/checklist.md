@@ -38,6 +38,10 @@ repeated findings.
   dropping the argument in the wiring turns a test red. The tests accept
   every limit's maximum and reject maximum + 1; two checks that can both
   apply have a case where the order decides.
+- [ ] A mutation table in a spec lists the predicate mutants of every
+  guard, not only the removal of the guard: `<=` against `<`, `any` against
+  `all` or `sum`, `upper()` dropped, a tie rule reversed, a type guard turned
+  into `True`; each has a case that tells it apart, and the reviewer runs them.
 - [ ] A test that builds a database of version N uses `MIGRATIONS[:N]` for
   the build and the reopen; the latest version is derived, not hand-pinned.
 - [ ] Parallel or rebased work: docker builds and e2e run under `flock
