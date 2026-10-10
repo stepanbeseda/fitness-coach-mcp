@@ -138,7 +138,7 @@ data). The first run comes one minute after the service starts and loads `COACH_
 (default 90): about 470 Garmin Connect calls in 103 `garmin-mcp` calls, with a pause of
 `COACH_HISTORY_CALL_DELAY_SECONDS` (15 s) between them, roughly 30 minutes in total. Between
 `COACH_BRIEFING_TIME` and `COACH_BRIEFING_CUTOFF` the run pauses and continues after the cutoff. Every following
-night it is about 16 calls, plus at most 5 repair calls (see the last point below).
+night it is about 16 calls, plus at most 5 answered repair calls (see the last point below).
 
 - Garmin answers 429 (rate limit): the run stops and retries in an hour, then in 2, 4 and at most 8 hours.
 - Garmin is not logged in or `garmin-mcp` does not respond: no calls, next attempt in an hour (at the latest at
@@ -179,8 +179,8 @@ From `garmin-mcp` the server may call only four read tools (`get_recovery_snapsh
 rejects them with the coach's read-only token before they run. From `hevy-mcp` it may call only
 `get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
 `history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=…`
-(`repaired` = days whose missing sections loaded in this run; `reconcile=error kind=…` when plan reconciliation
-fails; the history run does not fail because of it) and one for Hevy:
+(`repaired` = days whose missing sections loaded in a repair call of this run; `reconcile=error kind=…` when plan
+reconciliation fails; the history run does not fail because of it) and one for Hevy:
 `history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (no data or values;
 `skipped` = events from Hevy that could not be used). The Hevy part runs before plan reconciliation, so its line
 comes before the Garmin line in the log. With `COACH_HISTORY_TIME` inside the briefing window there is also one

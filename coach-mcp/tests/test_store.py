@@ -993,7 +993,8 @@ def test_migration_7_classifies_the_other_legacy_rows(db_path, monkeypatch):
         expected[day] = want
 
     add("2026-09-01", "2026-09-02", _all_columns_set(), "")  # complete
-    add("2026-09-02", "2026-09-03", _all_columns_set(skip=tuple(c for cs in HISTORY_SECTIONS.values() for c in cs)), ALL_SECTION_KEYS)
+    every_column = tuple(c for columns in HISTORY_SECTIONS.values() for c in columns)
+    add("2026-09-02", "2026-09-03", _all_columns_set(skip=every_column), ALL_SECTION_KEYS)
     # A section with one NULL column and the rest set is not missing.
     for n, section in enumerate(("hrv", "sleep", "body_battery", "training_status")):
         add(f"2026-09-1{n}", f"2026-09-2{n}", _all_columns_set(skip=HISTORY_SECTIONS[section][:1]), "")
@@ -1021,11 +1022,16 @@ def test_history_repair_columns_have_checks(store, db_path):
         for sql, params in (
             ("INSERT INTO history_days (date, recovery_repairs, updated_at) VALUES ('2026-10-05', -1, 'a')", ()),
             ("INSERT INTO history_days (date, recovery_repairs, updated_at) VALUES ('2026-10-05', NULL, 'a')", ()),
-            ("INSERT INTO history_days (date, recovery_missing, updated_at) VALUES ('2026-10-05', ?, 'a')", ("x" * 201,)),
+            (
+                "INSERT INTO history_days (date, recovery_missing, updated_at) VALUES ('2026-10-05', ?, 'a')",
+                ("x" * 201,),
+            ),
         ):
             with pytest.raises(sqlite3.IntegrityError):
                 conn.execute(sql, params)
-        conn.execute("INSERT INTO history_days (date, recovery_missing, updated_at) VALUES ('2026-10-05', ?, 'a')", ("x" * 200,))
+        conn.execute(
+            "INSERT INTO history_days (date, recovery_missing, updated_at) VALUES ('2026-10-05', ?, 'a')", ("x" * 200,)
+        )
         row = conn.execute("SELECT recovery_repairs, recovery_repaired_on FROM history_days").fetchone()
         assert row == (0, None)  # the default of a new row
     finally:

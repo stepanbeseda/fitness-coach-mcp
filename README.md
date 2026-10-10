@@ -511,11 +511,11 @@ never changes the status itself; the coach confirms it with `update_session`.
 
 The first run is the largest. A minute after deployment it starts loading 90 days back: about 470 Garmin
 Connect calls in 103 `garmin-mcp` calls with a 15 s pause, roughly 30 minutes in total. After that it is about
-16 calls a night, plus at most 5 for days on which Garmin answered a section with an error (they are asked for
-again on later nights, see `coach-mcp/README.md`). Nothing is called between `COACH_BRIEFING_TIME` and
-`COACH_BRIEFING_CUTOFF`, so the morning briefing and the history do not share Garmin's rate limit; the run
-continues after the cutoff. If `COACH_HISTORY_TIME` falls inside this window, the nightly run starts only at
-`COACH_BRIEFING_CUTOFF` (logged once as `history status=config_warning`).
+16 calls a night, plus at most 5 answered repair calls for days on which Garmin answered a section with an error
+(they are asked for again on later nights, see `coach-mcp/README.md`). Nothing is called between
+`COACH_BRIEFING_TIME` and `COACH_BRIEFING_CUTOFF`, so the morning briefing and the history do not share Garmin's
+rate limit; the run continues after the cutoff. If `COACH_HISTORY_TIME` falls inside this window, the nightly run
+starts only at `COACH_BRIEFING_CUTOFF` (logged once as `history status=config_warning`).
 
 To turn it off: `COACH_HISTORY_ENABLED=false` in `.env` and `docker compose up -d coach-mcp` (stored data
 stays, it just stops being extended). The other `COACH_HISTORY_*` options are in `.env.example`.
@@ -536,7 +536,7 @@ exercise it reads its template once, to get the primary muscle group (`get-exerc
 
 The log (`docker compose logs coach-mcp`) has one Garmin line per run, `history status=done|partial|
 paused|rate_limited|service_error|auth|unreachable|no_credentials fetched=… failed=… pending=… given_up=…
-ms=… repaired=…`, never data or values (`repaired` = days whose missing sections loaded again). With
+ms=… repaired=…`, never data or values (`repaired` = days whose missing sections loaded in a repair call). With
 `COACH_HISTORY_TIME` inside the briefing window there is also one
 `history status=config_warning` line after startup. `healthcheck.sh` reports the job state (`on` / `off` /
 `stopped`).
