@@ -2839,3 +2839,16 @@ def test_prediction_values_helper():
     assert sorted(got) == [date(2026, 10, 1), date(2026, 10, 7)]  # both ends of the range are inside
     assert got[date(2026, 10, 7)] == {
         "time_5k_s": 2, "time_10k_s": None, "time_half_marathon_s": None, "time_marathon_s": None}
+
+
+@pytest.mark.anyio
+async def test_the_predictions_call_is_paced_like_every_other_call(store):
+    source = FakeHistorySource(predictions=two_days)
+    job, clock = make_job(
+        store, source, local(TODAY, 10, 0), history_backfill_days=1, history_call_delay_seconds=20, predictions=source
+    )
+    await run_first(job, clock)
+    names = [n for n, _ in source.calls]
+    assert names[-1] == "get_race_predictions" and len(names) == 3
+    gaps = [(b - a).total_seconds() for a, b in zip(source.times, source.times[1:])]
+    assert gaps == [20.0, 20.0]  # the call after the last Garmin call waits the configured delay too

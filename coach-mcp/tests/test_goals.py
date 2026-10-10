@@ -142,6 +142,17 @@ def test_vo2max_tie_is_on_track(store):
     assert progress(store)["on_track"] is True
 
 
+def test_trend_window_is_anchored_at_the_current_value(store):
+    # current value 5 days old; the window reaches 83 days back from IT, not from today
+    today = TODAY
+    seed_5k(store, [(today - timedelta(days=n), 1300) for n in range(5, 91)])  # 86 daily points, 90..5 days ago
+    goal(store, metric="race_5k", target_value=1250.0, target_date="2026-11-01")
+    out = progress(store)
+    assert out["current"]["date"] == (today - timedelta(days=5)).isoformat()
+    assert out["points"] == 84  # today-88 .. today-5; today-89 and today-90 are older than 83 days before current
+    assert out["available"] is True
+
+
 def seed_5k(store, points):
     seed_race(store, "time_5k_s", points)
 

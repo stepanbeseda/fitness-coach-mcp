@@ -1063,3 +1063,12 @@ async def test_send_weekly_report_command_without_push_config_exits_2(db_path, c
     assert rc == 2 and push.sent == []
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == "push is not configured: set COACH_TELEGRAM_CHAT_ID\n"
+
+
+@pytest.mark.anyio
+async def test_no_monday_report_on_the_tuesday_after_a_monday_that_gave_up(db_path):
+    tuesday = M + timedelta(days=1)
+    assert Store(db_path).weekly_report_sent("2026-W41") is False  # Monday gave up: W41 is still unsent
+    push, _ = await run_scheduler(db_path, local(tuesday, 0), FakeGarmin(garmin_data()), until=local(tuesday, 12))
+    assert len(push.sent) == 1 and "ranní briefing" in push.sent[0][1].title
+    assert Store(db_path).weekly_report_sent("2026-W41") is False

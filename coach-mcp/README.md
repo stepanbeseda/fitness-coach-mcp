@@ -177,9 +177,10 @@ nightly history, see below) for every active goal with a metric and returns per 
   must stay above zero);
 - `days_remaining` and `on_track`: the projection reaches `target_value` (a tie counts as on track).
 
-`available: false` or a `null` projection come with a `reason` code: `no_recent_value`, `too_few_values`,
-`no_target_date`, `target_date_passed`, `target_date_too_far`, `trend_too_steep`, `no_target_value`. Goals
-without a metric are only counted (`goals_without_metric`).
+`available: false` comes with the reason `no_recent_value` (no value in the last 14 days) or `too_few_values`.
+With `available: true` a reason explains a missing projection or verdict: `no_target_date`, `target_date_passed`,
+`target_date_too_far` and `trend_too_steep` come with a `null` projection, `no_target_value` with a projection
+and `on_track: null`. Goals without a metric are only counted (`goals_without_metric`).
 
 ## Nightly history
 
