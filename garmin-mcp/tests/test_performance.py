@@ -377,6 +377,13 @@ def test_shape_running_tolerance_field_rules():
     assert performance.shape_running_tolerance([{"calendarDate": "2026-09-28", "isValid": True}]) == UNAVAILABLE
 
 
+def test_shape_running_tolerance_non_string_nested_key():
+    entry = {"calendarDate": "2026-09-28", "rangeDTO": {1: 5, "min": 3}, "load": 2}
+    assert performance.shape_running_tolerance([entry])["weeks"] == [
+        {"date": "2026-09-28", "range_min": 3, "load": 2}
+    ]
+
+
 def test_shape_running_tolerance_far_dates():
     raw = [{"calendarDate": "9999-12-31", "load": 1}, {"calendarDate": "0001-01-01", "load": 2}]
     out = performance.shape_running_tolerance(raw)

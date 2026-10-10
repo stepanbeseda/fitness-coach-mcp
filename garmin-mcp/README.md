@@ -97,7 +97,7 @@ use verified endpoints). Garmin is the primary source for weight; the same weigh
 
 Known uncertainty: the key names of the exercise sets and the activity weather were captured on a real account (values
 were not). Set weights are read as grams and the weather as °F and mph, then converted to kg, °C and km/h; this is not
-verified yet. On the owner's account `get_running_tolerance` returns no weeks (`available: false`), so its entries are
+verified yet. On the account it was tested with, `get_running_tolerance` returns no weeks (`available: false`), so its entries are
 untested on real data: each week passes Garmin's own field names through (snake_case, identifiers dropped). On a Garmin
 server error the library logs the API path, which contains the activity id (as for the other activity calls), and can
 include Garmin's error message; no health values are logged.

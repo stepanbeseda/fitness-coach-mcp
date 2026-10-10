@@ -137,6 +137,24 @@ def test_shape_exercise_sets_branches():
     assert shape({"exerciseSets": ["x", None, 3]}) == UNAVAILABLE
 
 
+def test_shape_exercise_sets_summary_and_choice_rules():
+    shape = activities.shape_exercise_sets
+    # max_weight_kg is the maximum, not the last weight
+    falling = shape(_sets(_plain(repetitionCount=5, weight=82500.0), _plain(repetitionCount=5, weight=80000.0)))
+    assert falling["exercises"] == [{"exercise": "curl", "sets": 2, "reps": 10, "max_weight_kg": 82.5}]
+    # setType is compared case-insensitively
+    lower = shape(_sets(_plain(setType="rest", repetitionCount=5), _plain(setType="Rest", repetitionCount=5)))
+    assert lower == UNAVAILABLE
+    # equal probabilities: the first candidate wins
+    tie = {"setType": "ACTIVE", "exercises": [{"category": "ROW", "name": "FIRST", "probability": 50.0},
+                                              {"category": "ROW", "name": "SECOND", "probability": 50.0}]}
+    assert shape(_sets(tie))["sets"] == [{"set": 1, "exercise": "first", "category": "row"}]
+    # a candidate without a probability loses against one with a probability
+    mixed = {"setType": "ACTIVE", "exercises": [{"category": "ROW", "name": "NONE"},
+                                                {"category": "ROW", "name": "SOME", "probability": 1.0}]}
+    assert shape(_sets(mixed))["sets"][0]["exercise"] == "some"
+
+
 @pytest.mark.parametrize(
     "raw",
     [
