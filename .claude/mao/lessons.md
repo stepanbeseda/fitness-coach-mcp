@@ -253,3 +253,36 @@ image.
   rebase. Review of a rebased tree reads the conflict resolutions for behaviour of the merged PRs that got
   dropped (PR 06 review 2 and PR 09 review 2 found none) and the request ids of `scripts/e2e_flow.py` (PR 09 and
   PR 12 both used id 11 on different endpoints, harmless).
+
+## Batch of 2026-10-10 (PR 18 and PR 19)
+
+Two PRs in separate worktrees, merged in plan order (#26, #27), the second rebased after the first.
+
+- **Run the expected values of a spec; do not read them.** The one blocking spec-check finding of the batch was a
+  test whose prescribed result contradicted the code: PR 18 T19 expected `unreachable` for `auth = "missing"`, the
+  code returns `auth` (`unreachable` is `auth=None`). Reading `history.py` and the existing test would have shown
+  it, but only applying the spec to a scratch copy and running its tests proved it. The PR 19 spec check, which
+  also ran the prescribed tests and mutations, found a mutant that survived because the prescribed tests did not pin
+  the indentation of three statements (they moved into the HR-zones block and the suite stayed green). The spec check
+  applies the spec literally to a throwaway copy and runs every prescribed test and mutation. (PR 18 spec check B1;
+  PR 19 spec check N2)
+- **Mutation tables in specs lack predicate mutants.** Both reviewers found survivors that the specs' tables did not
+  list: PR 18 the charge rule `rest <= run.sections_ok` ("any" against "every"), repair answers counted as
+  evidence, and `_confirm` removed from the repair (round 1, fixed in round 2); PR 19 four gaps on correct code
+  (max weight against max of rising weights, a lower-case `rest`, a probability tie, a nested key type guard). The
+  table lists a predicate mutant for every comparison, quantifier (`any`, `all`, `sum`), case fold, tie rule and type
+  guard, with the case that kills it; the designer proposes the mutants, the reviewer adds its own. The new
+  checklist item says the same. (PR 18 review 1, O1 and O2; PR 19 review 1, O1)
+- **Shape-only capture from the live container settles assumptions before the implementation.** The owner ran two
+  read-only scripts (`docker compose exec -T garmin-mcp python - < capture.py`) that print key names, types and list
+  lengths and no values. They showed that the activity summary carries `activeSets` and `totalExerciseReps` (added as
+  D12), that the strength set has `repetitionCount` and `weight` null and the weather of a strength activity is all
+  null, and that the running tolerance is empty on the account for every range (a request bug ruled out by a second
+  capture over 56 and 182 days and daily). The designer writes the capture command into the spec, the orchestrator
+  asks the owner, the capture goes to the same designer as an addendum (not a new attempt), and the fixtures stay
+  synthetic. Criterion 5 of PR 19 was then reworded in the PR body, not in the plan. (PR 19, D11, D12)
+- **A cleanup glob deletes other agents' files.** The PR 18 reviewer removed `/tmp/fcm-check-pr18.*` with a glob; the
+  directories are the logs of every `scripts/check.sh --tag pr18` run, including the implementer's, which were
+  evidence at that moment. An agent removes only what it created, by the exact name it recorded when it created it
+  (a log directory printed at the start of its own run); a glob is allowed only over files the agent itself created.
+  (PR 18 review 2, Hygiene)
