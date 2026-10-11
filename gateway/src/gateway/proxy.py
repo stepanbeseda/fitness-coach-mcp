@@ -14,12 +14,15 @@ import json
 import logging
 import re
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import anyio
 import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from .audit import Audit
 from .config import SCOPE, Backend, Settings, read_secret
@@ -283,7 +286,7 @@ class McpProxy:
                     rpc.methods.append(method[:64])
                 if method == "tools/call":
                     params = message.get("params") if isinstance(message.get("params"), dict) else {}
-                    name = params.get("name")
+                    name = params.get("name")  # type: ignore[union-attr]  # params is a dict (line above)
                     tool = name[:64] if isinstance(name, str) else "?"
                     rpc.tools.append(tool)
                     if tool in backend.tool_denylist:
@@ -379,7 +382,7 @@ class McpProxy:
             slot.release()
             finish(outcome if outcome is not None else observer.summary())
 
-        async def relay():
+        async def relay() -> AsyncIterator[bytes]:
             outcome = None
             try:
                 async for chunk in upstream.aiter_bytes():
@@ -397,11 +400,11 @@ class _RelayResponse(StreamingResponse):
     """StreamingResponse that always releases the upstream connection, even when
     the client disconnects before the body iterator starts."""
 
-    def __init__(self, content, on_close, **kwargs) -> None:
+    def __init__(self, content: AsyncIterator[bytes], on_close: Callable[[], Awaitable[None]], **kwargs: Any) -> None:
         super().__init__(content, **kwargs)
         self._on_close = on_close
 
-    async def __call__(self, scope, receive, send) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             await super().__call__(scope, receive, send)
         finally:

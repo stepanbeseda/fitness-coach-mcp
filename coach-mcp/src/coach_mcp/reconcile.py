@@ -92,7 +92,9 @@ def suggest(sessions: Sequence[Mapping[str, Any]], days: Mapping[str, DayActivit
         planned = sorted((s for s in group if s["status"] == "planned"), key=lambda s: s["id"])
         for index, session in enumerate(planned):
             if index < available:
-                out[session["id"]] = Suggestion("matched", day.final, _evidence(type_, entry, count))
+                # available > 0 needs count > 0, and _count() gives that only for a mapping entry
+                evidence = _evidence(type_, entry, count)  # type: ignore[arg-type]
+                out[session["id"]] = Suggestion("matched", day.final, evidence)
             else:
                 out[session["id"]] = Suggestion("no_activity", day.final, None)
     return out

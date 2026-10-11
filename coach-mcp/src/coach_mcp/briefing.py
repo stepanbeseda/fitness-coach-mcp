@@ -412,7 +412,8 @@ def _session_line(t: Texts, session: Mapping[str, Any]) -> str:
         parts.append(_one_line(session["intensity"], 120))
     details = f" ({', '.join(parts)})" if parts else ""
     kind = _type_name(t, session.get("type"))
-    status = t.status_suffix.get(session.get("status"), "")
+    # an unknown or missing status has no suffix
+    status = t.status_suffix.get(session.get("status"), "")  # type: ignore[arg-type]
     return f"- {kind}: {_one_line(session.get('description', ''), 120)}{details}{status}"
 
 
@@ -556,7 +557,8 @@ def missed_check_predates_sync(
     for session in _yesterday_matchable(yesterday_sessions):
         if _suggested(session) != "no_activity":
             continue
-        raw = checked_at.get(session.get("id"))
+        # a session without an id finds nothing
+        raw = checked_at.get(session.get("id"))  # type: ignore[arg-type]
         try:
             checked = datetime.fromisoformat(raw) if isinstance(raw, str) else None
         except ValueError:

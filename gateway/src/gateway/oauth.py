@@ -105,7 +105,9 @@ def redirect_uri_allowed(client: Client, candidate: str) -> bool:
     return False
 
 
-def oauth_error(status: int, error: str, description: str | None = None, headers: dict | None = None) -> JSONResponse:
+def oauth_error(
+    status: int, error: str, description: str | None = None, headers: dict[str, str] | None = None
+) -> JSONResponse:
     body = {"error": error}
     if description:
         body["error_description"] = description
@@ -351,7 +353,7 @@ class OAuthServer:
 
         def again(message: str, status: int) -> Response:
             return consent_page(
-                txn=txn,
+                txn=txn,  # type: ignore[arg-type]  # req exists only for a non-empty txn
                 client_name=client.name,
                 client_id=client.client_id,
                 redirect_uri=req.redirect_uri,
@@ -408,7 +410,9 @@ class OAuthServer:
 
     # -- /token ---------------------------------------------------------------------------
 
-    async def _client_request(self, request: Request, ctx: NetContext, endpoint: str):
+    async def _client_request(
+        self, request: Request, ctx: NetContext, endpoint: str
+    ) -> tuple[dict[str, list[str]], Client] | Response:
         """Common checks for /token and /revoke. Returns (form, client) or a Response."""
         if not self.token_origin_allowed(ctx):
             self.audit.event(f"oauth.{endpoint}_origin_denied", src=ctx.source, ip=ctx.client_ip)

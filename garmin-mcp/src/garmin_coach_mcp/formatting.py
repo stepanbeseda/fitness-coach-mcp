@@ -6,7 +6,7 @@ import json
 import math
 import re
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal, overload
 from zoneinfo import ZoneInfo
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -50,6 +50,10 @@ def resolve_range(
     return start_d, end_d
 
 
+@overload
+def num(value: Any, digits: Literal[0]) -> int | None: ...
+@overload
+def num(value: Any, digits: int = 1) -> float | int | None: ...
 def num(value: Any, digits: int = 1) -> float | int | None:
     """Round numbers; drop NaN/None/non-numbers; keep ints as ints."""
     if value is None or isinstance(value, bool):
@@ -145,6 +149,10 @@ def phrase_label(value: Any) -> str | None:
     return re.sub(r"_\d+$", "", value)
 
 
+@overload
+def clean(value: dict[str, Any]) -> dict[str, Any]: ...
+@overload
+def clean(value: list[Any]) -> list[Any]: ...
 def clean(value: Any) -> Any:
     """Recursively drop None values and empty containers."""
     if isinstance(value, dict):

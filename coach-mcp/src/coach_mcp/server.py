@@ -166,7 +166,12 @@ def build_server(
         instructions=INSTRUCTIONS,
         version=__version__,
         lifespan=lifespan,
-        log_level=settings.log_level if settings.log_level in ("DEBUG", "INFO", "WARNING", "ERROR") else "INFO",
+        # the membership test narrows the value at runtime; mypy does not narrow a str to a Literal
+        log_level=(
+            settings.log_level  # type: ignore[arg-type]
+            if settings.log_level in ("DEBUG", "INFO", "WARNING", "ERROR")
+            else "INFO"
+        ),
     )
 
     def tool(name: str, annotations: ToolAnnotations) -> Callable[[Callable[..., Awaitable[Any]]], Any]:
@@ -481,7 +486,7 @@ def build_server(
         precipitation probability at most 30 %, wind at most 25 km/h. Cached for 30 minutes; changes nothing."""
         return await weather.forecast(latitude, longitude)
 
-    @server.custom_route("/healthz", methods=["GET"])
+    @server.custom_route("/healthz", methods=["GET"])  # type: ignore[untyped-decorator]  # not annotated in the SDK
     async def healthz(_request: Request) -> JSONResponse:
         try:
             version = store.check()

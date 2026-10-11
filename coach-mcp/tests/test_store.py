@@ -1163,7 +1163,7 @@ def _raw(db_path, sql: str, params: tuple = ()) -> None:
 
 def test_migration_8_upgrades_a_version_7_file_with_data(db_path, monkeypatch):
     old = _old_store(db_path, monkeypatch)
-    goal_id = old.insert_goal({"title": "Keep me", "target": "1:40", "target_date": date(2027, 4, 5)})
+    old.insert_goal({"title": "Keep me", "target": "1:40", "target_date": date(2027, 4, 5)})
     constraint_id = old.insert_constraint({"kind": "injury", "title": "Left knee"})
     session_id = _one_session(old)
     note_id = old.insert_note(date(2026, 10, 7), "A note", session_id)

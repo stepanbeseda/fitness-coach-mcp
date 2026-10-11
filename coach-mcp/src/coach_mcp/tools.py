@@ -462,7 +462,8 @@ def update_session(
         if target < today:
             raise ToolError("new_date must be today or later")
 
-    copy_id, note_id = store.update_session_status(
+    # copy_id is first bound as an int in the branch above, which always raises
+    copy_id, note_id = store.update_session_status(  # type: ignore[assignment]
         session_id, status, target, (today, note_text) if note_text is not None else None
     )
     result: dict[str, Any] = {"session": _session_out(store, _must_get(store.get_session(session_id), "session", session_id))}

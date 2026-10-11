@@ -254,7 +254,8 @@ def shape_hill_score(raw: Any) -> dict[str, Any]:
     last = scored[-1]
     change = None
     if len(scored) >= 2:
-        change = num(last.get("overallScore"), 0) - num(scored[0].get("overallScore"), 0)
+        # every entry of `scored` has a numeric overallScore (the filter above)
+        change = num(last.get("overallScore"), 0) - num(scored[0].get("overallScore"), 0)  # type: ignore[operator]
     return clean(
         {
             "date": _day(last.get("calendarDate")),
@@ -500,7 +501,11 @@ async def gear(service: GarminService) -> dict[str, Any]:
     uuids = [i["uuid"] for i in items if isinstance(i.get("uuid"), str) and i["uuid"]]
     stats: dict[str, Any] = {}
     if uuids:
-        stats = await service.call_many({u: (lambda c, u=u: c.get_gear_stats(u)) for u in uuids})
-    shaped = [shape_gear_item(i, stats.get(i.get("uuid"))) for i in items]
+        # mypy cannot infer a lambda whose default binds the loop variable
+        stats = await service.call_many(
+            {u: (lambda c, u=u: c.get_gear_stats(u)) for u in uuids}  # type: ignore[misc]
+        )
+    # an item without a string uuid has no stats: the lookup then finds nothing
+    shaped = [shape_gear_item(i, stats.get(i.get("uuid"))) for i in items]  # type: ignore[arg-type]
     shaped.sort(key=lambda g: (g["retired"], -(g.get("distance_km") or 0)))
     return {"count": len(shaped), "gear": shaped}

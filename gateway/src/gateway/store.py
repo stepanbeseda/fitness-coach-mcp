@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS auth_requests (
@@ -168,9 +169,10 @@ class Store:
                 raise
             self._conn.execute("COMMIT")
 
-    def _one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+    def _one(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
         with self._lock:
-            return self._conn.execute(sql, params).fetchone()
+            row: sqlite3.Row | None = self._conn.execute(sql, params).fetchone()
+            return row
 
     # -- pending authorization requests ------------------------------------------
 

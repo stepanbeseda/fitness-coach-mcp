@@ -10,7 +10,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time as dt_time, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, TypeGuard
 from zoneinfo import ZoneInfo
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -50,7 +50,7 @@ def _whole(value: Any) -> int | None:
     return None
 
 
-def _valid_id(value: Any) -> bool:
+def _valid_id(value: Any) -> TypeGuard[str]:
     return isinstance(value, str) and 1 <= len(value) <= MAX_ID
 
 
