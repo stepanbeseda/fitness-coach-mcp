@@ -408,7 +408,7 @@ gateway login opens.
 
 | Task | Command |
 |---|---|
-| Status of the whole service | `scripts/healthcheck.sh` (for cron: `--quiet`, exit 1 = problem) |
+| Status of the whole service | `scripts/healthcheck.sh` (for cron: `--quiet`, exit 1 = problem; `--notify` sends changes to Telegram) |
 | Logs | `docker compose logs -f gateway` (no query strings or tokens) |
 | Audit | `scripts/admin.sh audit 100` |
 | Connected clients (grants) | `scripts/admin.sh grants list` |
@@ -443,12 +443,18 @@ runs the e2e test with `E2E_PROJECT=fcm-e2e-<tag>` and `E2E_TAG=<tag>`.
 - `--only garmin|gateway|coach|e2e` runs a subset (`CHECK PARTIAL`). `--keep-images` keeps the built images
   `fcm-<service>-check-<tag>` and `fcm-e2e/*:<tag>`; otherwise they are removed.
 
-Recommended cron (reports only on problems):
+Recommended cron. The first line checks the stack every 15 minutes and sends changes in its problems to your
+Telegram chat (Operations alerts below); the second one makes the nightly backup:
 
 ```cron
-17 7 * * * cd /path/to/fitness-coach-mcp && scripts/healthcheck.sh --quiet
+*/15 * * * * cd /path/to/fitness-coach-mcp && scripts/healthcheck.sh --quiet --notify >/dev/null
 47 2 * * * cd /path/to/fitness-coach-mcp && scripts/backup.sh --quiet
 ```
+
+With `--notify`, cron mails you only when the alert cannot be sent: the problem lines on stdout went to Telegram
+(`>/dev/null`), the failure and the current problems are on stderr. Without the Telegram bot, use
+`17 7 * * * cd /path/to/fitness-coach-mcp && scripts/healthcheck.sh --quiet` instead; cron then mails the
+problems once a day.
 
 ### Morning briefing (Telegram)
 
@@ -468,6 +474,7 @@ data. The text is in English by default; `COACH_LANGUAGE=cs` switches it to Czec
 and tailnet for Telegram's servers and stay in the chat history until you delete them; bot chats are not
 end-to-end encrypted. The bot token (`secrets/telegram_bot_token`) gives full control of the bot. If it leaks,
 revoke it with @BotFather and store the new one with `scripts/setup-secrets.sh telegram-token`.
+The same chat also receives the healthcheck alerts, which carry no health data (Operations alerts).
 
 To turn it on:
 
@@ -670,6 +677,9 @@ script can recreate it. The gateway database (grants and refresh tokens) and the
   its name (clock moved, a foreign archive), the script says so even with `--quiet`.
 - The name of the newest archive is the time of the last successful backup **in UTC**. A run at 02:47 in Prague
   is named `…T004700Z` in summer and `…T014700Z` in winter.
+- `scripts/healthcheck.sh` reports a problem when the newest archive is older than `BACKUP_MAX_AGE_HOURS` (default
+  26), when `BACKUP_DIR` holds no archive or cannot be read, and when the newest name lies more than an hour in
+  the future. Without `BACKUP_DIR` in `.env` it checks nothing. With `--notify` the problem goes to Telegram.
 
 Setup: add `BACKUP_DIR=` (an absolute path outside the repository) and optionally `BACKUP_KEEP=` to `.env` with an
 editor, run `scripts/backup.sh` once and add the cron line from Operations. The `backup`, `restore`,
@@ -761,6 +771,34 @@ The daily history (`history_days`) is in the same file as `coach.db`. If it is l
 last `COACH_HISTORY_BACKFILL_DAYS` days from Garmin after startup. The Hevy strength history (tables
 `strength_workouts`, `hevy_templates`, `hevy_sync`) is likewise reloaded from Hevy after a loss.
 
+### Operations alerts (Telegram)
+
+`scripts/healthcheck.sh --notify` sends the healthcheck's problems to the chat of the morning briefing, through
+the same bot. It sends a message only when the set of problems changes: when a problem appears or goes away, and
+once when every check passes again. An unchanged set sends nothing, so the script can run from cron every 15
+minutes (Operations).
+- A message lists the `✘` lines exactly as the healthcheck prints them, under `New:`, `Still:` and `Resolved:`.
+  Warnings (`!` lines) are not sent.
+- Among the problems: a container that is not running or not healthy, the morning briefing scheduler or the
+  nightly history `stopped` in `coach-mcp`, invalid Garmin tokens, a rejected Hevy key, and the backup age
+  (Backups): a failed nightly backup shows up a few hours later.
+- A problem stays the same problem while its check keeps failing, even when its line changes (for example
+  `running/starting` and then `running/unhealthy`).
+- Setup: the bot and `COACH_TELEGRAM_CHAT_ID` from Morning briefing, steps 1 to 3. Nothing is restarted: the
+  script runs on the host and reads `secrets/telegram_bot_token` itself, so the cron user must be able to read it.
+- The token reaches `curl` on stdin, never on a command line. The chat id and the text travel in a temporary
+  file that is deleted afterwards, and no output of the script contains the token or the chat id.
+- When the chat id or the token is missing or malformed, or Telegram does not accept the message, the script
+  still prints the problems, writes `Notify failed: …` and the current problems to stderr and exits 1. The next
+  run sends the message again.
+- What was sent last is kept in `~/.local/state/fitness-coach-mcp/healthcheck-notify.state` (under
+  `$XDG_STATE_HOME` when it is set). The first run with `--notify` sends the problems that exist at that moment;
+  delete the file to have the next run send the current problems again.
+
+**Privacy:** the alerts go to Telegram's servers and stay in the chat history, like the briefing. They carry no
+health values: service names and states, HTTP codes, the node's host name, the Funnel IP address and the age of
+the newest backup.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -775,6 +813,12 @@ last `COACH_HISTORY_BACKFILL_DAYS` days from Garmin after startup. The Hevy stre
 | The gateway does not start after an update: `cannot read secret /run/secrets/coach_backend_token` | `scripts/setup-secrets.sh` (adds the missing internal token), then `docker compose up -d --build coach-mcp gateway`. |
 | `coach-mcp` unhealthy, log says `database schema version N is newer` | An older image is running than the data: deploy the newer version again; do not delete the `coach-data` volume. |
 | `scripts/backup.sh` ends with `No backup written` | The lines above name the part: `is not running` (Compose message) = the service is not running (`docker compose ps`); `Garmin tokens missing` = `scripts/garmin-login.sh`; `database is larger than 32 MiB` / `stayed locked` = report it (the limit is raised in a PR). No archive was created and older ones stay. |
+| `healthcheck.sh` says `backup: newest archive is … h old` or `no archive in BACKUP_DIR` | The nightly `scripts/backup.sh` failed or did not run: run it by hand and read its lines (row above), then check its cron line and `BACKUP_DIR` in `.env`. Weekly backups need a larger `BACKUP_MAX_AGE_HOURS` (for example 192). |
+| `healthcheck.sh --notify` ends with `Notify failed: COACH_TELEGRAM_CHAT_ID …` or `… secrets/telegram_bot_token …` | The chat id is missing from `.env`, or the token file is missing, unreadable for the cron user or not a bot token → Morning briefing, steps 2 and 3 (`scripts/setup-secrets.sh telegram-token`, `scripts/setup-secrets.sh telegram-chat-id`). The problems are still printed and the exit code is 1. |
+| `Notify failed: Telegram did not accept the message (HTTP …)` | Telegram rejected the message (token, chat id, bot blocked or nobody has written to it yet) or did not respond (`HTTP 000`). Nothing is lost: the next run sends it again. |
+| `Notify failed: another healthcheck.sh --notify run is in progress` | Two runs overlapped (for example a manual run during the cron run); the other run sends the message. |
+| `Notify failed: the message could not be composed` | The state file `~/.local/state/fitness-coach-mcp/healthcheck-notify.state` cannot be read (it is a directory or the file system fails). Fix or delete it; the next run sends the current problems. |
+| `Notify failed: cannot create a temporary directory` | `/tmp` (or `$TMPDIR` of the cron user) is full or not writable. The problems are still on stderr; the next run tries again. |
 | `coach-mcp` does not start: `bind source path does not exist: …/secrets/telegram_bot_token` | The bot token file is missing (an empty one is enough) → `scripts/setup-secrets.sh` and `docker compose up -d coach-mcp`. |
 | `garmin-mcp` or `coach-mcp` does not start: `bind source path does not exist: …/secrets/garmin_readonly_token` | The coach's read-only token is missing → `scripts/setup-secrets.sh` and `docker compose up -d --build garmin-mcp coach-mcp`. |
 | The briefing and history have no Garmin data, the `garmin-mcp` log says `read-only token file missing or too short` | `secrets/garmin_readonly_token` is empty → `scripts/setup-secrets.sh` fills it; running services pick up the new token by themselves. |

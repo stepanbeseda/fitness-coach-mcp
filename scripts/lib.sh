@@ -44,3 +44,16 @@ dc() { docker compose "$@"; }
 require_env() {
   [[ -n "$PUBLIC_BASE_URL" ]] || die "Missing .env with PUBLIC_BASE_URL (cp .env.example .env && chmod 600 .env)."
 }
+
+# Bot tokens look like 123456789:AA... (digits, a colon, 30+ characters); coach-mcp checks the same shape.
+TELEGRAM_TOKEN_RE='^[0-9]{1,20}:[A-Za-z0-9_-]{30,64}$'
+
+# telegram_api TOKEN METHOD OUT [BODY]: calls a Bot API method and prints the HTTP status (000 = no answer).
+# The token reaches curl through a config file on stdin, so it is never on a command line; the reply body
+# goes to OUT. BODY, a JSON file, makes the call a POST; the chat id and the text stay in that file.
+telegram_api() {
+  local body=()
+  [[ -z "${4:-}" ]] || body=(-H 'Content-Type: application/json' --data-binary "@$4")
+  printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$1" "$2" \
+    | curl -s --max-time 15 -o "$3" -w '%{http_code}' "${body[@]}" -K - || true
+}

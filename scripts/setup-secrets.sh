@@ -172,9 +172,6 @@ ensure_garmin_readonly_token() {
   return 0
 }
 
-# Bot tokens look like 123456789:AA... (digits, a colon, 30+ characters); coach-mcp checks the same shape.
-TELEGRAM_TOKEN_RE='^[0-9]{1,20}:[A-Za-z0-9_-]{30,64}$'
-
 # Empty placeholder so docker compose can mount the secret while the morning briefing is off
 # (coach-mcp sends nothing while COACH_TELEGRAM_CHAT_ID is empty).
 ensure_telegram_token() {
@@ -186,13 +183,6 @@ ensure_telegram_token() {
     ok "Created: secrets/telegram_bot_token (empty, morning briefing off)"
   fi
   return 0
-}
-
-# Calls a Bot API method and prints the HTTP status (000 = no answer). The token reaches curl
-# through a config file on stdin, so it is never on a command line; the reply body goes to $3.
-telegram_api() {
-  printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$1" "$2" \
-    | curl -s --max-time 15 -o "$3" -w '%{http_code}' -K - || true
 }
 
 wait_enter() { IFS= read -r _ </dev/tty; }
