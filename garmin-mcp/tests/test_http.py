@@ -124,7 +124,11 @@ async def test_device_status_over_http(app, fake):
         payload = json.loads(result["content"][0]["text"])
         assert payload["last_upload"]["time_utc"] == "2026-09-30T04:58:12Z"
         assert payload["primary_device"]["registered_devices"] == 1
-    assert [name for name, _ in fake.calls if name.startswith("get_device")] == ["get_device_last_used", "get_devices"]
+    # the two library calls run concurrently, so their order is not fixed
+    assert sorted(name for name, _ in fake.calls if name.startswith("get_device")) == [
+        "get_device_last_used",
+        "get_devices",
+    ]
 
 
 @pytest.mark.anyio
