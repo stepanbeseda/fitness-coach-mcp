@@ -286,3 +286,32 @@ Two PRs in separate worktrees, merged in plan order (#26, #27), the second rebas
   evidence at that moment. An agent removes only what it created, by the exact name it recorded when it created it
   (a log directory printed at the start of its own run); a glob is allowed only over files the agent itself created.
   (PR 18 review 2, Hygiene)
+
+## Batch of 2026-10-11 (PR 14 and PR 20)
+
+Two PRs in separate worktrees, merged in plan order (#29, #30), the second rebased after the first without conflicts.
+
+- **A prescribed expected value must be run through the real helper.** The PR 14 spec check found a blocking error:
+  T-P3 prescribed that the string `"1290"` is dropped, but `formatting.num` does `float(value)` inside `try` and
+  keeps numeric strings, so the test could not pass. The designer runs every expected value of a test through the
+  helper the code uses (not through its docstring or memory of it), and writes an explicit type guard when the
+  behaviour must differ from the helper. Same family as the PR 18 lesson above. (PR 14 spec check B1)
+- **Every case a criterion enumerates has a row in the test harness.** Criterion 2 of PR 20 named the unreadable
+  token file; the harness had no row for it, so a mutant that dropped the problem lines from the cron mail survived,
+  and review 1 returned CHANGES for it (the only blocking finding of the PR). The spec lists the cases of each
+  criterion next to the rows that test them; a case without a row is a spec-check finding. The new checklist item
+  says the same. (PR 20 review 1, B1)
+- **Synthetic ids in tests are obviously fake.** The PR 20 spec gave the harness a random-looking 10-digit chat id.
+  Neither the reviewer nor the orchestrator could tell it from a real one (the reviewer could not read `.env`), so
+  the branch was squashed to one commit before the push to keep it out of the history. Use values like `123456789`
+  or `000000000`; if one slips in, squash before the push, which is free until the branch is published. (PR 20
+  review 2)
+- **Post-approval non-blocking test gaps are cheap in one commit and a delta review.** PR 14 review 1 approved with
+  three test gaps and wrong doc rows (O1, O2, O4); the implementer fixed them in one commit, ran the three mutants
+  against the new tests, and a delta review of only that commit approved. No second full review, no new design
+  attempt. (PR 14 impl 2, review 2)
+- **`gh pr merge --delete-branch` fails locally while `main` is checked out elsewhere.** The live checkout holds
+  `main`, so after the squash merge `gh` could not switch to it to delete the local branch and printed an error,
+  but the merge itself had happened (check with `gh pr view <n> --json state,mergeCommit`). Delete the remote
+  branch with `git push origin --delete <branch>` and the local branch and worktree by hand. Do not run
+  the merge again.
