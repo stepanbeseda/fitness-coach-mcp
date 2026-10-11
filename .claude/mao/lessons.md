@@ -315,3 +315,36 @@ Two PRs in separate worktrees, merged in plan order (#29, #30), the second rebas
   but the merge itself had happened (check with `gh pr view <n> --json state,mergeCommit`). Delete the remote
   branch with `git push origin --delete <branch>` and the local branch and worktree by hand. Do not run
   the merge again.
+
+## Batch of 2026-10-11 (PR 17)
+
+One PR (#33), review in one round (APPROVED, 0 blocking, 8 non-blocking), no rebase.
+
+- **A spec that changes a shared list does not list the existing tests that hold a literal copy.** The PR 17 spec
+  put `get_device_status` first in the briefing tool list and the fake app; the spec check found three existing
+  tests that went red and were not in section 6.3: two expected call dicts and a `wait_for(... == ["get_recovery_snapshot"])`
+  that can never hold (10 s timeout). Same family as the addendum lesson above (grep the tests of a changed
+  guard), one level up: a changed list, call order or fake. The designer greps the tests for the name and for the
+  literal values, and lists each hit as kept / changed. New checklist item. (PR 17 spec check N2)
+- **A parameter inserted in the middle of a signature breaks positional callers.** The spec put `missed_stale`
+  "after `missed_sessions`" in `render()`, whose caller passed `language` as the 11th positional argument; applied
+  literally it is a `TypeError`. The spec says "last, or by keyword" and names the call site, and the spec check
+  applies the spec literally to find such a case. (PR 17 spec check N1)
+- **A test that asserts the order of concurrent calls is flaky.** The implementer's garmin HTTP test compared the
+  two device calls that `call_many` runs concurrently in call order; the first `check.sh` failed once, and the fix
+  (compare sorted) was green in six repeated test stages. Concurrent calls are compared as a set or sorted; the
+  checklist item on test independence now names it. (PR 17 impl 1)
+- **A hand-written UTC offset in a test is right only for its dates.** The briefing and scheduler tests build
+  device times with a fixed `+02:00` for Europe/Prague on 2026-10-07; they are correct (DST ends 2026-10-25) and
+  say so in a comment, but moving the date past the change would turn them red without any code change. Prefer
+  `ZoneInfo`, or keep the comment. (PR 17 impl 1, decision 5)
+- **A new call path copies a guard and not its test.** `sync_check` has the same `anyio.fail_after(180)` as `fetch`,
+  but only `fetch` had `test_a_hung_tool_is_bounded_by_the_overall_timeout`; the reviewer's mutant `if True:` survived
+  1270 tests. A second survivor was the hold-back predicate `<` against `!=`, which needs one row with a sync
+  dated after the briefing day. When a path is added next to a sibling, the sibling's guard tests are copied for it
+  (new checklist item); the mutation table lists the `!=` form of every date comparison. (PR 17 review 1, O1, O2)
+- **A prototype output that no longer matches its script is a designer artefact.** `coach_helpers.out` had 15 `parse`
+  rows and two stale rows that the script did not print, so spec R4 ("15 rows with the expected value printed
+  there") pointed at values nobody had run; the spec checker ran the real `parse_last_sync` and the implementer
+  used those. The designer regenerates every `.out` from its script after the last edit and states the run command
+  with the env it needs (`-e PYTHONPATH=/app/src`). (PR 17 spec check N5)

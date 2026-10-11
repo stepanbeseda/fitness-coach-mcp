@@ -16,7 +16,8 @@ repeated findings.
 - [ ] The test measures behaviour or parsed structure, not file text —
   `"x" in source` is satisfied by a comment too.
 - [ ] Tests use only the fake Garmin client and canned payloads; they do not
-  depend on network, global config, HOME, time zone or file order.
+  depend on network, global config, HOME, time zone, file order or the order of
+  calls that run concurrently (`call_many`): compare such calls sorted.
 - [ ] New MCP tools are added to `EXPECTED_TOOLS` (and `WRITE_TOOLS` when they
   write) in the service's `tests/test_http.py` (`garmin-mcp/` or `coach-mcp/`), and the `tools/list` payload stays
   under the size limit asserted there (40 000 chars).
@@ -24,12 +25,23 @@ repeated findings.
   every new `get_*` call.
 - [ ] Nothing was silently weakened: a deleted test has a "new home" line in
   the spec/PR.
+- [ ] A change that adds an item to a shared list (the briefing tool list, a fake's
+  responses), adds a parameter to a function, or changes a call order was grepped
+  against the existing tests: literal copies (expected call dicts, `wait_for` on a call
+  list) are listed as changed, and every positional call site was read. A new
+  parameter goes last or is passed by keyword.
+- [ ] A new code path that copies a guard of a sibling path (overall deadline, timeout,
+  auth no-op, size limit) has the sibling's test; the reviewer mutates the guard
+  (`if True:`) once per path.
 - [ ] Every alert or notification is stated as a *state* (edge-triggered:
   new when it newly holds) or an *event* (about a different object each day,
   de-duplicated by the day or the object), and a test takes the consecutive-day
   case. A change to a per-day guard keeps the pre-fix case as a test.
 - [ ] Time: fixed dates and relative dates in one test file are a calendar
   bomb — freeze the whole file or compute everything from `now`.
+  A hand-written UTC offset for a zone with DST (`+02:00` for Europe/Prague) is valid
+  only for the dates around it: build local times with `ZoneInfo`, or say in a comment
+  which dates the offset holds for.
 - [ ] The four-command check (`docker build --target test garmin-mcp`,
   `docker build --target test gateway`, `docker build --target test coach-mcp`,
   `scripts/e2e-test.sh`) was run and is green.

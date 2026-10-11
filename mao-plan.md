@@ -92,7 +92,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 14 | Goal progress and the Monday report | 05, 08 | done |
 | 15 | Searchable coach memory | 03 | done |
 | 16 | Correlations | 05 | done |
-| 17 | Sync-aware briefing | 04 | in progress (branch `mao/pr17-sync-aware-briefing`) |
+| 17 | Sync-aware briefing | 04 | done |
 | 18 | History repair | 05 | done |
 | 19 | More Garmin signals | — | done |
 | 20 | Operations alerts via Telegram | 08 | done |
@@ -1289,6 +1289,47 @@ Out of scope: device settings, battery, alarms.
 **Requested:** 2026-10-09, by the owner, from the project review (feature 7); via `/mao`, questions and answers
 round 1 (2026-10-11: shape capture of the device payloads, missed-session alerts added, no early send).
 
+**Delivered:** 2026-10-11, PR #33 (`mao/pr17-sync-aware-briefing`), squash-merged into `main` as `31e3246`, no rebase
+needed (the base `8c59f09` was current). `garmin-mcp`: new read-only tool `get_device_status` (no arguments;
+`last_upload` from the library's `get_device_last_used` with `device`, `time_utc` to the second and `time_local` to
+the minute, and `primary_device` from `get_devices` with `name`, `status`, `primary_activity_tracker` and
+`registered_devices`; each section fail-soft, an upload time outside 2000 to 2100 or not an integer is unknown, ids
+and serial numbers are never returned; 24 tools in `tools/list`). `coach-mcp`: `GarminReader.sync_check()` makes the
+cheap check (the device status only, 2 Garmin Connect requests, bounded to 180 s) and `parse_last_sync` turns the
+answer into a UTC and a local time; the device status is also the first call of the full read. The scheduler retry
+gate (`SETTLE`, a 30-minute constant, no new configuration value): a retry asks for the upload time first and reuses
+the previous full read when the time has not changed, the read was clean (every call `ok`, no section in error) and
+it started at least 30 minutes after the upload; a new upload, an unsettled read, an unknown time or a failed check
+give the full read as before, and nothing is given up or charged for a failed check. The missing-data line reads
+`Missing: sleep (last sync with Garmin: yesterday HH:MM)` (and the Czech text; the new fields are in both
+`messages.py` catalogues) and keeps the old wording when the time is unknown. Open item PR 13 (a) is settled:
+yesterday's missed-workout and missed-session alerts are held back while the last sync is dated before the briefing
+day (an event, not repeated the next day), a missed-session line whose nightly check ran before the last sync says
+so (new `store.suggestion_times`, `get_plan` and `get_coach_context` unchanged), and with the sync time unknown both
+alerts behave as before. Answer to the PR 04 follow-up "about 91 Garmin Connect calls": with the default
+06:30 / 09:30 / 15 min window and sleep missing all morning, the worst case was 13 full reads x 7 = 91 requests; now
+it is 1 full read and 12 checks (9 + 12 x 2) = 33 when the upload was settled before 06:00, 51 when it happened at
+06:20, and as before plus the checks when a check fails or a section is in error. The tool, `send-briefing` and the
+history job still read in full. Both service READMEs (tool lists, the briefing example, log lines),
+`INSTRUCTIONS`, `docs/coach-instructions.md` and `scripts/smoke_test.py` (new section "Garmin: device status (last
+upload)") updated. No migration (schema stays 8), no secret, mount, dependency or configuration change; no
+gateway-side allowlist exists, so the tool is reachable from claude.ai after the deploy. Criteria 1 to 6 met
+offline (`CHECK OK tree=ec2edf0c95cc garmin=294 gateway=80 coach=1270 e2e=OK`, run by the implementer and by the
+reviewer; 61 implementer mutants and 17 reviewer mutants, all killed or equivalent except O1 and O2 below).
+Deviations: the chapter was extended on the branch (commit `5086237`) with the missed-session alerts and the "possibly
+out of date" line after the owner's answer in round 1, which made the Done-when list seven items; Done-when 4 reads
+"older than the start of today" and the code compares the last sync's local date with the briefing day (confirmed by
+the reviewer); the real payload shape was captured read-only on the owner's account on 2026-10-11 (key names and
+types only, recorded in the PR body and in `garmin-mcp/README.md`; the upload time is epoch milliseconds in UTC and
+account-wide, `get_devices` has no per-device time, so the device that uploaded is named and not assumed to be the
+primary one). Review took one round: APPROVED with eight non-blocking findings O1 to O8 (open items, section 5). Spec
+check: 0 blocking, 6 non-blocking (N1 to N6), all applied by the implementer; the implementer's first check run
+failed once on a test of its own that asserted the order of two concurrent library calls (fixed, six repeated test
+stages green). Still needs the test host or the deploy (criterion 7): `docker compose up -d --build garmin-mcp
+coach-mcp`, `scripts/smoke-test.sh` printing the new section, and a `send-briefing` before the phone syncs the
+watch whose message names yesterday's last sync time; the full procedure is in the deploy bundle
+`DEPLOY-2026-10-11-pr17.md`.
+
 ### PR 18 — History repair
 
 PR 05 review finding N5: `HistoryJob._fetch_snapshot` stores a day as fetched
@@ -1603,7 +1644,8 @@ from Telegram, media messages.
   PR 12 #6, PR 13 #6; the owner steps are in the PR bodies. PR 18 and PR 19 are
   merged (2026-10-10) and also wait for the deploy bundle of 2026-10-10. Update 2026-10-10: the
   run of 2026-10-09 and PR 18 and PR 19 were deployed that night (schema 7); PR 14 and
-  PR 20 (merged 2026-10-11) wait for `DEPLOY-2026-10-11.md`.
+  PR 20 (merged 2026-10-11) wait for `DEPLOY-2026-10-11.md`. PR 17 (merged 2026-10-11, #33)
+  waits for `DEPLOY-2026-10-11-pr17.md`.
 - **PR 06 weather.** The CC BY 4.0 attribution sentence in the READMEs comes
   from the designer's knowledge of Open-Meteo's terms; confirm it on
   open-meteo.com. Open-Meteo's behaviour on DST transition days has not been
@@ -1657,7 +1699,12 @@ from Telegram, media messages.
   watch syncs later, the line can name a session that was in fact done, and the
   next night corrects the stored suggestion after the push is sent (a follow-up
   could fire only on `final` suggestions or label the provisional state, if it
-  turns out noisy; PR 17 on sync-aware briefing is the natural place). (b) The
+  turns out noisy; PR 17 on sync-aware briefing is the natural place). Resolved
+  by PR 17 (2026-10-11): both of yesterday's missed alerts are held back while
+  the last sync with Garmin is dated before the briefing day, and the
+  missed-session line says when its nightly check ran before the last sync
+  (the line is labelled, not suppressed: the 03:30 check precedes most morning
+  syncs). (b) The
   real Garmin type keys of the athlete's activities (for example whether indoor
   strength is `strength_training`) were checked only with canned payloads;
   criterion 6 on the test host covers it. (c) `final` ignores
@@ -1732,6 +1779,28 @@ from Telegram, media messages.
   backup is detected as a stale newest archive about 2 hours after the missed run
   with the default limit; weekly backups need a larger `BACKUP_MAX_AGE_HOURS`
   (for example 192).
+- **PR 17 sync-aware briefing, non-blocking review findings (round 1, 2026-10-11).**
+  O1: the overall 180 s deadline of `sync_check` (`coach-mcp/src/coach_mcp/garmin.py`,
+  `anyio.fail_after(180)`) has no test; the mutant that drops it survives, while `fetch` has
+  `test_a_hung_tool_is_bounded_by_the_overall_timeout` (the 90 s httpx and SDK read timeouts still
+  bound most hangs). O2: the hold-back predicate `last.local.date() < day` (`briefing.py`) mutated to
+  `!= day` survives, because no test row has a last sync dated after the briefing day (only clock skew
+  produces it; one row in `test_missed_alerts_are_held_back_until_a_sync_after_yesterday_ended`
+  would pin it). O3: the module docstring of `scheduler.py` still says `compose_briefing` is the one
+  place that reads Garmin, but `_garmin_data` now reads it too. O4: `README.md` line 327 lists what
+  `scripts/smoke-test.sh` prints and lacks the new "Garmin: device status" section. O5: `README.md`
+  line 507 is 139 characters (the paragraph wraps at about 118). O6: by design (spec 4.3 table) an
+  unsettled cached read still pays the 2-request check before the full read that follows anyway;
+  skipping the check when the read is not settled would save 2 requests per such attempt. O7: the
+  30-minute settle assumption is not verifiable offline: if Garmin produces sleep or HRV more than 30
+  minutes after an upload without a new upload, the scheduler reuses a read without them until the
+  cutoff, where before PR 17 the next retry would have picked them up; to watch in the live log after
+  the deploy: a `briefing garmin=unchanged` run that ends with the 09:30 send and `missing=sleep` on a
+  morning the watch had synced (then raise `SETTLE` or reuse only reads that contain sleep). O8
+  (informational): `mylastused` is account-wide, so an upload from another device (a scale, for
+  example) after midnight lifts the hold-back and is the time named in the line; the line says "last
+  sync with Garmin", which stays true, and the alert behaviour then equals that before PR 17.
+  Criterion 7 and the real briefing text wait for the test host.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between
