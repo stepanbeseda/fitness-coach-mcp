@@ -170,7 +170,7 @@ services:
       HOME: /tmp
       # The athlete's local time zone: what "today" means, and when the briefing and history jobs run.
       TZ: ${ATHLETE_TZ:-Europe/Prague}
-      # Language of the morning briefing and the Monday report: en (default) or cs.
+      # Language of the morning briefing, the Monday report and the bot's replies: en (default) or cs.
       COACH_LANGUAGE: ${COACH_LANGUAGE:-}
       COACH_TELEGRAM_CHAT_ID: ${COACH_TELEGRAM_CHAT_ID:-}
       # Two-way Telegram (reads your messages to the bot); false turns it off, the briefing stays.

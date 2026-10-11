@@ -568,10 +568,10 @@ sessions stays with the coach. The answers are plain text in the language of `CO
 `inbound status=ignored count=…` for dropped messages; never a message text, the chat id or the token.
 
 **Privacy:** what you write to the bot passes through Telegram's servers and stays in the chat history, like
-the briefing. `coach-mcp` keeps the text of a note in its database (the `coach-data` volume and its backups) and
-nothing else from your messages. Messages from anyone else are neither stored nor logged. Whoever can write from
-your Telegram account can add notes and mark sessions, and whoever holds the bot token can read what you send to
-the bot until `coach-mcp` has fetched it.
+the briefing, and so do the answers (for example the week's plan from `/plan`). `coach-mcp` keeps the text of a
+note in its database (the `coach-data` volume and its backups) and nothing else from your messages. Messages from
+anyone else are neither stored nor logged. Whoever can write from your Telegram account can add notes and mark
+sessions, and whoever holds the bot token can read what you send to the bot until `coach-mcp` has fetched it.
 
 ### Nightly history
 

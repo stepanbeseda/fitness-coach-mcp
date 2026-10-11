@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import types
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,24 @@ def anyio_backend() -> str:
 
 
 pytestmark = pytest.mark.anyio
+
+
+class Monotonic:
+    """The clock ``step`` measures a long poll with, frozen unless a test moves it (replaces ``time`` of
+    ``inbound.py`` only, so anyio and httpx2 keep the real one)."""
+
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+
+@pytest.fixture(autouse=True)
+def mono(monkeypatch: pytest.MonkeyPatch) -> Monotonic:
+    clock = Monotonic()
+    monkeypatch.setattr(inbound_module, "time", types.SimpleNamespace(monotonic=clock))
+    return clock
 
 
 # ------------------------------------------------------------ parse_command
@@ -419,6 +438,69 @@ async def test_backoff_doubles_up_to_the_cap_and_resets_after_an_answer(tmp_path
     assert await bench.poller.step() == 5.0
 
 
+async def test_the_failure_counter_holds_the_cap_for_good(tmp_path):
+    bench = Bench(tmp_path, FakeTelegram(script=[httpx2.Response(500) for _ in range(1100)]))
+    waits = [await bench.poller.step() for _ in range(1100)]  # 2.0**1024 would overflow without the cap
+    assert waits[:8] == [5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 300.0, 300.0] and set(waits[6:]) == {300.0}
+    assert await bench.poller.step() == 1.0 and bench.poller._failures == 0
+
+
+async def test_a_finished_drain_resets_the_failure_counter(tmp_path):
+    bench = Bench(tmp_path, FakeTelegram(script=[httpx2.Response(500), httpx2.Response(500)]), started=False)
+    assert [await bench.poller.step(), await bench.poller.step()] == [5.0, 10.0]
+    assert await bench.poller.step() == 0.0  # the drain ends on an empty answer
+    bench.telegram.script.append(httpx2.Response(500))
+    assert await bench.poller.step() == 5.0
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "wait"), [(0.0, 1.0), (0.999, 1.0), (1.0, 0.0), (1.5, 0.0), (65.0, 0.0)]
+)
+async def test_an_empty_answer_waits_only_when_it_came_back_in_under_a_second(tmp_path, mono, elapsed, wait):
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        mono.value += elapsed  # the long poll took this long
+        return httpx2.Response(200, content=OK_EMPTY)
+
+    bench = Bench(tmp_path)
+    bench.poller._transport = httpx2.MockTransport(handler)
+    assert await bench.poller.step() == wait
+
+
+class RaisingSender:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def send_text(self, text: str) -> str:
+        self.texts.append(text)
+        raise RuntimeError(SECRET)
+
+
+async def test_a_reply_that_raises_is_logged_by_class_and_the_batch_goes_on(tmp_path, caplog):
+    caplog.set_level(logging.DEBUG, logger="coach_mcp.inbound")
+    bench = Bench(tmp_path, FakeTelegram([message(1, "prvni"), message(2, "druha")]))
+    sender = RaisingSender()
+    bench.poller._replies = sender
+    assert await bench.poller.step() == 0.0
+    assert bench.notes() == [("2026-10-07", "prvni"), ("2026-10-07", "druha")] and bench.offset() == 3
+    assert sender.texts == ["Note saved (7 Oct)."] * 2  # tried once each: a crash is not retried
+    assert caplog.text.count("inbound reply=crashed kind=RuntimeError") == 2
+    assert caplog.text.count("inbound cmd=note status=ok reply=failed") == 2
+    assert SECRET not in caplog.text
+
+
+async def test_today_follows_the_local_day_just_after_local_midnight(tmp_path):
+    bench = Bench(tmp_path)
+    bench.now = datetime(2026, 10, 7, 0, 30, tzinfo=PRAGUE).astimezone(UTC)  # 22:30 on 6 October in UTC
+    bench.seed({"date": D, "type": "running", "description": "10 km easy", "duration_min": 60})
+    assert await bench.say("note", 1, sent="no date") == "Note saved (7 Oct)."
+    assert bench.notes() == [("2026-10-07", "note")]
+    assert await bench.say("/done 1", 2) == "Recorded: #1 Wed 7 Oct · run: 10 km easy (60 min) – done"
+    assert bench.store.get_session(1)["status"] == "done"  # not "a session of a later day"
+    assert (await bench.say("/plan", 3)).startswith("Plan 2026-W41 (5 Oct – 11 Oct):\n#1 Wed 7 Oct")
+    await bench.say("/dnes", 4)
+    assert bench.garmin.days == [D]  # the briefing is computed for the local day
+
+
 @pytest.mark.parametrize("token", [None, "", "\n", "tk_abcdef0123456789", "123456789:short"])
 async def test_an_unusable_token_waits_without_a_request(tmp_path, caplog, token):
     caplog.set_level(logging.DEBUG)
@@ -488,14 +570,19 @@ async def test_run_survives_a_crashing_step_and_backs_off(tmp_path, caplog):
         if len(slept) == 3:
             raise StopLoop
 
+    calls: list[int] = []
+
     def broken() -> Any:
+        calls.append(1)
+        if len(calls) > 10:  # a run() that does not wait after a crash must fail here, not loop for good
+            raise StopLoop
         raise sqlite3.OperationalError(SECRET)
 
     bench.poller._sleep = sleep
     bench.store.inbound_state = broken  # type: ignore[method-assign]
     with pytest.raises(StopLoop):
         await bench.poller.run()
-    assert slept == [5.0, 10.0, 20.0]
+    assert slept == [5.0, 10.0, 20.0] and len(calls) == 3
     assert caplog.text.count("inbound status=crashed kind=OperationalError") == 3 and SECRET not in caplog.text
     assert "inbound status=on" in caplog.text
 
