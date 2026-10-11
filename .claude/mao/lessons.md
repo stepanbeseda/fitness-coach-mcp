@@ -385,3 +385,47 @@ of the one fix), no rebase.
   Dockerfile, so the reviewer reads both whenever a PR touches them. A bare `# type: ignore` is still accepted
   (every ignore carries a code today); new ignores carry a code and a reason. Expected counts: 305 / 91 / 1281.
   (PR 21 review 1, O2 and O3)
+
+## Batch of 2026-10-12 (PR 22)
+
+One PR (#37), design in one attempt after one clarification round (six questions, all answered with the default),
+review in two rounds (round 1 APPROVED with 0 blocking and 8 non-blocking, round 2 a delta review of the one
+follow-up commit), no rebase.
+
+- **A mutation run is bounded inside the container, not around `docker run`.** A reviewer mutant removed the wait
+  after a crash, so `test_run_survives_a_crashing_step_and_backs_off` looped for good; the `timeout` wrapped around
+  `docker run` ended only the client, and the container kept one CPU of the shared 2-CPU host busy for about an hour
+  and a half until the kernel killed pytest. Every mutant runs its pytest under `timeout -k 5 <s>` inside the
+  container, the whole script runs under a `timeout` as the container command, a timeout counts as "not killed", and
+  a mutant that removes a wait or a bound is expected to hang. The implementer's round 2 and the reviewer's round 2
+  worked that way (188 and 14 mutants, none ended by a timeout). (PR 22 review 1, hygiene; impl 2, "Mutation")
+- **A test of a retry or backoff loop is bounded, so a regression fails instead of hanging the check.** The same
+  test ended only through the third call of its fake `sleep`; with `run()` not sleeping it never ended and would have
+  hung the test stage of `scripts/check.sh`. The fix: the broken dependency raises a `BaseException` stop (`StopLoop`,
+  which `except Exception` in the loop cannot swallow) on its Nth call, and the test asserts the number of calls
+  and the waits. (PR 22 review 1, O4; review 2)
+- **A test that imports the constant it checks does not pin its value.** `test_an_old_offset_is_not_sent` built its
+  three ages from `OFFSET_MAX_AGE`, so the spec check's mutants changing it to 30 days or 1 hour survived (the 1 hour
+  value stores a note twice after a restart, the very case of criterion 1), as did the wait of 60 s, 300 s and 2 s
+  and the 50-batch drain bound. Tests of a guard carry the literal value (`timedelta(days=2) - 1 s`, `60.0`,
+  `MIB = 1024 * 1024`), and the designer's mutation table has a constant-value mutant for every guard; the spec check
+  runs such mutants on the prescribed tests (18 extra, 9 survived). (PR 22 spec check N1)
+- **A criterion that says "exact text" is not met by comparing with the catalogue constant.** Eight of the 24 reply
+  fields were asserted against `REPLY_EN.<field>` and `REPLY_CS.<field>`, which tests the language choice and not the
+  wording, and none of the 145 designer mutants touched `messages.py`, so a changed string survived. The spec check
+  ran the gap as a finding; the implementer added literal expected text for all fields and 18 one-string mutants, all
+  killed. When a criterion names the exact text, the spec lists the literals and a mutant per string. (PR 22 spec
+  check N2; impl 1, W1 to W18)
+- **A clock can be replaced for one module only, without a constructor change.** The implementer declined spec-check
+  note N4 (a test clock for `time.monotonic()` in `step`), reasoning that the options were a new constructor argument
+  or a global patch that also moves anyio and httpx2. A third one exists: when the module does `import time`,
+  `monkeypatch.setattr(inbound_module, "time", types.SimpleNamespace(monotonic=clock))` in an autouse fixture of its
+  test file replaces the clock for this module only, and the reviewer showed it with a probe that also proved it does
+  not leak into `test_http.py`. Declining a timing note needs the options listed against the module's imports; the
+  slow branch of the empty-answer floor stayed unpinned (mutant survived) until round 2. (PR 22 review 1, O2; impl 2)
+- **A "Done when" item that contradicts a superseded section 1 rule is a question, and the answer rewords the
+  chapter before the spec.** Criterion 2 said "plain Czech text", while section 1 (superseded 2026-10-09) puts
+  athlete-facing text in the `messages.py` catalogue chosen by `COACH_LANGUAGE`. The designer asked (Q1, with the
+  recommended default), the answer reworded criterion 2 in the chapter ("plain text in the configured language,
+  tested in both catalogues"), and the spec, the tests (both catalogues) and the PR body followed the reworded
+  item; the deviation is listed in the PR body and the "Delivered" block. (PR 22 questions 1, Q1; journal)
