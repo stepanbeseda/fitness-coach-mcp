@@ -97,7 +97,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 19 | More Garmin signals | — | done |
 | 20 | Operations alerts via Telegram | 08 | done |
 | 21 | Static checks in the test stage | — | done |
-| 22 | Two-way Telegram | 08 | planned |
+| 22 | Two-way Telegram | 08 | **in progress** (branch `mao/pr22-two-way-telegram`) |
 
 Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
 10, 11, 12, 13, 14, 09, 07, 15, 16, 17, 18, then 19, 20, 21 and last 22 (the
@@ -1612,14 +1612,15 @@ from Telegram, media messages.
    their text; the update offset survives a restart (tests with a fake
    transport).
 2. Each command has a test for success and for a bad argument; replies are
-   plain Czech text.
+   plain text in the configured language (`COACH_LANGUAGE`, from the
+   `messages.py` catalogue), tested in both catalogues.
 3. Logs carry outcome words only; the README privacy note covers inbound
    messages.
 4. The four-command check is green.
 5. On the test host: `/plan` and a free-text note work from the owner's
    phone, and the note is returned by `get_coach_context`.
 
-**Requested:** 2026-10-09, by the owner, from the project review (feature 3).
+**Requested:** 2026-10-09, by the owner, from the project review (feature 3); questions and answers round 1 (2026-10-11).
 
 ## 5. Open items
 
