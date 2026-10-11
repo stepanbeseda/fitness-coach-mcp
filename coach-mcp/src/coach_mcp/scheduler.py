@@ -8,6 +8,9 @@ outcome words, counters and exception class names only, never message content.
 On Mondays the scheduler sends a second message, the Monday report (``compose_weekly``), once per
 reported ISO week and only after the briefing of that day went out; it follows the briefing's window,
 cutoff and retry rules.
+
+A retry first asks garmin-mcp only for the last upload time and reuses the previous full read while nothing new was
+uploaded.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -23,7 +26,7 @@ from zoneinfo import ZoneInfo
 from . import goals, tools, trends, weekly
 from .briefing import Briefing, build_briefing
 from .config import Settings
-from .garmin import GarminReader, GarminSource, exception_kind
+from .garmin import GarminData, GarminReader, GarminSource, LastSync, exception_kind
 from .messages import DEFAULT_LANGUAGE
 from .push import PushMessage, PushSender, TelegramPush
 from .store import Store
@@ -31,17 +34,48 @@ from .store import Store
 log = logging.getLogger("coach_mcp.briefing")
 
 MAX_SLEEP_SECONDS = 3600.0
+# A full read is reused only when it started at least this long after the upload it saw: Garmin works out sleep and
+# HRV after an upload, so a read right after one may still lack them.
+SETTLE = timedelta(minutes=30)
+
+
+@dataclass(frozen=True)
+class _Read:
+    data: GarminData
+    last_sync: LastSync
+    at: datetime  # when the read started, UTC
+
+
+def reusable(data: GarminData) -> bool:
+    """A full read a later retry may reuse: Garmin answered every call and every snapshot section, and the upload
+    time is known."""
+    if data.auth != "ok" or data.last_sync is None:
+        return False
+    if not data.calls or any(outcome != "ok" for outcome in data.calls.values()):
+        return False
+    snapshot = data.snapshot if isinstance(data.snapshot, Mapping) else {}
+    return not any(isinstance(section, Mapping) and "error" in section for section in snapshot.values())
 
 
 async def compose_briefing(
-    store: Store, garmin: GarminSource, day: date, language: str = DEFAULT_LANGUAGE
+    store: Store, garmin: GarminSource, day: date, language: str = DEFAULT_LANGUAGE, *, data: GarminData | None = None
 ) -> Briefing:
-    data = await garmin.fetch(day)
+    """``data``: a full Garmin read to reuse (the scheduler's retry gate); None reads Garmin now."""
+    if data is None:
+        data = await garmin.fetch(day)
     sessions = tools.sessions_out(store, store.sessions_between(day, day))
     before = day - timedelta(days=1)
-    yesterday_sessions = tools.sessions_out(store, store.sessions_between(before, before))
+    rows = store.sessions_between(before, before)
+    yesterday_sessions = tools.sessions_out(store, rows)
+    checked_at = store.suggestion_times([row["id"] for row in rows if row["status"] == "planned"])
     return build_briefing(
-        day, data, sessions, store.alert_states(), yesterday_sessions=yesterday_sessions, language=language
+        day,
+        data,
+        sessions,
+        store.alert_states(),
+        yesterday_sessions=yesterday_sessions,
+        checked_at=checked_at,
+        language=language,
     )
 
 
@@ -86,6 +120,7 @@ class BriefingScheduler:
         self._stopped = False
         self._briefed = False  # today's briefing went out in this process (also when recording it failed)
         self._weekly_attempts = 0
+        self._read: _Read | None = None  # today's last clean full Garmin read, for the retry gate
 
     # ----------------------------------------------------------------- time
 
@@ -120,6 +155,7 @@ class BriefingScheduler:
             self._day, self._attempts, self._window_seen, self._stopped = day, 0, False, False
             self._late_start = False
             self._briefed, self._weekly_attempts = False, 0
+            self._read = None
         start = self._at(day, settings.briefing_time)
         cutoff = self._at(day, settings.briefing_cutoff)
         to_tomorrow = self._until(self._at(day + timedelta(days=1), settings.briefing_time), now)
@@ -145,7 +181,8 @@ class BriefingScheduler:
         retry = min(settings.briefing_retry_minutes * 60.0, max(self._until(cutoff, now), 0.0))
         self._attempts += 1
         try:
-            briefing = await compose_briefing(self._store, self._garmin, day, settings.language)
+            data = await self._garmin_data(day, now)
+            briefing = await compose_briefing(self._store, self._garmin, day, settings.language, data=data)
             if briefing.waiting and not final:
                 log.info("briefing status=waiting attempt=%d", self._attempts)
                 return retry
@@ -173,6 +210,25 @@ class BriefingScheduler:
             return to_tomorrow
         log.info("briefing status=waiting attempt=%d", self._attempts)
         return retry
+
+    async def _garmin_data(self, day: date, now: datetime) -> GarminData:
+        """The full read, or the previous one when nothing was uploaded since it and it had settled."""
+        cached = self._read
+        if cached is not None:
+            try:
+                current = await self._garmin.sync_check()
+            except Exception as exc:  # a failed check is never a reason to skip the read
+                log.warning("briefing sync_check=crashed kind=%s", exception_kind(exc))
+                current = None
+            settled = cached.at - cached.last_sync.utc >= SETTLE
+            if current is not None and current.utc == cached.last_sync.utc and settled:
+                log.info("briefing garmin=unchanged attempt=%d", self._attempts)
+                return cached.data
+        started = now.astimezone(UTC)
+        data = await self._garmin.fetch(day)
+        last = data.last_sync
+        self._read = _Read(data, last, started) if last is not None and reusable(data) else None
+        return data
 
     async def _weekly_step(self, day: date, now: datetime, cutoff: datetime, final: bool, to_tomorrow: float) -> float:
         """The Monday report, after the briefing of ``day`` went out; returns the seconds to wait."""

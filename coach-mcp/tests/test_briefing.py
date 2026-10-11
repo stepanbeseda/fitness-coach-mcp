@@ -4,7 +4,7 @@ The English catalogue has its own rendering tests in ``test_briefing_en.py``."""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import Any
 
@@ -21,9 +21,11 @@ from coach_mcp.briefing import (
     nights_below_baseline,
 )
 from coach_mcp.briefing import build_briefing as _build_briefing
+from coach_mcp.garmin import LastSync
 from coach_mcp.messages import CS, EN
 from garmin_payloads import (
     DAY,
+    device_status,
     GREEN_SCHEDULED,
     GREEN_SNAPSHOT,
     GREEN_TREND,
@@ -473,7 +475,12 @@ def test_render_yellow_with_missing_and_alerts_exact():
         ],
         "garmin": {
             "auth": "ok",
-            "calls": {"get_recovery_snapshot": "ok", "get_hrv_trend": "ok", "list_scheduled_workouts": "ok"},
+            "calls": {
+                "get_device_status": "ok",
+                "get_recovery_snapshot": "ok",
+                "get_hrv_trend": "ok",
+                "list_scheduled_workouts": "ok",
+            },
         },
         "push": {"text": YELLOW_TITLE + "\n\n" + YELLOW_MESSAGE},
     }
@@ -766,3 +773,225 @@ def test_build_briefing_payload_shape():
 
 def test_green_scheduled_fixture_has_no_missed_workout():
     assert GREEN_SCHEDULED["scheduled"][0]["completed"] is True
+
+
+# ------------------------------------------------- sync-aware briefing (PR 17)
+
+PRAGUE_OFFSET = timedelta(hours=2)  # Europe/Prague in early October (DST ends on 2026-10-25)
+
+
+def ds(local: str) -> dict[str, Any]:
+    """A get_device_status payload whose last upload happened at ``local`` (wall time, YYYY-MM-DDTHH:MM)."""
+    wall = datetime.fromisoformat(local)
+    return device_status((wall - PRAGUE_OFFSET).strftime("%Y-%m-%dT%H:%M:00Z"), local)
+
+
+def missing_line(data, language="cs"):
+    text = _build_briefing(DAY, data, [], {}, language=language).message.body
+    return next(ln for ln in text.splitlines() if ln.startswith(("Chybí:", "Missing:")))
+
+
+NO_SLEEP = snapshot(sleep=None)
+
+
+def test_missing_line_names_the_last_sync():
+    line = missing_line(garmin_data(snapshot=NO_SLEEP, device=ds("2026-10-07T05:12")))
+    assert line == "Chybí: spánek (poslední synchronizace s Garminem: dnes 5:12). Bez těchto dat nemůže být verdikt zelený."
+
+
+@pytest.mark.parametrize(
+    ("local", "when"),
+    [
+        ("2026-10-07T05:12", "dnes 5:12"),
+        ("2026-10-07T00:00", "dnes 0:00"),
+        ("2026-10-06T22:14", "včera 22:14"),
+        ("2026-10-06T00:05", "včera 0:05"),
+        ("2026-10-05T22:14", "5. 10. 22:14"),
+        ("2026-10-08T00:05", "8. 10. 0:05"),  # a future date uses the day form
+    ],
+)
+def test_sync_time_is_relative_to_the_briefing_day(local, when):
+    line = missing_line(garmin_data(snapshot=NO_SLEEP, device=ds(local)))
+    assert line.startswith(f"Chybí: spánek (poslední synchronizace s Garminem: {when})")
+
+
+def test_other_missing_reasons_win_over_the_sync_time():
+    device = ds("2026-10-06T22:14")
+    assert "(Garmin není přihlášený)" in missing_line(garmin_data(auth="missing", snapshot=None, device=device))
+    assert "(Garmin není přihlášený)" in missing_line(
+        garmin_data(snapshot=NO_SLEEP, device=device, calls={"get_device_status": "auth_error"})
+    )
+    assert "(garmin-mcp neodpovídá)" in missing_line(garmin_data(auth=None, snapshot=None, device=device))
+    no_token = garmin_data(auth=None, snapshot=None, credentials_missing=True, device=device)
+    assert "(chybí interní token" in missing_line(no_token)
+    assert "(data z Garminu se nepodařilo načíst)" in missing_line(garmin_data(snapshot=None, device=device))
+    only_baseline = garmin_data(snapshot=snapshot(hrv={"last_night_avg_ms": 62}), device=device)
+    assert "(Garmin ji počítá až po zhruba 3 týdnech nošení hodinek)" in missing_line(only_baseline)
+    # with another key missing too the sync time applies
+    two = garmin_data(snapshot=snapshot(hrv={"last_night_avg_ms": 62}, sleep=None), device=device)
+    assert "(poslední synchronizace s Garminem: včera 22:14)" in missing_line(two)
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        None,
+        {"last_upload": {"time_utc": "9999-12-31T23:59:59Z", "time_local": "9999-12-31T23:59"}},
+        {"last_upload": {"available": False}},
+        {"last_upload": {"error": "x"}},
+    ],
+    ids=["no-device", "year-9999", "unavailable", "error"],
+)
+def test_unknown_sync_time_keeps_the_old_wording(device):
+    line = missing_line(garmin_data(snapshot=NO_SLEEP, device=device))
+    assert line == "Chybí: spánek (hodinky možná ještě nesynchronizovaly). Bez těchto dat nemůže být verdikt zelený."
+
+
+MISSED = {
+    "scheduled": scheduled([{"date": YESTERDAY, "name": "Tempo 10 km", "completed": False}]),
+}
+
+
+def test_missed_alerts_are_held_back_until_a_sync_after_yesterday_ended():
+    sessions = [ys(result="no_activity")]
+    before_midnight = conditions(device=ds("2026-10-06T23:59"), yesterday_sessions=sessions, **MISSED)
+    assert before_midnight["missed_workout"] is None and before_midnight["missed_planned_session"] is None
+    at_midnight = conditions(device=ds("2026-10-07T00:00"), yesterday_sessions=sessions, **MISSED)
+    assert at_midnight["missed_workout"] is True and at_midnight["missed_planned_session"] is True
+    unknown = conditions(yesterday_sessions=sessions, **MISSED)  # no device: as before PR 17
+    assert unknown["missed_workout"] is True and unknown["missed_planned_session"] is True
+    garbled = {"last_upload": {"time_utc": "9999-12-31T23:59:59Z", "time_local": "9999-12-31T23:59"}}
+    still = conditions(device=garbled, yesterday_sessions=sessions, **MISSED)
+    assert still["missed_workout"] is True and still["missed_planned_session"] is True
+
+
+def test_the_hold_back_leaves_the_other_alerts_alone():
+    data = garmin_data(device=ds("2026-10-06T23:59"), snapshot=snapshot(resting_hr={"today": 60, "avg_7d": 50}))
+    out = alert_conditions(DAY, data, nights_below_baseline(data.hrv_trend, DAY), [ys(result="no_activity")])
+    assert out["resting_hr_elevated"] is True and out["garmin_auth"] is False
+    assert out["missed_workout"] is None and out["missed_planned_session"] is None
+
+
+def test_a_held_back_condition_that_does_not_hold_is_unknown_too():
+    sessions = [ys(result="matched")]
+    done = scheduled([{"date": YESTERDAY, "name": "Tempo", "completed": True}])
+    held = conditions(device=ds("2026-10-06T21:40"), yesterday_sessions=sessions, scheduled=done)
+    assert held["missed_workout"] is None and held["missed_planned_session"] is None
+    b = build_briefing(DAY, garmin_data(device=ds("2026-10-06T21:40"), scheduled=done), [], {}, yesterday_sessions=sessions)
+    assert "missed_workout" not in b.alert_updates and "missed_planned_session" not in b.alert_updates
+    synced = build_briefing(DAY, garmin_data(device=ds("2026-10-07T06:00"), scheduled=done), [], {}, yesterday_sessions=sessions)
+    assert synced.alert_updates["missed_workout"] == (False, False)
+    assert synced.alert_updates["missed_planned_session"] == (False, False)
+
+
+def test_a_held_back_briefing_shows_neither_alert_but_the_sync_time():
+    data = garmin_data(device=ds("2026-10-06T21:40"), snapshot=NO_SLEEP, **MISSED)
+    b = build_briefing(DAY, data, [], {}, yesterday_sessions=[ys(result="no_activity")])
+    assert "Včera" not in b.message.body and "Upozornění" not in b.message.body
+    for key in ("missed_workout", "missed_planned_session"):
+        assert next(a for a in b.payload["alerts"] if a["key"] == key) == {"key": key, "holds": None, "new": False}
+    assert "(poslední synchronizace s Garminem: včera 21:40)" in b.message.body
+    synced = garmin_data(device=ds("2026-10-07T06:58"), snapshot=NO_SLEEP, **MISSED)
+    shown = build_briefing(DAY, synced, [], {}, yesterday_sessions=[ys(result="no_activity")]).message.body
+    assert "Včera naplánovaný trénink nebyl splněn: Tempo 10 km." in shown
+    assert "Včera v plánu bez aktivity v Garminu" in shown
+
+
+def test_the_hold_back_is_not_repeated_the_next_morning():
+    # day 1: the watch last synced before midnight, so nothing is reported and nothing is recorded
+    day1 = build_briefing(DAY, garmin_data(device=ds("2026-10-06T21:40"), **MISSED), [], {},
+                          yesterday_sessions=[ys(result="no_activity")])
+    assert "missed_workout" not in day1.alert_updates and "missed_planned_session" not in day1.alert_updates
+    # day 2: a sync after midnight; the events of its own yesterday fire (events, not states)
+    day2 = DAY + timedelta(days=1)
+    rows = {"missed_workout": {"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}}
+    sched = scheduled([{"date": DAY.isoformat(), "name": "Tempo 10 km", "completed": False}])
+    data = garmin_data(device=ds("2026-10-08T06:10"), scheduled=sched)
+    b = _build_briefing(day2, data, [], rows, yesterday_sessions=[ys(result="no_activity")], language="cs")
+    fired = {a["key"]: a["new"] for a in b.payload["alerts"]}
+    assert fired["missed_workout"] is True and fired["missed_planned_session"] is True
+
+
+STALE_LINE = (
+    "- Včera v plánu bez aktivity v Garminu při noční kontrole, před poslední synchronizací hodinek "
+    "(nemusí platit): běh – Intervaly 6×800 m."
+)
+PLAIN_LINE = "- Včera v plánu bez aktivity v Garminu: běh – Intervaly 6×800 m."
+SYNCED_0658 = device_status("2026-10-07T04:58:12Z", "2026-10-07T06:58")
+
+
+def alert_lines(device, checked_at, sessions=None, language="cs"):
+    sessions = sessions if sessions is not None else [ys(result="no_activity")]
+    b = _build_briefing(
+        DAY, garmin_data(device=device), [], {}, yesterday_sessions=sessions, checked_at=checked_at, language=language
+    )
+    return b.message.body.splitlines()
+
+
+def test_a_check_that_ran_before_the_last_sync_is_labelled_stale():
+    assert STALE_LINE in alert_lines(SYNCED_0658, {1: "2026-10-07T01:30:00+00:00"})
+    assert STALE_LINE not in alert_lines(SYNCED_0658, {1: "2026-10-07T01:30:00+00:00"}, language="en")
+
+
+def test_a_check_at_or_after_the_last_sync_is_plain():
+    equal = alert_lines(SYNCED_0658, {1: "2026-10-07T04:58:12+00:00"})
+    assert PLAIN_LINE in equal and STALE_LINE not in equal
+    after = alert_lines(SYNCED_0658, {1: "2026-10-07T05:00:00+00:00"})
+    assert PLAIN_LINE in after and STALE_LINE not in after
+    other_zone = alert_lines(SYNCED_0658, {1: "2026-10-07T07:00:00+02:00"})  # 05:00 UTC
+    assert PLAIN_LINE in other_zone
+
+
+@pytest.mark.parametrize("checked_at", [{}, {2: "2026-10-07T05:00:00+00:00"}, {1: "garbage"}, {1: "2026-10-07T01:30:00"}])
+def test_an_unusable_check_time_is_stale(checked_at):
+    lines = alert_lines(SYNCED_0658, checked_at)
+    assert STALE_LINE in lines and PLAIN_LINE not in lines
+
+
+def test_an_unknown_sync_time_never_labels_the_line():
+    assert PLAIN_LINE in alert_lines(None, {1: "2026-10-07T01:30:00+00:00"})
+    assert PLAIN_LINE in alert_lines(None, {})
+
+
+def test_the_stale_label_only_touches_the_missed_session_line():
+    sessions = [ys(result="no_activity")]
+    b = _build_briefing(
+        DAY,
+        garmin_data(device=SYNCED_0658, **MISSED),
+        [],
+        {},
+        yesterday_sessions=sessions,
+        checked_at={1: "2026-10-07T01:30:00+00:00"},
+        language="cs",
+    )
+    lines = b.message.body.splitlines()
+    assert "- Včera naplánovaný trénink nebyl splněn: Tempo 10 km." in lines and STALE_LINE in lines
+
+
+def test_only_no_activity_sessions_count_for_the_stale_label():
+    sessions = [ys(result="no_activity", id_=1), ys("cycling", result="matched", description="Kolo", id_=2)]
+    # the matched session was checked before the sync, the no_activity one after it
+    checked = {1: "2026-10-07T05:30:00+00:00", 2: "2026-10-07T01:30:00+00:00"}
+    lines = alert_lines(SYNCED_0658, checked, sessions)
+    assert PLAIN_LINE in lines and STALE_LINE not in lines
+
+
+def test_one_stale_session_among_fresh_ones_labels_the_line():
+    sessions = [ys(result="no_activity", id_=1), ys("strength", result="no_activity", description="Celé tělo", id_=2)]
+    stale_second = alert_lines(SYNCED_0658, {1: "2026-10-07T05:30:00+00:00", 2: "2026-10-07T01:30:00+00:00"}, sessions)
+    assert any(ln.startswith("- Včera v plánu bez aktivity v Garminu při noční kontrole") for ln in stale_second)
+    stale_first = alert_lines(SYNCED_0658, {1: "2026-10-07T01:30:00+00:00", 2: "2026-10-07T05:30:00+00:00"}, sessions)
+    assert any(ln.startswith("- Včera v plánu bez aktivity v Garminu při noční kontrole") for ln in stale_first)
+    fresh = alert_lines(SYNCED_0658, {1: "2026-10-07T05:30:00+00:00", 2: "2026-10-07T05:31:00+00:00"}, sessions)
+    assert not any("při noční kontrole" in ln for ln in fresh)
+
+
+def test_missed_check_predates_sync_unit():
+    last = LastSync(datetime(2026, 10, 7, 4, 58, 12, tzinfo=UTC), datetime(2026, 10, 7, 6, 58))
+    sessions = [ys(result="no_activity")]
+    assert briefing.missed_check_predates_sync(sessions, {1: "2026-10-07T01:30:00+00:00"}, last) is True
+    assert briefing.missed_check_predates_sync(sessions, {1: "2026-10-07T05:30:00+00:00"}, last) is False
+    assert briefing.missed_check_predates_sync(sessions, {1: "2026-10-07T01:30:00+00:00"}, None) is False
+    assert briefing.missed_check_predates_sync([ys(result="matched")], {}, last) is False
+    assert briefing.missed_check_predates_sync([ys(status="done", result="no_activity")], {}, last) is False
+    assert briefing.missed_check_predates_sync([ys("mobility", result="no_activity")], {}, last) is False
