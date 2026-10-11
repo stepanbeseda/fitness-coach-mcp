@@ -544,7 +544,7 @@ async def test_lifespan_exit_cancels_a_fetch_hanging_inside_the_sdk_client(setti
     with anyio.fail_after(10):
         async with fake_garmin_running(fake):
             async with running_client(app):
-                await wait_for(lambda: [name for name, _ in calls] == ["get_recovery_snapshot"])
+                await wait_for(lambda: [name for name, _ in calls] == ["get_device_status", "get_recovery_snapshot"])
                 left_at = time.monotonic()
             assert time.monotonic() - left_at < 2
     assert push.sent == []

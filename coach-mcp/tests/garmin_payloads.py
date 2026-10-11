@@ -67,6 +67,18 @@ YELLOW_SCHEDULED = scheduled(
 ALL_OK = dict.fromkeys(BRIEFING_TOOLS, "ok")
 
 
+def device_status(time_utc: str, time_local: str) -> dict[str, Any]:
+    """A get_device_status payload with the given upload time."""
+    return {
+        "last_upload": {"device": "Example Watch 1", "time_utc": time_utc, "time_local": time_local},
+        "primary_device": {"name": "Example Watch 1", "status": "active", "primary_activity_tracker": True,
+                           "registered_devices": 1},
+    }
+
+
+DEVICE_STATUS = device_status("2026-10-07T03:07:00Z", "2026-10-07T05:07")
+
+
 def garmin_data(**overrides: Any) -> GarminData:
     """Green data with auth "ok" and every call "ok"; keyword arguments override fields."""
     fields: dict[str, Any] = {

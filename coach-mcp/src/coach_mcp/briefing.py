@@ -14,7 +14,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 from .messages import DEFAULT_LANGUAGE, Texts, texts
@@ -22,7 +22,7 @@ from .push import PushMessage
 from .reconcile import MATCHED_TYPES
 
 if TYPE_CHECKING:
-    from .garmin import GarminData
+    from .garmin import GarminData, LastSync
 
 Level = Literal["green", "yellow", "red"]
 
@@ -308,6 +308,12 @@ def alert_conditions(
         out["missed_workout"] = None
 
     out["missed_planned_session"] = missed_session_condition(yesterday_sessions)
+    # Yesterday's activity reaches Garmin only with a sync after yesterday ended; until then both missed-session
+    # conditions are unknown (held back). An unknown sync time keeps the old behaviour.
+    last = data.last_sync
+    if last is not None and last.local.date() < day:
+        out["missed_workout"] = None
+        out["missed_planned_session"] = None
 
     if data.auth_problem:
         out["garmin_auth"] = True
@@ -353,7 +359,17 @@ def hrv_night_present(snapshot: Mapping[str, Any] | None) -> bool:
     return section is not None and _num(section.get("last_night_avg_ms")) is not None
 
 
-def _missing_reason(t: Texts, data: GarminData, missing: Sequence[str]) -> str:
+def sync_when(t: Texts, local: datetime, day: date) -> str:
+    """'today 5:12', 'yesterday 22:14' or '<day title> 22:14' relative to the briefing day."""
+    clock = f"{local.hour}:{local.minute:02d}"
+    if local.date() == day:
+        return t.sync_today.format(time=clock)
+    if local.date() == day - timedelta(days=1):
+        return t.sync_yesterday.format(time=clock)
+    return t.sync_on.format(day=t.day_title(local.date()), time=clock)
+
+
+def _missing_reason(t: Texts, data: GarminData, missing: Sequence[str], day: date) -> str:
     if data.auth_problem:
         return t.reason_auth
     if data.credentials_missing:
@@ -364,6 +380,9 @@ def _missing_reason(t: Texts, data: GarminData, missing: Sequence[str]) -> str:
         return t.reason_no_data
     if list(missing) == ["hrv"] and hrv_night_present(data.snapshot):
         return t.reason_baseline_pending
+    last = data.last_sync
+    if last is not None:
+        return t.reason_last_sync.format(when=sync_when(t, last.local, day))
     return t.reason_not_synced
 
 
@@ -398,7 +417,13 @@ def _session_line(t: Texts, session: Mapping[str, Any]) -> str:
 
 
 def _alert_text(
-    t: Texts, key: str, data: GarminData, day: date, nights_below: int | None, missed_sessions: Sequence[str] = ()
+    t: Texts,
+    key: str,
+    data: GarminData,
+    day: date,
+    nights_below: int | None,
+    missed_sessions: Sequence[str] = (),
+    missed_stale: bool = False,
 ) -> str:
     sep = t.decimal_separator
     if key == "hrv_below_baseline":
@@ -418,7 +443,8 @@ def _alert_text(
     if key == "missed_workout":
         return t.alert_missed_workout.format(names=", ".join(_missed_names(t, data.scheduled, day)))
     if key == "missed_planned_session":
-        return t.alert_missed_session.format(sessions="; ".join(missed_sessions))
+        template = t.alert_missed_session_stale if missed_stale else t.alert_missed_session
+        return template.format(sessions="; ".join(missed_sessions))
     return t.alert_garmin_auth
 
 
@@ -443,6 +469,7 @@ def render(
     new_alerts: Sequence[str],
     nights_below: int | None,
     missed_sessions: Sequence[str] = (),
+    missed_stale: bool = False,
     language: str = DEFAULT_LANGUAGE,
 ) -> PushMessage:
     t = texts(language)
@@ -475,7 +502,7 @@ def render(
     if missing:
         night = hrv_night_present(data.snapshot)
         names = ", ".join(t.hrv_baseline if key == "hrv" and night else t.criterion[key] for key in missing)
-        lines.append(t.missing_line.format(names=names, reason=_missing_reason(t, data, missing)))
+        lines.append(t.missing_line.format(names=names, reason=_missing_reason(t, data, missing, day)))
 
     # Present criteria that are not green; a green verdict has none, so the line is only for yellow / red.
     items = []
@@ -503,7 +530,9 @@ def render(
 
     if new_alerts:
         lines.append(t.alerts)
-        lines.extend(f"- {_alert_text(t, key, data, day, nights_below, missed_sessions)}" for key in new_alerts)
+        lines.extend(
+            f"- {_alert_text(t, key, data, day, nights_below, missed_sessions, missed_stale)}" for key in new_alerts
+        )
 
     alerting = bool(new_alerts)
     title = t.title.format(
@@ -517,12 +546,33 @@ def render(
     return PushMessage(title=title, body=body)
 
 
+def missed_check_predates_sync(
+    yesterday_sessions: Sequence[Mapping[str, Any]], checked_at: Mapping[int, str], last: LastSync | None
+) -> bool:
+    """A no_activity suggestion of yesterday was stored before the last upload (or its time is unknown): the
+    nightly check may not have seen an activity the watch uploaded later."""
+    if last is None:
+        return False
+    for session in _yesterday_matchable(yesterday_sessions):
+        if _suggested(session) != "no_activity":
+            continue
+        raw = checked_at.get(session.get("id"))
+        try:
+            checked = datetime.fromisoformat(raw) if isinstance(raw, str) else None
+        except ValueError:
+            checked = None
+        if checked is None or checked.tzinfo is None or checked < last.utc:
+            return True
+    return False
+
+
 def build_briefing(
     day: date,
     data: GarminData,
     sessions: Sequence[Mapping[str, Any]],
     alert_rows: Mapping[str, Mapping[str, Any]],
     yesterday_sessions: Sequence[Mapping[str, Any]] = (),
+    checked_at: Mapping[int, str] | None = None,
     language: str = DEFAULT_LANGUAGE,
 ) -> Briefing:
     t = texts(language)
@@ -536,6 +586,7 @@ def build_briefing(
     new_alerts = [key for key in ALERT_KEYS if new[key]]
     garmin_today = _garmin_today(t, data.scheduled, day)
     planned = list(sessions)
+    stale = missed_check_predates_sync(yesterday_sessions, checked_at or {}, data.last_sync)
 
     payload_criteria: dict[str, Any] = {}
     for key in CRITERIA:
@@ -554,7 +605,8 @@ def build_briefing(
         new_alerts,
         nights,
         _missed_session_names(t, yesterday_sessions),
-        language,
+        missed_stale=stale,
+        language=language,
     )
     payload = {
         "date": day.isoformat(),

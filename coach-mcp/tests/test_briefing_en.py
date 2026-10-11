@@ -7,7 +7,7 @@ import pytest
 from briefing_helpers import GREEN_SESSION
 from coach_mcp.briefing import build_briefing
 from coach_mcp.messages import EN, LANGUAGES
-from garmin_payloads import DAY, garmin_data, yellow_data
+from garmin_payloads import DAY, GREEN_SNAPSHOT, device_status, garmin_data, yellow_data
 
 GREEN_TITLE = "\U0001f7e2 GREEN · morning briefing 7 Oct"
 GREEN_MESSAGE = """\
@@ -72,3 +72,39 @@ def test_every_catalogue_names_every_key(texts):
         (texts.acwr, EN.acwr),
     ]:
         assert set(mapping) == set(keys)
+
+
+def _missing(local: str, utc: str) -> str:
+    snapshot = {k: v for k, v in GREEN_SNAPSHOT.items() if k != "sleep"}
+    data = garmin_data(snapshot=snapshot, device=device_status(utc, local))
+    body = build_briefing(DAY, data, [], {}, language="en").message.body
+    return next(ln for ln in body.splitlines() if ln.startswith("Missing:"))
+
+
+@pytest.mark.parametrize(
+    ("local", "utc", "when"),
+    [
+        ("2026-10-07T05:12", "2026-10-07T03:12:00Z", "today 5:12"),
+        ("2026-10-06T22:14", "2026-10-06T20:14:00Z", "yesterday 22:14"),
+        ("2026-10-05T22:14", "2026-10-05T20:14:00Z", "5 Oct 22:14"),
+    ],
+)
+def test_missing_line_names_the_last_sync(local, utc, when):
+    assert _missing(local, utc) == (
+        f"Missing: sleep (last sync with Garmin: {when}). Without these data the verdict cannot be green."
+    )
+
+
+def test_stale_missed_session_line():
+    sessions = [{"id": 1, "date": "2026-10-06", "type": "running", "description": "Intervals", "status": "planned",
+                 "suggestion": {"result": "no_activity", "final": False, "evaluated_on": "2026-10-07"}}]
+    data = garmin_data(device=device_status("2026-10-07T04:58:12Z", "2026-10-07T06:58"))
+    b = build_briefing(DAY, data, [], {}, yesterday_sessions=sessions, checked_at={1: "2026-10-07T01:30:00+00:00"},
+                       language="en")
+    assert (
+        "- Planned yesterday with no activity in Garmin at the nightly check, before the watch's last sync "
+        "(may be out of date): run – Intervals."
+    ) in b.message.body.splitlines()
+    fresh = build_briefing(DAY, data, [], {}, yesterday_sessions=sessions, checked_at={1: "2026-10-07T05:30:00+00:00"},
+                           language="en")
+    assert "- Planned yesterday with no activity in Garmin: run – Intervals." in fresh.message.body.splitlines()

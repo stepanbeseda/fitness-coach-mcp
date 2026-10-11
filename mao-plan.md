@@ -92,7 +92,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 14 | Goal progress and the Monday report | 05, 08 | done |
 | 15 | Searchable coach memory | 03 | done |
 | 16 | Correlations | 05 | done |
-| 17 | Sync-aware briefing | 04 | planned |
+| 17 | Sync-aware briefing | 04 | in progress (branch `mao/pr17-sync-aware-briefing`) |
 | 18 | History repair | 05 | done |
 | 19 | More Garmin signals | — | done |
 | 20 | Operations alerts via Telegram | 08 | done |
@@ -1264,6 +1264,10 @@ names the last sync time when data is missing, and the scheduler checks the
 device status first on a retry and reads the snapshot again only when the
 upload time has changed.
 
+The upload time also settles open item PR 13 (a) (owner's answer, round 1): yesterday's missed-workout alert
+(Garmin calendar) and missed-session alert (coach plan) are held back while the watch has not synced since the end
+of yesterday, and a missed-session line built from a nightly check that ran before the last sync says so.
+
 Out of scope: device settings, battery, alarms.
 
 **Done when:**
@@ -1273,13 +1277,17 @@ Out of scope: device settings, battery, alarms.
    read; a new upload triggers the full read (tests with a fake backend).
 3. The missing-data line names the last sync time and falls back to today's
    wording when the time is unknown (tests).
-4. Tool lists, both service READMEs and `docs/coach-instructions.md` are
+4. Yesterday's missed-workout and missed-session alerts do not fire while the last sync is older than the start of
+   today, a missed-session line whose nightly check predates the last sync is marked as possibly out of date, and
+   with the sync time unknown both alerts behave as before (tests).
+5. Tool lists, both service READMEs and `docs/coach-instructions.md` are
    updated.
-5. The four-command check is green.
-6. On the test host: a briefing before the morning sync names the last sync
+6. The four-command check is green.
+7. On the test host: a briefing before the morning sync names the last sync
    time.
 
-**Requested:** 2026-10-09, by the owner, from the project review (feature 7).
+**Requested:** 2026-10-09, by the owner, from the project review (feature 7); via `/mao`, questions and answers
+round 1 (2026-10-11: shape capture of the device payloads, missed-session alerts added, no early send).
 
 ### PR 18 — History repair
 

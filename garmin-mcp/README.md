@@ -24,6 +24,7 @@ broke in March 2026; `Taxuspt/garmin_mcp` has 153 tools and is stuck on garminco
 | `get_performance_metrics` – race predictions (time + pace/km), lactate threshold (HR, pace, power), heart-rate zones per sport, cycling power zones, endurance and hill score, weekly VO2max trend | |
 | `get_race_predictions` – Garmin's daily race predictions for a period (1–366 days, default 28): seconds per distance (5 km, 10 km, half marathon, marathon); days without a prediction are left out | |
 | `get_running_tolerance` – Garmin's weekly running load vs. tolerance (1–26 weeks, default 8; Garmin's own field names) | |
+| `get_device_status` – when Garmin last received data: the device that uploaded last and the upload time (UTC and local), the primary activity tracker (name, status) and the number of registered devices | |
 | `get_personal_records` (personal records), `get_gear` (shoes, bikes: distance covered, activity count, limit, retired) | `log_weight` – manual weigh-in in kg (optional date, not in the future) for athletes without a Garmin scale; not idempotent |
 | `get_body_composition` – weigh-ins for a period (max 366 days, default 30): weight, BMI, body fat %, muscle mass, body water %, bone mass + summary (first/last, change, 7-day average) | |
 | `get_nutrition` – one day: calories vs. goal, protein/carbs/fat vs. goals, meals, hydration vs. goal; whatever Garmin does not have returns `available: false` | |
@@ -108,6 +109,11 @@ only): one entry per day, keyed `calendarDate`, `time5K`, `time10K`, `timeHalfMa
 integer seconds, plus `fromCalendarDate`, `toCalendarDate` and `userId`, which are ignored. The tool returns
 `available: false` or an `error` section for any other shape. On a Garmin server error the library logs the
 API path, which contains the Garmin display name, as for the other calls.
+
+The device payloads (`mylastused` and the device list) were captured on a real account on 2026-10-11 (types only):
+the upload time `lastUsedDeviceUploadTime` is an integer in epoch milliseconds, UTC; the device list has no upload
+time per device, so the tool reports the account's last upload and names the device it came from. Identifiers and
+serial numbers are not returned.
 
 Known uncertainty: a custom cycling power range is sent as `power.zone` + `targetValueOne/Two`
 (the convention of python-garminconnect's typed models); after creating the first such workout, check in Garmin

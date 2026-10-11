@@ -13,6 +13,7 @@ EXPECTED_TOOLS = {
     "get_body_battery",
     "get_daily_summary",
     "get_training_status",
+    "get_device_status",
     "list_activities",
     "get_activity",
     "list_workouts",
@@ -112,6 +113,22 @@ async def test_initialize_list_and_call(app, fake):
         assert result["isError"] is False
         payload = json.loads(result["content"][0]["text"])
         assert payload["readiness"]["score"] == 58 and payload["hrv"]["last_night_avg_ms"] == 48
+
+
+@pytest.mark.anyio
+async def test_device_status_over_http(app, fake):
+    async with running_client(app) as client:
+        r = await rpc(client, "tools/call", {"name": "get_device_status", "arguments": {}}, id_=9)
+        result = r.json()["result"]
+        assert result["isError"] is False, result
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["last_upload"]["time_utc"] == "2026-09-30T04:58:12Z"
+        assert payload["primary_device"]["registered_devices"] == 1
+    # the two library calls run concurrently, so their order is not fixed
+    assert sorted(name for name, _ in fake.calls if name.startswith("get_device")) == [
+        "get_device_last_used",
+        "get_devices",
+    ]
 
 
 @pytest.mark.anyio

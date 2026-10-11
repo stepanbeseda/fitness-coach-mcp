@@ -1,5 +1,5 @@
-"""What garminconnect itself logs for the calls PR 19 added (plan section 1: logs carry no arguments or health
-values). Real library, stub inner client, no network."""
+"""What garminconnect itself logs for the calls PR 19 and PR 17 added (plan section 1: logs carry no arguments or
+health values). Real library, stub inner client, no network."""
 
 import logging
 
@@ -13,6 +13,8 @@ WEATHER_PATH = f"/activity-service/activity/{ACTIVITY_ID}/weather"
 SETS_PATH = f"/activity-service/activity/{ACTIVITY_ID}/exerciseSets"
 TOLERANCE_PATH = "/metrics-service/metrics/runningtolerance/stats"
 RACE_PATH = "/metrics-service/metrics/racepredictions/daily/athlete"
+DEVICE_LAST_USED_PATH = "/device-service/deviceservice/mylastused"
+DEVICES_PATH = "/device-service/deviceregistration/devices"
 
 # (call, path, logs_debug). The DEBUG line is the positive control that the logger is listening; a call without
 # one (the daily race predictions) gets its control from the 503 test, which captures its ERROR line through the
@@ -23,6 +25,8 @@ CALLS = {
     "running_tolerance": (
         lambda g: g.get_running_tolerance("2026-08-06", "2026-09-30", "weekly"), TOLERANCE_PATH, True),
     "race_predictions": (lambda g: g.get_race_predictions("2026-09-01", "2026-09-30", "daily"), RACE_PATH, False),
+    "device_last_used": (lambda g: g.get_device_last_used(), DEVICE_LAST_USED_PATH, True),
+    "devices": (lambda g: g.get_devices(), DEVICES_PATH, True),
 }
 
 

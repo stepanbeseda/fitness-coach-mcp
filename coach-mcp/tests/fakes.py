@@ -17,10 +17,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from coach_mcp.auth import BearerAuthMiddleware
-from coach_mcp.garmin import GarminData
+from coach_mcp.garmin import GarminData, LastSync
 from coach_mcp.push import PushMessage
 
 from garmin_payloads import (
+    DEVICE_STATUS,
     GREEN_SCHEDULED,
     GREEN_SNAPSHOT,
     GREEN_TREND,
@@ -67,12 +68,30 @@ class FakeClock:
 
 
 class FakeGarmin:
-    """``data`` is a GarminData, an exception to raise, or a callable ``(day, call_index)`` returning either."""
+    """``data`` is a GarminData, an exception to raise, or a callable ``(day, call_index)`` returning either.
 
-    def __init__(self, data: GarminData | Callable[[date, int], GarminData | Exception] | Exception) -> None:
+    ``sync`` answers ``sync_check``: a LastSync or None, an exception to raise, or a callable ``(check_index)``
+    returning either (0 for the first check). ``sync_calls`` counts the checks.
+    """
+
+    def __init__(
+        self,
+        data: GarminData | Callable[[date, int], GarminData | Exception] | Exception,
+        sync: LastSync | None | Exception | Callable[[int], LastSync | None | Exception] = None,
+    ) -> None:
         self._data = data
+        self._sync = sync
         self.days: list[date] = []
         self.calls = 0
+        self.sync_calls = 0
+
+    async def sync_check(self) -> LastSync | None:
+        index = self.sync_calls
+        self.sync_calls += 1
+        result = self._sync(index) if callable(self._sync) else self._sync
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     async def fetch(self, day: date) -> GarminData:
         index = self.calls
@@ -185,6 +204,7 @@ def fake_garmin_app(
     snapshot: Any = GREEN_SNAPSHOT,
     activities: Any = None,
     predictions: Any = None,
+    device: Any = DEVICE_STATUS,
 ) -> tuple[BearerAuthMiddleware, list[tuple[str, dict[str, Any]]]]:
     """A garmin-mcp look-alike (Streamable HTTP + /healthz behind the bearer check) and its call log."""
     errors = errors or {}
@@ -200,6 +220,9 @@ def fake_garmin_app(
         if name in errors:
             raise ToolError(errors[name])
         return payload if isinstance(payload, RawText) else json.dumps(payload)
+
+    async def get_device_status() -> str:
+        return await respond("get_device_status", {}, device)
 
     async def get_recovery_snapshot(date: str | None = None) -> str:
         return await respond("get_recovery_snapshot", {"date": date}, snapshot)
@@ -237,6 +260,7 @@ def fake_garmin_app(
         return await respond("create_workout", {}, {"created": True})
 
     for fn in (
+        get_device_status,
         get_recovery_snapshot,
         get_hrv_trend,
         list_scheduled_workouts,

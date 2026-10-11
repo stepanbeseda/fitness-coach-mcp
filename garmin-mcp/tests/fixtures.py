@@ -598,3 +598,39 @@ ACTIVITY_STRENGTH = {
         "waterEstimated": 300.0,
     },
 }
+
+
+# get_device_last_used (mylastused) and get_devices: the keys were captured on a real account on 2026-10-11;
+# every value is synthetic. 1_790_744_292_000 ms = 2026-09-30T04:58:12Z.
+DEVICE_LAST_USED = {
+    "userDeviceId": 123456789,
+    "userProfileNumber": 1001,
+    "applicationNumber": 1,
+    "lastUsedDeviceApplicationKey": "example_watch",
+    "lastUsedDeviceName": "Example Watch 1",
+    "lastUsedDeviceUploadTime": 1_790_744_292_000,
+    "imageUrl": "https://example.test/watch.png",
+    "released": True,
+}
+
+
+def device(**over):
+    """One entry of get_devices (the real one has about 300 keys; these are the ones the tool reads, plus ids)."""
+    base = {
+        "deviceId": 123456789,
+        "unitId": 123456789,
+        "serialNumber": "0000000000",
+        "productDisplayName": "Example Watch 1",
+        "displayName": "Example Watch 1",
+        "deviceStatus": "active",
+        "primary": True,
+        "primaryActivityTrackerIndicator": True,
+        "currentFirmwareVersion": "1.00",
+        "registeredDate": 1700000000000,
+        "batteryStatusCapable": False,
+    }
+    base.update(over)
+    return base
+
+
+DEVICES = [device()]

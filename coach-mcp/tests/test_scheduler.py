@@ -16,18 +16,21 @@ from fakes import FakeClock, FakeGarmin, FakePush, StopLoop, fake_garmin_app, fa
 from coach_mcp.__main__ import configure_logging, main
 from coach_mcp.briefing import ALERT_KEYS, EVENT_ALERTS
 from coach_mcp.config import Settings
-from coach_mcp.garmin import GarminReader
+from coach_mcp.garmin import GarminReader, LastSync
 from coach_mcp.push import TelegramPush
 from coach_mcp import scheduler as scheduler_module
 from coach_mcp.scheduler import (
+    SETTLE,
     BriefingScheduler,
     compose_briefing,
+    reusable,
     send_briefing_command,
     send_weekly_report_command,
 )
 from coach_mcp.store import Store
 from garmin_payloads import (
     GREEN_SNAPSHOT,
+    device_status,
     days_range,
     garmin_data,
     scheduled,
@@ -1072,3 +1075,212 @@ async def test_no_monday_report_on_the_tuesday_after_a_monday_that_gave_up(db_pa
     push, _ = await run_scheduler(db_path, local(tuesday, 0), FakeGarmin(garmin_data()), until=local(tuesday, 12))
     assert len(push.sent) == 1 and "ranní briefing" in push.sent[0][1].title
     assert Store(db_path).weekly_report_sent("2026-W41") is False
+
+
+# --------------------------------------------- the retry gate (PR 17)
+# Defaults: attempts at 06:30, 06:45, ..., 09:30 (13), sleep missing all morning unless a test says otherwise.
+
+NO_SLEEP = {k: v for k, v in GREEN_SNAPSHOT.items() if k != "sleep"}
+SYNC_0500 = LastSync(datetime(2026, 10, 7, 3, 0, tzinfo=UTC), datetime(2026, 10, 7, 5, 0))
+DEVICE_0500 = device_status("2026-10-07T03:00:00Z", "2026-10-07T05:00")
+
+
+def no_sleep(device: Any = DEVICE_0500, **overrides: Any):
+    return garmin_data(snapshot=NO_SLEEP, device=device, **overrides)
+
+
+def sync_at(local_hour: int, local_minute: int) -> tuple[LastSync, dict[str, Any]]:
+    """The LastSync and device payload of an upload on D at the given Prague wall time (UTC+2 in October)."""
+    wall = datetime(2026, 10, 7, local_hour, local_minute)
+    moment = (wall - timedelta(hours=2)).replace(tzinfo=UTC)
+    return LastSync(moment, wall), device_status(moment.strftime("%Y-%m-%dT%H:%M:00Z"), wall.strftime("%Y-%m-%dT%H:%M"))
+
+
+@pytest.mark.anyio
+async def test_a_retry_without_a_new_upload_reads_only_the_sync_time(db_path, caplog):
+    caplog.set_level(logging.INFO)
+    garmin = FakeGarmin(no_sleep(), sync=SYNC_0500)
+    push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 1 and garmin.sync_calls == 12
+    (sent_at, msg), = push.sent
+    assert utc(sent_at) == local(D, 9, 30).astimezone(UTC)
+    assert "(poslední synchronizace s Garminem: dnes 5:00)" in msg.body
+    assert caplog.text.count("briefing garmin=unchanged") == 12
+
+
+@pytest.mark.anyio
+async def test_a_new_upload_triggers_a_full_read(db_path):
+    fresh_last, fresh_device = sync_at(7, 5)
+
+    def data(day: date, index: int):
+        return no_sleep() if index == 0 else garmin_data(device=fresh_device)
+
+    garmin = FakeGarmin(data, sync=lambda index: SYNC_0500 if index < 2 else fresh_last)
+    push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 2 and garmin.sync_calls == 3
+    (sent_at, msg), = push.sent
+    assert utc(sent_at) == local(D, 7, 15).astimezone(UTC)
+    assert "Chybí" not in msg.body
+
+
+@pytest.mark.anyio
+async def test_an_upload_that_had_not_settled_is_read_again(db_path):
+    last, device = sync_at(6, 20)  # the first read (06:30) and the second (06:45) start within 30 minutes of it
+    garmin = FakeGarmin(no_sleep(device), sync=last)
+    await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 3  # 06:30, 06:45, 07:00; the 07:00 read is 40 minutes after the upload
+    assert garmin.sync_calls == 12
+
+
+@pytest.mark.anyio
+async def test_a_read_exactly_the_settle_time_after_the_upload_is_reused(db_path):
+    assert SETTLE == timedelta(minutes=30)
+    last, device = sync_at(6, 0)
+    garmin = FakeGarmin(no_sleep(device), sync=last)
+    await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 1 and garmin.sync_calls == 12
+    # one second short of the settle time is not enough
+    short = LastSync(last.utc + timedelta(seconds=1), last.local + timedelta(seconds=1))
+    short_device = device_status(short.utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "2026-10-07T06:00")
+    garmin = FakeGarmin(no_sleep(short_device), sync=short)
+    await run_scheduler(db_path.with_name("other.db"), local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("sync", [None, RuntimeError("x")], ids=["unknown", "crash"])
+async def test_a_failed_check_falls_back_to_the_full_read(db_path, caplog, sync):
+    caplog.set_level(logging.INFO)
+    garmin = FakeGarmin(no_sleep(), sync=sync)
+    push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 13 and garmin.sync_calls == 12
+    assert [utc(t) for t, _ in push.sent] == [local(D, 9, 30).astimezone(UTC)]
+    assert "briefing garmin=unchanged" not in caplog.text
+    assert ("briefing sync_check=crashed kind=RuntimeError" in caplog.text) is isinstance(sync, Exception)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "data",
+    [
+        garmin_data(snapshot={**NO_SLEEP, "body_battery": {"error": "x"}}, device=DEVICE_0500),
+        no_sleep(calls={"get_device_status": "ok", "get_recovery_snapshot": "error", "get_hrv_trend": "ok",
+                        "list_scheduled_workouts": "ok"}),
+        no_sleep(calls={}),
+        no_sleep(auth=None),
+        garmin_data(snapshot=NO_SLEEP),  # no device at all: the old behaviour
+    ],
+    ids=["section-error", "call-error", "no-calls", "unreachable", "no-device"],
+)
+async def test_a_read_that_is_not_clean_is_never_reused(db_path, data):
+    garmin = FakeGarmin(data, sync=SYNC_0500)
+    await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 13
+
+
+@pytest.mark.anyio
+async def test_an_auth_problem_still_sends_at_once(db_path):
+    garmin = FakeGarmin(no_sleep(auth="missing"), sync=SYNC_0500)
+    push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert garmin.calls == 1 and garmin.sync_calls == 0
+    assert utc(push.sent[0][0]) == local(D, 6, 30).astimezone(UTC)
+
+
+@pytest.mark.anyio
+async def test_the_first_attempt_never_asks_for_the_sync_time(db_path):
+    garmin = FakeGarmin(garmin_data(device=DEVICE_0500), sync=SYNC_0500)
+    push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=1)
+    assert utc(push.sent[0][0]) == local(D, 6, 30).astimezone(UTC)
+    assert garmin.calls == 1 and garmin.sync_calls == 0
+
+
+@pytest.mark.anyio
+async def test_the_next_day_starts_with_a_full_read(db_path):
+    next_day = D + timedelta(days=1)
+    checks_at_fetch: list[int] = []
+    box: dict[str, FakeGarmin] = {}
+
+    def data(day: date, index: int):
+        checks_at_fetch.append(box["garmin"].sync_calls)
+        return no_sleep() if day == D else garmin_data(device=device_status("2026-10-08T04:00:00Z", "2026-10-08T06:00"))
+
+    garmin = box["garmin"] = FakeGarmin(data, sync=SYNC_0500)
+    push, _ = await run_scheduler(db_path, local(D, 0), garmin, stop_pushes=2)
+    assert garmin.days[0] == D and garmin.days[-1] == next_day
+    assert garmin.calls == 2 and len(push.sent) == 2  # day D: 1 full read (12 checks), then the day after
+    assert checks_at_fetch == [0, 12]  # the first attempt of the next day fetched before any check
+    assert garmin.sync_calls == 12
+
+
+def test_reusable_table():
+    assert reusable(garmin_data(device=DEVICE_0500)) is True
+    assert reusable(garmin_data(device=DEVICE_0500, auth=None)) is False
+    assert reusable(garmin_data(device=DEVICE_0500, auth="error")) is False
+    assert reusable(garmin_data(device=DEVICE_0500, auth="missing")) is False
+    assert reusable(garmin_data()) is False  # the upload time is unknown
+    assert reusable(garmin_data(device={"last_upload": {"available": False}})) is False
+    assert reusable(garmin_data(device=DEVICE_0500, calls={})) is False
+    erred = {"get_device_status": "ok", "get_recovery_snapshot": "ok", "get_hrv_trend": "ok",
+             "list_scheduled_workouts": "auth_error"}
+    assert reusable(garmin_data(device=DEVICE_0500, calls=erred)) is False
+    erred["list_scheduled_workouts"] = "error"
+    assert reusable(garmin_data(device=DEVICE_0500, calls=erred)) is False
+    assert reusable(garmin_data(device=DEVICE_0500, snapshot={**GREEN_SNAPSHOT, "stress": {"error": "x"}})) is False
+    unavailable = {**GREEN_SNAPSHOT, "stress": {"available": False}}
+    assert reusable(garmin_data(device=DEVICE_0500, snapshot=unavailable)) is True
+    assert reusable(garmin_data(device=DEVICE_0500, snapshot=None)) is True  # no sections to inspect
+
+
+@pytest.mark.anyio
+async def test_the_gate_through_the_reader_makes_one_snapshot_read_and_twelve_checks(db_path, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    token_file = tmp_path / "garmin_readonly_token"
+    token_file.write_text("garmin-backend-token-0123456789abcdef\n", encoding="utf-8")
+    settings = make_settings(db_path, garmin_token_file=token_file)
+    app, calls = fake_garmin_app("garmin-backend-token-0123456789abcdef", snapshot=NO_SLEEP)
+    clock = FakeClock(local(D, 0), stop_when=lambda: len(push.sent) >= 1)
+    push = FakePush(clock=clock)
+    reader = GarminReader(settings, transport=httpx2.ASGITransport(app=app))
+    scheduler = BriefingScheduler(settings, Store(db_path), reader, push, now=clock.now, sleep=clock.sleep)
+    async with fake_garmin_running(app):
+        with pytest.raises(StopLoop):
+            await scheduler.run()
+    names = [name for name, _ in calls]
+    assert names.count("get_recovery_snapshot") == 1 and names.count("get_device_status") == 13
+    assert [utc(t) for t, _ in push.sent] == [local(D, 9, 30).astimezone(UTC)]
+    assert "(poslední synchronizace s Garminem: dnes 5:07)" in push.sent[0][1].body
+    assert "garmin sync_check status=ok" in caplog.text
+    for private in ("5:07", "05:07", "03:07"):
+        assert private not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_compose_briefing_reuses_a_given_read_and_labels_a_stale_check(db_path):
+    store = Store(db_path)
+    day_before = D - timedelta(days=1)
+    ids = store.replace_planned(day_before, day_before, day_before,
+                                [{"date": day_before, "type": "running", "description": "Intervaly"}])[1]
+    store.upsert_suggestions([(ids[0], "no_activity", False, None)], D)
+    data = garmin_data(device=device_status("2026-10-07T04:58:12Z", "2026-10-07T06:58"))
+    stale = "při noční kontrole, před poslední synchronizací hodinek (nemusí platit): běh – Intervaly."
+
+    def set_checked(value: str) -> None:
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("UPDATE session_suggestions SET updated_at = ? WHERE session_id = ?", (value, ids[0]))
+            conn.commit()
+        finally:
+            conn.close()
+
+    garmin = FakeGarmin(RuntimeError("fetch must not be called"))
+    set_checked("2026-10-07T01:30:00+00:00")
+    briefing = await compose_briefing(store, garmin, D, "cs", data=data)
+    assert garmin.calls == 0 and stale in briefing.message.body
+    set_checked("2026-10-07T05:30:00+00:00")  # after the 04:58:12Z sync
+    briefing = await compose_briefing(store, garmin, D, "cs", data=data)
+    assert garmin.calls == 0 and stale not in briefing.message.body
+    assert "Včera v plánu bez aktivity v Garminu: běh – Intervaly." in briefing.message.body
+    # without a given read it fetches
+    other = FakeGarmin(data)
+    await compose_briefing(store, other, D, "cs")
+    assert other.calls == 1

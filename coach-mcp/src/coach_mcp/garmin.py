@@ -1,7 +1,7 @@
 """Read-only client for garmin-mcp: allowlisted read tools over MCP.
 
-The morning briefing calls ``BRIEFING_TOOLS``, the nightly history job ``HISTORY_TOOLS`` (the daily race
-predictions, ``get_race_predictions``, are one of them; PR 14). The
+The morning briefing calls ``BRIEFING_TOOLS`` and, on a retry, only ``SYNC_TOOL``, the nightly history job
+``HISTORY_TOOLS`` (the daily race predictions, ``get_race_predictions``, are one of them; PR 14). The
 coach authenticates with its own read-only token (garmin-mcp refuses it every tool not annotated
 read-only) and calls nothing outside ``ALLOWED_TOOLS``.
 Log lines carry outcome words, durations and exception class names only.
@@ -14,7 +14,7 @@ import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
 
 import anyio
@@ -27,10 +27,12 @@ from .config import Settings
 
 log = logging.getLogger("coach_mcp.garmin")
 
-BRIEFING_TOOLS = ("get_recovery_snapshot", "get_hrv_trend", "list_scheduled_workouts")
+BRIEFING_TOOLS = ("get_device_status", "get_recovery_snapshot", "get_hrv_trend", "list_scheduled_workouts")
+SYNC_TOOL = "get_device_status"
 HISTORY_TOOLS = ("get_recovery_snapshot", "list_activities", "get_race_predictions")
 # Every garmin-mcp tool the coach may call; garmin-mcp's write tools are not in it.
 ALLOWED_TOOLS = (
+    "get_device_status",
     "get_recovery_snapshot",
     "get_hrv_trend",
     "list_scheduled_workouts",
@@ -43,6 +45,7 @@ RATE_LIMIT_HINT = "HTTP 429"
 GARMIN_LOGIN_HINT = "scripts/garmin-login.sh"
 MIN_TOKEN_LENGTH = 16
 AUTH_VALUES = ("ok", "missing", "error")
+SYNC_YEARS = (2000, 2100)
 
 
 def exception_kind(exc: BaseException) -> str:
@@ -53,6 +56,31 @@ def exception_kind(exc: BaseException) -> str:
 
 
 @dataclass(frozen=True)
+class LastSync:
+    utc: datetime  # aware, UTC, to the second: compared between reads
+    local: datetime  # naive wall time in garmin-mcp's TZ (the same ATHLETE_TZ as the coach): shown to the athlete
+
+
+def parse_last_sync(device: Any) -> LastSync | None:
+    """``last_upload`` of a get_device_status payload; None when absent, unavailable, malformed or outside 2000-2100."""
+    section = device.get("last_upload") if isinstance(device, Mapping) else None
+    if not isinstance(section, Mapping):
+        return None
+    raw_utc, raw_local = section.get("time_utc"), section.get("time_local")
+    if not isinstance(raw_utc, str) or not isinstance(raw_local, str):
+        return None
+    try:
+        utc_time = datetime.strptime(raw_utc, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        local_time = datetime.strptime(raw_local, "%Y-%m-%dT%H:%M")
+    except ValueError:
+        return None
+    low, high = SYNC_YEARS
+    if not (low <= utc_time.year <= high and low <= local_time.year <= high):
+        return None
+    return LastSync(utc_time, local_time)
+
+
+@dataclass(frozen=True)
 class GarminData:
     # "ok" | "missing" | "error" from garmin-mcp /healthz; None: not reachable or no token.
     auth: str | None
@@ -60,6 +88,7 @@ class GarminData:
     snapshot: dict[str, Any] | None = None
     hrv_trend: dict[str, Any] | None = None
     scheduled: dict[str, Any] | None = None
+    device: dict[str, Any] | None = None  # get_device_status: when Garmin last received data
     # The coach itself has no usable garmin-mcp token (a configuration problem, not a Garmin login).
     credentials_missing: bool = False
 
@@ -67,9 +96,15 @@ class GarminData:
     def auth_problem(self) -> bool:
         return self.auth in ("missing", "error") or "auth_error" in self.calls.values()
 
+    @property
+    def last_sync(self) -> LastSync | None:
+        return parse_last_sync(self.device)
+
 
 class GarminSource(Protocol):
     async def fetch(self, day: date) -> GarminData: ...
+
+    async def sync_check(self) -> LastSync | None: ...
 
 
 class HistorySource(Protocol):
@@ -170,6 +205,7 @@ class GarminReader:
             return GarminData(auth=None, calls=outcomes, credentials_missing=True)
 
         arguments: dict[str, dict[str, Any]] = {
+            "get_device_status": {},
             "get_recovery_snapshot": {"date": day.isoformat()},
             "get_hrv_trend": {"days": 7, "end_date": day.isoformat()},
             "list_scheduled_workouts": {
@@ -203,6 +239,7 @@ class GarminReader:
             snapshot=payloads["get_recovery_snapshot"],
             hrv_trend=payloads["get_hrv_trend"],
             scheduled=payloads["list_scheduled_workouts"],
+            device=payloads["get_device_status"],
         )
         if auth is None:
             status = "unreachable"
@@ -214,3 +251,31 @@ class GarminReader:
             status = "partial"
         log.info("garmin status=%s ms=%.0f%s", status, (time.monotonic() - started) * 1000, failure)
         return data
+
+    async def sync_check(self) -> LastSync | None:
+        """The cheap retry check: only get_device_status (2 Garmin Connect requests, no /healthz).
+
+        None when there is no token, garmin-mcp does not answer, the tool fails or the time is unknown.
+        """
+        started = time.monotonic()
+        token = self._token()
+        outcome, payload = "no_credentials", None
+        if token is not None:
+            try:
+                async with httpx2.AsyncClient(
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=httpx2.Timeout(30.0, read=90.0),
+                    transport=self._transport,
+                ) as http:
+                    with anyio.fail_after(180):
+                        async with Client(
+                            streamable_http_client(self._settings.garmin_url, http_client=http),
+                            read_timeout_seconds=90,
+                        ) as client:
+                            outcome, payload = await _call(client, SYNC_TOOL, {})
+            except Exception:  # never BaseException: a cancel (shutdown) must propagate
+                outcome = "unreachable"
+        last = parse_last_sync(payload) if outcome == "ok" else None
+        status = "ok" if last is not None else ("unknown" if outcome == "ok" else outcome)
+        log.info("garmin sync_check status=%s ms=%.0f", status, (time.monotonic() - started) * 1000)
+        return last
