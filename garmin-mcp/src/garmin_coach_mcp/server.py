@@ -38,6 +38,7 @@ INSTRUCTIONS = (
     "(calories, macros, meals, hydration); Garmin is the primary source for weight. "
     "Before raising weekly running volume call get_running_tolerance (weekly running load vs. tolerance). "
     "get_activity also returns the weather and, for strength activities, the sets recorded on the watch. "
+    "When last night's sleep or HRV is missing, get_device_status says when the watch last synced. "
     "Dates are YYYY-MM-DD in the athlete's local time zone; "
     "omit them for today. create_workout, schedule_workout, unschedule_workout and log_weight change the "
     "athlete's Garmin data: show the plan or value and get explicit confirmation first."
@@ -171,6 +172,15 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         OVERREACHING), acute and chronic training load with ACWR, 4-week load balance
         (aerobic low/high, anaerobic vs. targets) and VO2max for running and cycling."""
         return await health.training_status(service, date)
+
+    @tool("get_device_status", _read("Device status"))
+    async def get_device_status() -> Any:
+        """When Garmin last received the athlete's data: the device that uploaded last and the upload time
+        (time_utc to the second, time_local in the athlete's time zone), plus the primary activity tracker
+        (name, status) and the number of registered devices. Call it when last night's sleep or HRV is
+        missing, to tell "the watch has not synced yet" from "no data for the night". Sections that Garmin
+        cannot provide contain an "error" or "available": false instead of failing the whole call."""
+        return await health.device_status(service)
 
     # --------------------------------------------------------- performance
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from statistics import mean
 from typing import Any
 
@@ -14,6 +14,7 @@ from .formatting import (
     as_dict,
     as_list,
     clean,
+    gmt_ms_to_local_iso,
     hours,
     km,
     local_ms_to_iso,
@@ -468,3 +469,53 @@ async def hrv_trend(service: GarminService, days: int, end_date: str | None) -> 
             if not is_section_error(v) and as_dict(as_dict(v).get("hrvSummary"))
         ]
     return shape_hrv_trend(summaries, s, e)
+
+
+# ------------------------------------------------------------ device status
+
+# Plausible upload times, epoch ms: 2000-01-01 (inclusive) to 2100-01-01 (exclusive) UTC; anything else is unknown.
+UPLOAD_MS_MIN, UPLOAD_MS_MAX = 946_684_800_000, 4_102_444_800_000
+
+
+def shape_last_upload(raw: Any, tz: str) -> dict[str, Any]:
+    """``mylastused``: the device that uploaded last and when (UTC to the second, local to the minute)."""
+    data = as_dict(raw)
+    ms = data.get("lastUsedDeviceUploadTime")
+    if not isinstance(ms, int) or not UPLOAD_MS_MIN <= ms < UPLOAD_MS_MAX:
+        return dict(UNAVAILABLE)
+    name = data.get("lastUsedDeviceName")
+    return clean(
+        {
+            "device": name.strip() if isinstance(name, str) and name.strip() else None,
+            "time_utc": datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "time_local": gmt_ms_to_local_iso(ms, tz),
+        }
+    )
+
+
+def shape_devices(raw: Any) -> dict[str, Any]:
+    """The registered devices: the primary activity tracker (else the first device) and how many there are."""
+    devices = [d for d in raw if isinstance(d, dict)] if isinstance(raw, list) else []
+    if not devices:
+        return dict(UNAVAILABLE)
+    primary = next((d for d in devices if d.get("primaryActivityTrackerIndicator") is True), devices[0])
+    name, status = primary.get("productDisplayName"), primary.get("deviceStatus")
+    return clean(
+        {
+            "name": name if isinstance(name, str) and name.strip() else None,
+            "status": status if isinstance(status, str) and status.strip() else None,
+            "primary_activity_tracker": primary.get("primaryActivityTrackerIndicator") is True,
+            "registered_devices": len(devices),
+        }
+    )
+
+
+async def device_status(service: GarminService) -> dict[str, Any]:
+    results = await service.call_many(
+        {"last_upload": lambda c: c.get_device_last_used(), "devices": lambda c: c.get_devices()}
+    )
+    tz = service.settings.timezone
+    return {
+        "last_upload": _section(results, "last_upload", lambda r: shape_last_upload(r, tz)),
+        "primary_device": _section(results, "devices", shape_devices),
+    }

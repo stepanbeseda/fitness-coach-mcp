@@ -1,3 +1,4 @@
+import dataclasses
 import json
 
 import pytest
@@ -162,3 +163,161 @@ async def test_body_battery_range_limit(service):
     assert out["start"] == "2026-09-29" and len(out["days"]) == 2
     with pytest.raises(ToolError):
         await health.body_battery(service, "2026-01-01", "2026-09-30")
+
+
+# ------------------------------------------------------------ device status (PR 17)
+
+UPLOAD_UTC = "2026-09-30T04:58:12Z"
+LAST_UPLOAD = {"device": "Example Watch 1", "time_utc": UPLOAD_UTC, "time_local": "2026-09-30T06:58"}
+PRIMARY_DEVICE = {
+    "name": "Example Watch 1", "status": "active", "primary_activity_tracker": True, "registered_devices": 1,
+}
+
+
+def _upload(**over):
+    return {**fx.DEVICE_LAST_USED, **over}
+
+
+def test_shape_last_upload_utc_to_the_second_and_local_to_the_minute():
+    assert health.shape_last_upload(fx.DEVICE_LAST_USED, "Europe/Prague") == LAST_UPLOAD
+    assert health.shape_last_upload(fx.DEVICE_LAST_USED, "America/New_York")["time_local"] == "2026-09-30T00:58"
+    assert health.shape_last_upload(fx.DEVICE_LAST_USED, "America/New_York")["time_utc"] == UPLOAD_UTC
+
+
+def test_shape_last_upload_bounds_are_2000_inclusive_to_2100_exclusive():
+    low, high = health.UPLOAD_MS_MIN, health.UPLOAD_MS_MAX
+    out = health.shape_last_upload(_upload(lastUsedDeviceUploadTime=low), "Europe/Prague")
+    assert out["time_utc"] == "2000-01-01T00:00:00Z"
+    assert health.shape_last_upload(_upload(lastUsedDeviceUploadTime=low - 1), "Europe/Prague") == {"available": False}
+    out = health.shape_last_upload(_upload(lastUsedDeviceUploadTime=high - 1), "Europe/Prague")
+    assert out["time_utc"] == "2099-12-31T23:59:59Z" and out["time_local"] == "2100-01-01T00:59"
+    assert health.shape_last_upload(_upload(lastUsedDeviceUploadTime=high), "Europe/Prague") == {"available": False}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _upload(lastUsedDeviceUploadTime=True),
+        _upload(lastUsedDeviceUploadTime=1_790_744_292_000.0),
+        _upload(lastUsedDeviceUploadTime="1790744292000"),
+        _upload(lastUsedDeviceUploadTime=None),
+        {k: v for k, v in fx.DEVICE_LAST_USED.items() if k != "lastUsedDeviceUploadTime"},
+        {},  # the 204 answer of the library
+        [fx.DEVICE_LAST_USED],
+        None,
+    ],
+    ids=["bool", "float", "str", "none", "missing", "204", "list", "null"],
+)
+def test_shape_last_upload_is_unavailable_for_an_unusable_time(raw):
+    assert health.shape_last_upload(raw, "Europe/Prague") == {"available": False}
+
+
+def test_shape_last_upload_name_is_optional():
+    without = {k: v for k, v in fx.DEVICE_LAST_USED.items() if k != "lastUsedDeviceName"}
+    expected = {"time_utc": UPLOAD_UTC, "time_local": "2026-09-30T06:58"}
+    assert health.shape_last_upload(without, "Europe/Prague") == expected
+    assert health.shape_last_upload(_upload(lastUsedDeviceName="  "), "Europe/Prague") == expected
+    assert health.shape_last_upload(_upload(lastUsedDeviceName=7), "Europe/Prague") == expected
+    padded = health.shape_last_upload(_upload(lastUsedDeviceName=" Example Watch 1 "), "Europe/Prague")
+    assert padded["device"] == "Example Watch 1"
+
+
+def test_shape_devices_primary_tracker_and_count():
+    assert health.shape_devices(fx.DEVICES) == PRIMARY_DEVICE
+    scale = fx.device(productDisplayName="Example Scale", primaryActivityTrackerIndicator=False)
+    out = health.shape_devices([scale, fx.device()])
+    assert out == {**PRIMARY_DEVICE, "registered_devices": 2}
+
+
+def test_shape_devices_fallback_is_the_first_and_the_flag_must_be_true():
+    first = fx.device(productDisplayName="A", primaryActivityTrackerIndicator=False)
+    second = fx.device(productDisplayName="B", primaryActivityTrackerIndicator="true")
+    out = health.shape_devices([first, second])
+    assert out["name"] == "A" and out["primary_activity_tracker"] is False and out["registered_devices"] == 2
+    # a single device is the fallback; its truthy-but-not-True flag is not reported as a primary tracker
+    only = health.shape_devices([fx.device(primaryActivityTrackerIndicator="true")])
+    assert only["primary_activity_tracker"] is False
+
+
+@pytest.mark.parametrize(
+    "raw", [[], fx.device(), None, "x", 5, ["x", 1]], ids=["empty", "dict", "none", "str", "int", "junk"]
+)
+def test_shape_devices_unavailable(raw):
+    assert health.shape_devices(raw) == {"available": False}
+
+
+def test_shape_devices_skips_non_dict_items():
+    out = health.shape_devices(["x", 1, fx.device()])
+    assert out["registered_devices"] == 1 and out["name"] == "Example Watch 1"
+
+
+def test_shape_devices_drops_unusable_name_and_status():
+    out = health.shape_devices([fx.device(productDisplayName=None, deviceStatus=None)])
+    assert out == {"primary_activity_tracker": True, "registered_devices": 1}
+    for bad in ("  ", "", 7):
+        out = health.shape_devices([fx.device(productDisplayName=bad, deviceStatus=bad)])
+        assert out == {"primary_activity_tracker": True, "registered_devices": 1}, bad
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        fx.DEVICES,
+        [fx.device(productDisplayName="Example Scale", primaryActivityTrackerIndicator=False), fx.device()],
+        [fx.device(productDisplayName=None, deviceStatus=None)],
+    ],
+)
+def test_shape_devices_never_returns_ids_or_serial_numbers(raw):
+    text = json.dumps(health.shape_devices(raw))
+    assert "0000000000" not in text and "123456789" not in text
+
+
+@pytest.mark.anyio
+async def test_device_status_returns_both_sections(service, fake):
+    out = await health.device_status(service)
+    assert out == {"last_upload": LAST_UPLOAD, "primary_device": PRIMARY_DEVICE}
+    assert ("get_device_last_used", ()) in fake.calls and ("get_devices", ()) in fake.calls
+
+
+@pytest.mark.anyio
+async def test_device_status_uses_the_configured_time_zone(settings, fake):
+    from garmin_coach_mcp.garmin_client import GarminService
+
+    new_york = GarminService(dataclasses.replace(settings, timezone="America/New_York"), garmin_factory=lambda: fake)
+    out = await health.device_status(new_york)
+    assert out["last_upload"]["time_local"] == "2026-09-30T00:58"
+    assert out["last_upload"]["time_utc"] == UPLOAD_UTC
+
+
+@pytest.mark.anyio
+async def test_device_status_is_fail_soft_per_section(service, fake, monkeypatch):
+    fake.fail["get_devices"] = CONN_ERROR
+    out = await health.device_status(service)
+    assert "error" in out["primary_device"] and out["last_upload"] == LAST_UPLOAD
+
+    fake.fail.clear()
+    fake.responses["get_devices"] = 5  # the shaper sees an int: unavailable, not an error
+    out = await health.device_status(service)
+    assert out["primary_device"] == {"available": False} and out["last_upload"] == LAST_UPLOAD
+
+    fake.fail["get_device_last_used"] = CONN_ERROR
+    out = await health.device_status(service)
+    assert "error" in out["last_upload"] and out["primary_device"] == {"available": False}
+
+    fake.fail.clear()
+    fake.responses["get_devices"] = [fx.device()]
+
+    def boom(raw):
+        raise KeyError("x")
+
+    monkeypatch.setattr(health, "shape_devices", boom)
+    out = await health.device_status(service)
+    assert out["primary_device"] == {"error": "unexpected Garmin response for devices"}
+    assert out["last_upload"] == LAST_UPLOAD
+
+
+@pytest.mark.anyio
+async def test_device_status_auth_error_fails_whole_tool(service, fake):
+    fake.fail["get_device_last_used"] = AUTH_ERROR
+    with pytest.raises(ToolError, match="garmin-login.sh"):
+        await health.device_status(service)
