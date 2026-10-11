@@ -1669,6 +1669,13 @@ without `text`, the `/command@botname` form); the procedure is in the deploy
 bundle `DEPLOY-2026-10-12.md`. Open non-blocking: (O6) an `update_id` of 2**63
 or more would stop the queue; (O7) every `sqlite3.Error` is treated as
 transient (spec decision D11); both in section 5.
+Live verification 2026-10-12 (owner deploy per `DEPLOY-2026-10-12.md`, live at
+`59de7f3`): `/healthz` schema 9 and `inbound` `on`, `healthcheck.sh` and
+`smoke-test.sh` green, no `inbound poll=` line. Criterion 5 met: `/plan` and a
+free-text note from the owner's phone (`inbound cmd=plan status=ok`,
+`cmd=note status=ok`), today's note count 0 to 1, the note returned by
+`get_coach_context` (gateway audit: outcome `ok`). The week held no session, so
+no `#id` line, `/done` or `/skip` ran on live data.
 
 ## 5. Open items
 
@@ -1740,7 +1747,9 @@ transient (spec decision D11); both in section 5.
   PR 20 (merged 2026-10-11) wait for `DEPLOY-2026-10-11.md`. PR 17 (merged 2026-10-11, #33)
   waits for `DEPLOY-2026-10-11-pr17.md`. PR 22 (merged 2026-10-12, #37)
   waits for `DEPLOY-2026-10-12.md`; `coach-mcp` then migrates 7 to 9 in one start when the earlier
-  bundles have not run (spec appendix B, "Order").
+  bundles have not run (spec appendix B, "Order"). Update 2026-10-12: the owner deployed `main`
+  (`59de7f3`) that night, live is at schema 9 and PR 22 criterion 5 is verified (its "Delivered"
+  block); the verification sections of the PR 14, PR 17 and PR 20 bundles are not recorded here yet.
 - **PR 06 weather.** The CC BY 4.0 attribution sentence in the READMEs comes
   from the designer's knowledge of Open-Meteo's terms; confirm it on
   open-meteo.com. Open-Meteo's behaviour on DST transition days has not been
@@ -1907,7 +1916,10 @@ transient (spec decision D11); both in section 5.
   rules, 409 for a second reader or a webhook, the shape of a private text message, a photo without `text`,
   the `/command@botname` form and the 4096-character limit of a message. Each has a named state in the code
   (`inbound poll=rejected`, `poll=conflict`, `status=ignored`); spec appendix B steps 6 and 7 are the
-  evidence procedure, with criterion 5, after the deploy of `DEPLOY-2026-10-12.md`.
+  evidence procedure, with criterion 5, after the deploy of `DEPLOY-2026-10-12.md`. Update 2026-10-12, live
+  run: `getUpdates` with a JSON POST body and the shape of a private text message are confirmed (a command
+  and a note were answered, no `poll=rejected`, no `status=ignored`). Still not observed: no replay after a
+  restart, messages kept while the service is stopped, 409, a photo, the `/command@botname` form.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between
