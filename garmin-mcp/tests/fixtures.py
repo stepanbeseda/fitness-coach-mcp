@@ -5,6 +5,9 @@ Field names follow python-garminconnect 0.3.17's typed response models
 values are made up.
 """
 
+import copy
+import itertools
+
 DAY = "2026-09-30"
 
 TRAINING_READINESS = [
@@ -339,6 +342,209 @@ WORKOUT_DETAIL = {
             ],
         }
     ],
+}
+
+# The request body of the spike of 2026-10-12 (attempt A), unchanged: Garmin accepted it and stored the exercise
+# names, the weight (grams with the kilogram unit), the notes, the step without an exercise and the timed hold.
+# It is a request, so it holds no ids and no account fields.
+STRENGTH_UPLOAD = {'workoutName': 'MAO spike PR07 - delete me',
+ 'sportType': {'sportTypeId': 5, 'sportTypeKey': 'strength_training', 'displayOrder': 5},
+ 'estimatedDurationInSecs': 1140,
+ 'workoutSegments': [{'segmentOrder': 1,
+                      'sportType': {'sportTypeId': 5, 'sportTypeKey': 'strength_training', 'displayOrder': 5},
+                      'workoutSteps': [{'type': 'RepeatGroupDTO',
+                                        'stepOrder': 1,
+                                        'stepType': {'stepTypeId': 6, 'stepTypeKey': 'repeat', 'displayOrder': 6},
+                                        'numberOfIterations': 3,
+                                        'workoutSteps': [{'type': 'ExecutableStepDTO',
+                                                          'stepOrder': 2,
+                                                          'stepType': {'stepTypeId': 3,
+                                                                       'stepTypeKey': 'interval',
+                                                                       'displayOrder': 3},
+                                                          'endCondition': {'conditionTypeId': 10,
+                                                                           'conditionTypeKey': 'reps',
+                                                                           'displayOrder': 10,
+                                                                           'displayable': True},
+                                                          'endConditionValue': 8.0,
+                                                          'targetType': {'workoutTargetTypeId': 1,
+                                                                         'workoutTargetTypeKey': 'no.target',
+                                                                         'displayOrder': 1},
+                                                          'category': 'BENCH_PRESS',
+                                                          'exerciseName': 'BARBELL_BENCH_PRESS',
+                                                          'weightValue': 60000.0,
+                                                          'weightUnit': {'unitId': 8,
+                                                                         'unitKey': 'kilogram',
+                                                                         'factor': 1000.0}},
+                                                         {'type': 'ExecutableStepDTO',
+                                                          'stepOrder': 3,
+                                                          'stepType': {'stepTypeId': 5,
+                                                                       'stepTypeKey': 'rest',
+                                                                       'displayOrder': 5},
+                                                          'endCondition': {'conditionTypeId': 2,
+                                                                           'conditionTypeKey': 'time',
+                                                                           'displayOrder': 2,
+                                                                           'displayable': True},
+                                                          'endConditionValue': 90.0,
+                                                          'targetType': {'workoutTargetTypeId': 1,
+                                                                         'workoutTargetTypeKey': 'no.target',
+                                                                         'displayOrder': 1}}],
+                                        'endCondition': {'conditionTypeId': 7,
+                                                         'conditionTypeKey': 'iterations',
+                                                         'displayOrder': 7,
+                                                         'displayable': False},
+                                        'endConditionValue': 3.0,
+                                        'smartRepeat': False},
+                                       {'type': 'RepeatGroupDTO',
+                                        'stepOrder': 4,
+                                        'stepType': {'stepTypeId': 6, 'stepTypeKey': 'repeat', 'displayOrder': 6},
+                                        'numberOfIterations': 3,
+                                        'workoutSteps': [{'type': 'ExecutableStepDTO',
+                                                          'stepOrder': 5,
+                                                          'stepType': {'stepTypeId': 3,
+                                                                       'stepTypeKey': 'interval',
+                                                                       'displayOrder': 3},
+                                                          'endCondition': {'conditionTypeId': 10,
+                                                                           'conditionTypeKey': 'reps',
+                                                                           'displayOrder': 10,
+                                                                           'displayable': True},
+                                                          'endConditionValue': 6.0,
+                                                          'targetType': {'workoutTargetTypeId': 1,
+                                                                         'workoutTargetTypeKey': 'no.target',
+                                                                         'displayOrder': 1},
+                                                          'category': 'PULL_UP',
+                                                          'exerciseName': 'PULL_UP',
+                                                          'description': 'spike note on a mapped step'},
+                                                         {'type': 'ExecutableStepDTO',
+                                                          'stepOrder': 6,
+                                                          'stepType': {'stepTypeId': 5,
+                                                                       'stepTypeKey': 'rest',
+                                                                       'displayOrder': 5},
+                                                          'endCondition': {'conditionTypeId': 2,
+                                                                           'conditionTypeKey': 'time',
+                                                                           'displayOrder': 2,
+                                                                           'displayable': True},
+                                                          'endConditionValue': 120.0,
+                                                          'targetType': {'workoutTargetTypeId': 1,
+                                                                         'workoutTargetTypeKey': 'no.target',
+                                                                         'displayOrder': 1}}],
+                                        'endCondition': {'conditionTypeId': 7,
+                                                         'conditionTypeKey': 'iterations',
+                                                         'displayOrder': 7,
+                                                         'displayable': False},
+                                        'endConditionValue': 3.0,
+                                        'smartRepeat': False},
+                                       {'type': 'RepeatGroupDTO',
+                                        'stepOrder': 7,
+                                        'stepType': {'stepTypeId': 6, 'stepTypeKey': 'repeat', 'displayOrder': 6},
+                                        'numberOfIterations': 2,
+                                        'workoutSteps': [{'type': 'ExecutableStepDTO',
+                                                          'stepOrder': 8,
+                                                          'stepType': {'stepTypeId': 3,
+                                                                       'stepTypeKey': 'interval',
+                                                                       'displayOrder': 3},
+                                                          'endCondition': {'conditionTypeId': 10,
+                                                                           'conditionTypeKey': 'reps',
+                                                                           'displayOrder': 10,
+                                                                           'displayable': True},
+                                                          'endConditionValue': 10.0,
+                                                          'targetType': {'workoutTargetTypeId': 1,
+                                                                         'workoutTargetTypeKey': 'no.target',
+                                                                         'displayOrder': 1},
+                                                          'description': 'Hevy: Zercher Carry'},
+                                                         {'type': 'ExecutableStepDTO',
+                                                          'stepOrder': 9,
+                                                          'stepType': {'stepTypeId': 5,
+                                                                       'stepTypeKey': 'rest',
+                                                                       'displayOrder': 5},
+                                                          'endCondition': {'conditionTypeId': 2,
+                                                                           'conditionTypeKey': 'time',
+                                                                           'displayOrder': 2,
+                                                                           'displayable': True},
+                                                          'endConditionValue': 60.0,
+                                                          'targetType': {'workoutTargetTypeId': 1,
+                                                                         'workoutTargetTypeKey': 'no.target',
+                                                                         'displayOrder': 1}}],
+                                        'endCondition': {'conditionTypeId': 7,
+                                                         'conditionTypeKey': 'iterations',
+                                                         'displayOrder': 7,
+                                                         'displayable': False},
+                                        'endConditionValue': 2.0,
+                                        'smartRepeat': False},
+                                       {'type': 'RepeatGroupDTO',
+                                        'stepOrder': 10,
+                                        'stepType': {'stepTypeId': 6, 'stepTypeKey': 'repeat', 'displayOrder': 6},
+                                        'numberOfIterations': 2,
+                                        'workoutSteps': [{'type': 'ExecutableStepDTO',
+                                                          'stepOrder': 11,
+                                                          'stepType': {'stepTypeId': 3,
+                                                                       'stepTypeKey': 'interval',
+                                                                       'displayOrder': 3},
+                                                          'endCondition': {'conditionTypeId': 2,
+                                                                           'conditionTypeKey': 'time',
+                                                                           'displayOrder': 2,
+                                                                           'displayable': True},
+                                                          'endConditionValue': 45.0,
+                                                          'targetType': {'workoutTargetTypeId': 1,
+                                                                         'workoutTargetTypeKey': 'no.target',
+                                                                         'displayOrder': 1},
+                                                          'category': 'PLANK',
+                                                          'exerciseName': 'PLANK'},
+                                                         {'type': 'ExecutableStepDTO',
+                                                          'stepOrder': 12,
+                                                          'stepType': {'stepTypeId': 5,
+                                                                       'stepTypeKey': 'rest',
+                                                                       'displayOrder': 5},
+                                                          'endCondition': {'conditionTypeId': 2,
+                                                                           'conditionTypeKey': 'time',
+                                                                           'displayOrder': 2,
+                                                                           'displayable': True},
+                                                          'endConditionValue': 30.0,
+                                                          'targetType': {'workoutTargetTypeId': 1,
+                                                                         'workoutTargetTypeKey': 'no.target',
+                                                                         'displayOrder': 1}}],
+                                        'endCondition': {'conditionTypeId': 7,
+                                                         'conditionTypeKey': 'iterations',
+                                                         'displayOrder': 7,
+                                                         'displayable': False},
+                                        'endConditionValue': 2.0,
+                                        'smartRepeat': False}]}],
+ 'author': {},
+ 'description': 'Test upload of PR 07 (strength workouts on the watch). Safe to delete.'}
+
+# Keys Garmin returned as null on a stored step that was uploaded without them (spike of 2026-10-12, types only).
+STORED_STEP_NULLS = ("category", "exerciseName", "description", "weightValue", "weightUnit")
+
+
+def stored_strength(payload):
+    """What get_workout_by_id answers for an uploaded payload: the spike's shape with made-up ids and dates."""
+    stored = copy.deepcopy(payload)
+    stored.pop("author", None)
+    stored.update(workoutId=9002, createdDate="2026-10-10T08:00:00.0", updatedDate="2026-10-12T08:00:00.0")
+    ids = itertools.count(1)
+
+    def visit(step):
+        step["stepId"] = next(ids)
+        if step["type"] == "ExecutableStepDTO":
+            for key in STORED_STEP_NULLS:
+                step.setdefault(key, None)
+        for child in step.get("workoutSteps", []):
+            visit(child)
+
+    for segment in stored["workoutSegments"]:
+        for step in segment["workoutSteps"]:
+            visit(step)
+    return stored
+
+
+STRENGTH_WORKOUT_DETAIL = stored_strength(STRENGTH_UPLOAD)
+# A library list entry carries no steps and spells the change date `updateDate` (the detail says `updatedDate`).
+STRENGTH_WORKOUT_ROW = {
+    "workoutId": 9002,
+    "workoutName": "Strength A",
+    "sportType": {"sportTypeId": 5, "sportTypeKey": "strength_training", "displayOrder": 5},
+    "estimatedDurationInSecs": 1140,
+    "createdDate": "2026-10-10T08:00:00.0",
+    "updateDate": "2026-10-12T08:00:00.0",
 }
 
 SCHEDULES_GRAPHQL = {
