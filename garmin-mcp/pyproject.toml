@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "ruff==0.17.0", "mypy==2.4.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -26,3 +26,21 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]
+
+# Static checks of the test stage (Dockerfile): `ruff check src tests`, then `mypy`.
+[tool.ruff]
+output-format = "concise"
+
+[tool.ruff.lint]
+# Errors only, no formatting rules: pycodestyle E4/E7, Pyflakes, flake8-bugbear, unused `# noqa`.
+select = ["E4", "E7", "F", "B", "RUF100"]
+
+[tool.mypy]
+files = ["src"]
+python_version = "3.13"
+strict = true
+
+# garminconnect ships no type information (no py.typed); its objects are Any.
+[[tool.mypy.overrides]]
+module = ["garminconnect.*"]
+ignore_missing_imports = true

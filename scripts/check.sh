@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The project's check, one command, safe to run next to another check: the test stage of
-# garmin-mcp, gateway and coach-mcp (forced to run, never a cached result) and the e2e test
+# garmin-mcp, gateway and coach-mcp (ruff, mypy and pytest; forced to run, never cached) and the e2e test
 # under a private compose project and private image tags. Every docker build and the e2e run
 # hold /tmp/fcm-docker.lock (CHECK_LOCK=0 turns the lock off). Does not read .env.
 #
@@ -81,7 +81,7 @@ tree="$(tree_id)"
 info "Check tree=$tree tag=$tag, logs: $LOG_DIR"
 declare -A result=([garmin]=skip [gateway]=skip [coach]=skip [e2e]=skip)
 
-# Test stage of one service. --no-cache-filter test re-runs the suite even for an unchanged tree.
+# Test stage of one service (ruff, mypy, pytest). --no-cache-filter test re-runs it even for an unchanged tree.
 for pair in garmin:garmin-mcp gateway:gateway coach:coach-mcp; do
   name="${pair%%:*}" dir="${pair#*:}"
   wanted "$name" || continue
@@ -90,6 +90,10 @@ for pair in garmin:garmin-mcp gateway:gateway coach:coach-mcp; do
   built+=("$image")
   locked docker build --progress=plain --target test --no-cache-filter test -t "$image" "$dir" \
     >"$log" 2>&1 || fail "$name" "$log"
+  # ruff and mypy print these lines after checking the tree; a stage without them did not run the checks.
+  grep -q 'All checks passed!' "$log" || fail "$name (ruff summary missing from the log)" "$log"
+  grep -Eq 'Success: no issues found in [1-9][0-9]* source files?' "$log" \
+    || fail "$name (mypy summary missing from the log)" "$log"
   passed="$(grep -Eo '[0-9]+ passed' "$log" | tail -n 1 | cut -d' ' -f1 || true)"
   [[ -n "$passed" ]] || fail "$name (pytest summary missing from the log)" "$log"
   result[$name]="$passed"
