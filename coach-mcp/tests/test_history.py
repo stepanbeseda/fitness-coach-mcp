@@ -1309,7 +1309,6 @@ from history_helpers import seed_strength  # noqa: E402
 
 from coach_mcp import strength as strength_module  # noqa: E402
 from coach_mcp.history import combined_outcome  # noqa: E402
-from coach_mcp.store import Store  # noqa: E402
 
 FIRST_DAY = "2026-09-27"  # TODAY - 10 days: the first day of a backfill of 10 days
 FIRST_SINCE = "2026-09-26T22:00:00Z"  # its local midnight (CEST) as UTC
@@ -2850,5 +2849,5 @@ async def test_the_predictions_call_is_paced_like_every_other_call(store):
     await run_first(job, clock)
     names = [n for n, _ in source.calls]
     assert names[-1] == "get_race_predictions" and len(names) == 3
-    gaps = [(b - a).total_seconds() for a, b in zip(source.times, source.times[1:])]
+    gaps = [(b - a).total_seconds() for a, b in zip(source.times, source.times[1:], strict=False)]
     assert gaps == [20.0, 20.0]  # the call after the last Garmin call waits the configured delay too

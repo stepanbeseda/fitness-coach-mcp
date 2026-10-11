@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import httpx
 from starlette.applications import Starlette
@@ -120,13 +120,13 @@ def create_app(
         store.get_login_state()
         return JSONResponse({"status": "ok"})
 
-    def prm_endpoint(backend: Backend) -> Callable:
+    def prm_endpoint(backend: Backend) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
             return oauth.protected_resource_metadata(backend)
 
         return endpoint
 
-    def mcp_endpoint(backend: Backend) -> Callable:
+    def mcp_endpoint(backend: Backend) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
             return await proxy.handle(request, backend)
 
@@ -149,7 +149,7 @@ def create_app(
     ]
 
     @contextlib.asynccontextmanager
-    async def lifespan(app: Starlette):
+    async def lifespan(app: Starlette) -> AsyncIterator[None]:
         async def housekeeping() -> None:
             while True:
                 try:

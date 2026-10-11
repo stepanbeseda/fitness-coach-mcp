@@ -290,7 +290,8 @@ def build_garmin_workout(spec: WorkoutSpec) -> dict[str, Any]:
         ],
         description=spec.description,
     )
-    return workout.to_dict()
+    payload: dict[str, Any] = workout.to_dict()
+    return payload
 
 
 # ------------------------------------------------------------------ summaries
@@ -310,7 +311,7 @@ def describe_end(step: dict[str, Any]) -> str | None:
 
 
 def describe_target(step: dict[str, Any]) -> str | None:
-    key = as_dict(step.get("targetType")).get("workoutTargetTypeKey")
+    key: str | None = as_dict(step.get("targetType")).get("workoutTargetTypeKey")
     one, two, zone = step.get("targetValueOne"), step.get("targetValueTwo"), step.get("zoneNumber")
     if key in (None, "no.target"):
         return None
@@ -450,7 +451,7 @@ async def get_workout(service: GarminService, workout_id: int) -> dict[str, Any]
 async def create_workout(
     service: GarminService,
     name: str,
-    sport: str,
+    sport: Literal["running", "cycling"],
     steps: list[Any],
     description: str | None,
     schedule_date: str | None,

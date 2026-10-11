@@ -12,13 +12,16 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-deps --require-hashes -r requirements.lock
 
-# Test stage: runs during every build (the runtime stage depends on its marker).
+# Test stage: runs during every build (the runtime stage depends on its marker). Static checks first
+# (ruff, then mypy; both configured in pyproject.toml), then the tests.
 FROM deps AS test
 COPY requirements-dev.lock .
 RUN pip install --no-deps --require-hashes -r requirements-dev.lock
 COPY pyproject.toml ./
 COPY src/ src/
 COPY tests/ tests/
+RUN python -m ruff check --no-cache src tests
+RUN python -m mypy --cache-dir=/dev/null
 RUN python -m pytest && touch /tests-passed
 
 FROM deps AS runtime

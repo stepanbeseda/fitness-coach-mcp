@@ -97,7 +97,12 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         instructions=INSTRUCTIONS,
         version=__version__,
         lifespan=lifespan,
-        log_level=settings.log_level if settings.log_level in ("DEBUG", "INFO", "WARNING", "ERROR") else "INFO",
+        # the membership test narrows the value at runtime; mypy does not narrow a str to a Literal
+        log_level=(
+            settings.log_level  # type: ignore[arg-type]
+            if settings.log_level in ("DEBUG", "INFO", "WARNING", "ERROR")
+            else "INFO"
+        ),
         extensions=[guard],
     )
 
@@ -363,7 +368,7 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
         athlete confirmed."""
         return await workouts.unschedule_workout(service, schedule_id)
 
-    @server.custom_route("/healthz", methods=["GET"])
+    @server.custom_route("/healthz", methods=["GET"])  # type: ignore[untyped-decorator]  # not annotated in the SDK
     async def healthz(_request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "garmin_auth": service.auth_state()})
 

@@ -33,7 +33,6 @@ from garmin_payloads import (
     activities_payload,
     activity,
     garmin_data,
-    history_snapshot,
     yellow_data,
 )
 from history_helpers import (

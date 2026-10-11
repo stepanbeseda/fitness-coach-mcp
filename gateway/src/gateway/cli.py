@@ -18,7 +18,7 @@ import segno
 from argon2 import PasswordHasher
 
 from .backup import backup_command, restore_command
-from .config import DEFAULT_DB_PATH, SCOPE, ConfigError, load_settings, read_secret
+from .config import DEFAULT_DB_PATH, SCOPE, ConfigError, Settings, load_settings, read_secret
 from .security import TotpVerifier, hash_token, new_id, new_token
 from .store import Grant, Store, Token
 
@@ -74,7 +74,7 @@ def cmd_verify_totp(args: argparse.Namespace) -> int:
     return 0 if verifier.matching_step(lines[1].strip()) is not None else 1
 
 
-def _store() -> tuple[Store, object]:
+def _store() -> tuple[Store, Settings]:
     settings = load_settings()
     return Store(settings.db_path), settings
 
@@ -196,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
-        return args.func(args)
+        code: int = args.func(args)
+        return code
     except ConfigError as exc:
         _err(f"Configuration error: {exc}")
         return 2

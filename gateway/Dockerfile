@@ -1,6 +1,6 @@
 # OAuth 2.1 gateway for the fitness-coach MCP servers.
 # Dependencies are installed from a hash-locked requirements file; the test stage
-# runs the full test suite during the build.
+# runs ruff, mypy (both configured in pyproject.toml) and the full test suite during the build.
 FROM python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -19,6 +19,8 @@ WORKDIR /src
 COPY pyproject.toml ./
 COPY src ./src
 COPY tests ./tests
+RUN /venv/bin/python -m ruff check --no-cache src tests
+RUN /venv/bin/python -m mypy --cache-dir=/dev/null
 RUN /venv/bin/python -m pytest -q -p no:cacheprovider && touch /tests-passed
 
 FROM base AS runtime

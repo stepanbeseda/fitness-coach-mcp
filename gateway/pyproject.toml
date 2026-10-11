@@ -16,6 +16,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "ruff==0.17.0",
+    "mypy==2.4.0",
 ]
 
 [build-system]
@@ -28,3 +30,18 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+# Static checks of the test stage (Dockerfile): `ruff check src tests`, then `mypy`.
+[tool.ruff]
+output-format = "concise"
+
+[tool.ruff.lint]
+# Errors only, no formatting rules: pycodestyle E4/E7, E902 (a path that cannot be read: a missing or misspelled
+# path in the `ruff check` RUN line must fail the build, not pass with a warning), Pyflakes, flake8-bugbear,
+# unused `# noqa`.
+select = ["E4", "E7", "E902", "F", "B", "RUF100"]
+
+[tool.mypy]
+files = ["src"]
+python_version = "3.13"
+strict = true

@@ -84,14 +84,13 @@ scripts/garmin-login.sh --import /tmp/garmin_tokens.json && shred -u /tmp/garmin
 ## Development
 
 ```bash
-docker build --target test garmin-mcp            # pytest (no network, fake Garmin client)
-# regenerate the lock files (hashes, linux/aarch64, CPython 3.13) after changing pyproject.toml:
-docker run --rm -e HOME=/tmp -v "$PWD/garmin-mcp:/work" -w /work \
-  python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b sh -c '
-  pip install -q uv==0.12.21 &&
-  uv pip compile pyproject.toml --generate-hashes --python-version 3.13 --python-platform aarch64-unknown-linux-gnu --no-header --annotation-style line -o requirements.lock &&
-  uv pip compile pyproject.toml --extra test --generate-hashes --python-version 3.13 --python-platform aarch64-unknown-linux-gnu --no-header --annotation-style line -o requirements-dev.lock'
+docker build --target test garmin-mcp
 ```
+
+The test stage runs `ruff check src tests`, `mypy` (strict mode, `src/`; both configured in `pyproject.toml`)
+and the tests (no network, fake Garmin client) on every build.
+Dependency locks (`requirements.lock`, `requirements-dev.lock`) are regenerated only through
+`scripts/lock-deps.sh`.
 
 Known uncertainty: Garmin's nutrition endpoints (`nutrition-service`) have not been verified on a real account; `get_nutrition`
 looks for values under several key names and returns `available: false` for an unknown response shape (hydration and weigh-ins

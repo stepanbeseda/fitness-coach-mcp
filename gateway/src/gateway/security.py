@@ -10,6 +10,7 @@ import re
 import secrets
 import time
 from dataclasses import dataclass, replace
+from typing import TypeGuard
 
 import pyotp
 from argon2 import PasswordHasher
@@ -36,8 +37,9 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def is_valid_code_challenge(challenge: str | None) -> bool:
-    return bool(challenge) and bool(_CHALLENGE_RE.match(challenge))
+def is_valid_code_challenge(challenge: str | None) -> TypeGuard[str]:
+    # bool(challenge) is False for None, so match() never gets None
+    return bool(challenge) and bool(_CHALLENGE_RE.match(challenge))  # type: ignore[arg-type]
 
 
 def verify_pkce(verifier: str | None, challenge: str) -> bool:
@@ -121,7 +123,8 @@ class LoginGuard:
         state = self._store.get_login_state()
         totp_ok = step is not None and step > state.last_totp_step
         if password_ok and totp_ok:
-            self._store.save_login_state(LoginState(0, None, None, step))
+            # totp_ok is True only when step is not None
+            self._store.save_login_state(LoginState(0, None, None, step))  # type: ignore[arg-type]
             return True
         self._record_failure(state, now_i)
         return False

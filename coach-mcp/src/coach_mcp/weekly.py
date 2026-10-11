@@ -9,7 +9,7 @@ later addition to ``trends.py`` cannot break the push.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, TypeGuard
 
 from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _one_line, fmt
 from .messages import WeeklyTexts, texts, weekly_texts
@@ -21,7 +21,7 @@ def _duration(w: WeeklyTexts, minutes: float) -> str:
     return w.hours_minutes.format(h=hours, m=f"{rest:02d}") if hours else w.minutes_only.format(m=rest)
 
 
-def _available(section: Any) -> bool:
+def _available(section: Any) -> TypeGuard[dict[str, Any]]:
     return isinstance(section, dict) and section.get("available") is not False
 
 

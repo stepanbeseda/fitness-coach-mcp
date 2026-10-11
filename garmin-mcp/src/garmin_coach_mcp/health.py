@@ -462,7 +462,10 @@ async def hrv_trend(service: GarminService, days: int, end_date: str | None) -> 
         summaries = raw
     if summaries is None:  # unknown shape: fall back to one call per day
         dates = [(start + timedelta(days=i)).isoformat() for i in range(days)]
-        per_day = await service.call_many({day: (lambda c, day=day: c.get_hrv_data(day)) for day in dates})
+        # mypy cannot infer a lambda whose default binds the loop variable
+        per_day = await service.call_many(
+            {day: (lambda c, day=day: c.get_hrv_data(day)) for day in dates}  # type: ignore[misc]
+        )
         summaries = [
             {**as_dict(as_dict(v).get("hrvSummary")), "calendarDate": day}
             for day, v in per_day.items()

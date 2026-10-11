@@ -106,7 +106,8 @@ class GarminService:
             in_memory = json.loads(self._client.client.dumps())
         except (OSError, ValueError, AttributeError):
             return True
-        return on_disk != in_memory
+        differs: bool = on_disk != in_memory
+        return differs
 
     def get_client(self) -> Any:
         """Return an authenticated client, (re)loading tokens when needed."""

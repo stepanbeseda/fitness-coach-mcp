@@ -221,21 +221,24 @@ def _best_window(day: Day, hours: list[Hour], local_now: datetime) -> dict[str, 
             current = []
     if current:
         runs.append(current)
-    windows = []
+    windows: list[dict[str, Any]] = []
     for run in runs:
         start = max(run[0].start, sunrise)
         end = min(run[-1].start + _HOUR, sunset)
         feels = [h.apparent for h in run]
+        # every hour of a run passed _eligible(), so apparent, precipitation_probability and wind are not None
         windows.append(
             {
                 "date": day.date.isoformat(),
                 "start": _clock(start),
                 "end": _clock(end),
                 "minutes": int((end - start).total_seconds() // 60),
-                "apparent_temperature_min_c": min(feels),
-                "apparent_temperature_max_c": max(feels),
-                "precipitation_probability_max_pct": max(h.precipitation_probability for h in run),
-                "wind_speed_max_kmh": max(h.wind for h in run),
+                "apparent_temperature_min_c": min(feels),  # type: ignore[type-var]
+                "apparent_temperature_max_c": max(feels),  # type: ignore[type-var]
+                "precipitation_probability_max_pct": max(  # type: ignore[type-var]
+                    h.precipitation_probability for h in run
+                ),
+                "wind_speed_max_kmh": max(h.wind for h in run),  # type: ignore[type-var]
                 "_start": start,
             }
         )

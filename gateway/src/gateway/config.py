@@ -11,6 +11,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 DEFAULT_CONFIG_PATH = "/app/config.toml"
@@ -133,11 +134,11 @@ def _env(name: str) -> str | None:
     return value or None
 
 
-def _int(section: dict, key: str, env: str | None = None) -> int:
+def _int(section: dict[str, Any], key: str, env: str | None = None) -> int:
     raw = _env(env) if env else None
     value = raw if raw is not None else section.get(key)
     try:
-        number = int(value)
+        number = int(value)  # type: ignore[arg-type]  # None raises the TypeError handled below
     except (TypeError, ValueError):
         raise ConfigError(f"{key}: expected an integer, got {value!r}") from None
     if number <= 0:
@@ -145,7 +146,7 @@ def _int(section: dict, key: str, env: str | None = None) -> int:
     return number
 
 
-def _rate(section: dict, key: str) -> RateLimit:
+def _rate(section: dict[str, Any], key: str) -> RateLimit:
     value = section.get(key)
     if not (isinstance(value, list) and len(value) == 2):
         raise ConfigError(f"rate_limits.{key}: expected [per_minute, burst]")

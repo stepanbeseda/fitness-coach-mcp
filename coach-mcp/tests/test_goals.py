@@ -216,7 +216,7 @@ def test_each_race_metric_reads_its_own_column(store):
         TODAY, date(2026, 10, 6),
     )
     expected = {"race_5k": 1290, "race_10k": 2700, "race_half_marathon": 5970, "race_marathon": 12310}
-    for metric, value in expected.items():
+    for metric in expected:
         store.insert_goal({"title": metric, "metric": metric})
     values = {g["metric"]: g["current"]["value"] for g in get_goal_progress(store, TODAY)["goals"]}
     assert values == expected
