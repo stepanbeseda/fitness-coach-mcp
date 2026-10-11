@@ -367,17 +367,17 @@ CALENDAR_MONTH = {
 RACE_PREDICTIONS = {"userId": 1, "calendarDate": DAY, "time5K": 1290, "time10K": 2700,
                     "timeHalfMarathon": 5970, "timeMarathon": 12310}
 
-# Synthetic daily answers: the real shape of get_race_predictions(start, end, "daily") is unverified until the
-# capture on the test host (PR 14 spec, section 11). They follow the shape of the latest answer above.
+# Synthetic daily answers in the shape the owner's capture of 2026-10-11 confirmed for
+# get_race_predictions(start, end, "daily"): one entry per day, integer seconds, plus fromCalendarDate/toCalendarDate.
 RACE_PREDICTIONS_DAILY = [
-    {"userId": 1, "calendarDate": "2026-09-30", "time5K": 1290, "time10K": 2700, "timeHalfMarathon": 5970,
-     "timeMarathon": 12310},
-    {"userId": 1, "calendarDate": "2026-09-28", "time5K": 1300, "time10K": 2720, "timeHalfMarathon": 6010,
-     "timeMarathon": 12400},
-    {"userId": 1, "calendarDate": "2026-09-29", "time5K": 1295, "time10K": 2710, "timeHalfMarathon": 5990,
-     "timeMarathon": 12350},
-    {"userId": 1, "calendarDate": "2026-09-20", "time5K": 1400, "time10K": 2900, "timeHalfMarathon": 6200,
-     "timeMarathon": 13000},
+    {"userId": 1, "calendarDate": "2026-09-30", "fromCalendarDate": "2026-09-30", "toCalendarDate": "2026-09-30",
+     "time5K": 1290, "time10K": 2700, "timeHalfMarathon": 5970, "timeMarathon": 12310},
+    {"userId": 1, "calendarDate": "2026-09-28", "fromCalendarDate": "2026-09-28", "toCalendarDate": "2026-09-28",
+     "time5K": 1300, "time10K": 2720, "timeHalfMarathon": 6010, "timeMarathon": 12400},
+    {"userId": 1, "calendarDate": "2026-09-29", "fromCalendarDate": "2026-09-29", "toCalendarDate": "2026-09-29",
+     "time5K": 1295, "time10K": 2710, "timeHalfMarathon": 5990, "timeMarathon": 12350},
+    {"userId": 1, "calendarDate": "2026-09-20", "fromCalendarDate": "2026-09-20", "toCalendarDate": "2026-09-20",
+     "time5K": 1400, "time10K": 2900, "timeHalfMarathon": 6200, "timeMarathon": 13000},
 ]
 RACE_PREDICTIONS_WRAPPED = {"racePredictions": RACE_PREDICTIONS_DAILY[1:3]}
 

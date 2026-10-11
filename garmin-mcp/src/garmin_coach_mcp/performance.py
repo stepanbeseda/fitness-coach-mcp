@@ -101,8 +101,8 @@ def _prediction_seconds(raw: Any) -> int | None:
 def shape_race_prediction_days(raw: Any, start: date, end: date) -> dict[str, Any]:
     """Daily race predictions as {"count", "days": [{"date", "5k_seconds", ...}]}.
 
-    The shape of the daily answer is unverified until the capture on the test host (PR 14 spec, section 11):
-    every shape other than a list of entries keyed `calendarDate` degrades to "available": false.
+    The shape of the daily answer (a list of entries keyed `calendarDate`, times as integer seconds) was confirmed
+    by the owner's capture on 2026-10-11; every other shape still degrades to "available": false.
     """
     by_day: dict[str, dict[str, Any]] = {}
     for entry in _entries(raw, "calendarDate"):

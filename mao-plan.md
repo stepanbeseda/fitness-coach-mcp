@@ -1130,7 +1130,7 @@ change. Criteria 1 to 6 met offline (`CHECK OK tree=746f4071402d garmin=258
 gateway=80 coach=1193 e2e=OK`; about 100 implementer mutants and 42 reviewer
 mutants, all killed or equivalent). Deviations: the shape of Garmin's daily
 race-prediction payload was established from the library source and canned
-payloads only (owner capture, section 5); decision D4 accepts the library's
+payloads only (owner capture, section 5; confirmed 2026-10-11); decision D4 accepts the library's
 ERROR log line on a Garmin 5xx, which contains the account display name (as for
 PR 01 N2; test T-P10 pins it and will turn red on purpose when the redacting
 log filter of section 5 lands); small decisions outside the spec (VO2max bounds
@@ -1693,14 +1693,14 @@ from Telegram, media messages.
   the owner may need to pick an outdoor activity by hand for the temperature and
   wind comparison. Left open because fixing it changes smoke-test behaviour.
 - **PR 14 goal progress.** (a) The shape of Garmin's daily race-prediction
-  payload (key names such as `calendarDate` and `time5K`, list against dict, int
-  against float, order, what "no predictions" looks like) is unverified: the
-  shaper was built from the library source and canned payloads, and degrades to
-  `available: false` or an error section when the real shape differs. The owner
-  captures it once on the test host (spec section 11,
-  `docker compose exec -T garmin-mcp python - < .claude/mao-log/PR-14-proto/capture.py`,
-  key names, types and counts only); a difference goes back to a designer as an
-  addendum for fixtures and shaper keys. (b) Accepted D4: on a Garmin 5xx the
+  payload was resolved on 2026-10-11 by the owner's capture (spec section 11,
+  key names, types and counts only): a list with one entry per day (7 entries
+  for 7 days, 90 for 90), distinct ascending `calendarDate` strings, and
+  `time5K`, `time10K`, `timeHalfMarathon`, `timeMarathon` and `userId` as ints
+  (seconds); the entries also carry `fromCalendarDate` and `toCalendarDate`,
+  which the shaper ignores (both are None in the latest answer). The shaper
+  keys matched, so no addendum was needed; the fixtures now carry the two extra
+  fields. (b) Accepted D4: on a Garmin 5xx the
   `garminconnect` library writes an ERROR line that contains the account display
   name, as it does for the existing latest-value call (PR 01 N2); test T-P10 pins
   the line and turns red on purpose when the redacting log filter proposed under
