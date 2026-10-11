@@ -31,8 +31,10 @@ filterwarnings = ["ignore::DeprecationWarning"]
 output-format = "concise"
 
 [tool.ruff.lint]
-# Errors only, no formatting rules: pycodestyle E4/E7, Pyflakes, flake8-bugbear, unused `# noqa`.
-select = ["E4", "E7", "F", "B", "RUF100"]
+# Errors only, no formatting rules: pycodestyle E4/E7, E902 (a path that cannot be read: a missing or misspelled
+# path in the `ruff check` RUN line must fail the build, not pass with a warning), Pyflakes, flake8-bugbear,
+# unused `# noqa`.
+select = ["E4", "E7", "E902", "F", "B", "RUF100"]
 
 [tool.mypy]
 files = ["src"]

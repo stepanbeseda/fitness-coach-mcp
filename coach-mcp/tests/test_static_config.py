@@ -10,7 +10,8 @@ import pytest
 
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
-# One file per selected rule family: (file name, source, the code ruff must report for it).
+# One file per selected rule family: (file name, source, the code ruff must report for it). A source of None
+# is a file that is not written: a path ruff cannot read (E902), as a misspelled path in a Dockerfile would be.
 LINT_CASES = [
     ("unused_import.py", "import os\n", "F401"),
     ("undefined_name.py", "print(missing)\n", "F821"),
@@ -18,6 +19,7 @@ LINT_CASES = [
     ("none_comparison.py", "def f(x: object) -> bool:\n    return x == None\n", "E711"),
     ("mutable_default.py", "def f(x: list[int] = []) -> list[int]:\n    return x\n", "B006"),
     ("unused_noqa.py", "import os  # noqa: F401\n\nprint(os)\n", "RUF100"),
+    ("missing.py", None, "E902"),
 ]
 # (file name, source, the mypy error code; the second one needs strict mode).
 TYPE_CASES = [
@@ -27,9 +29,10 @@ TYPE_CASES = [
 CLEAN = ("clean.py", "def double(x: int) -> int:\n    return 2 * x\n")
 
 
-def _run(tool_args: list[str], files: list[tuple[str, str]], tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _run(tool_args: list[str], files: list[tuple[str, str | None]], tmp_path: Path) -> subprocess.CompletedProcess[str]:
     for name, source in files:
-        (tmp_path / name).write_text(source, encoding="utf-8")
+        if source is not None:
+            (tmp_path / name).write_text(source, encoding="utf-8")
     return subprocess.run(
         [sys.executable, "-m", *tool_args, *(str(tmp_path / name) for name, _ in files)],
         capture_output=True, text=True, timeout=120, check=False,
