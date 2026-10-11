@@ -221,6 +221,8 @@ PY
   rm -f "$body"
   if [[ -z "$ids" ]]; then
     warn "No private chat with the bot found (HTTP $code). Message the bot and run scripts/setup-secrets.sh telegram-chat-id."
+    info "With two-way Telegram on, coach-mcp reads your messages first: docker compose stop coach-mcp, then run this again."
+    info "Afterwards: docker compose start coach-mcp."
     return 0
   fi
   ok "Private chats with the bot (chat id and name):"

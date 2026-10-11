@@ -173,6 +173,8 @@ services:
       # Language of the morning briefing and the Monday report: en (default) or cs.
       COACH_LANGUAGE: ${COACH_LANGUAGE:-}
       COACH_TELEGRAM_CHAT_ID: ${COACH_TELEGRAM_CHAT_ID:-}
+      # Two-way Telegram (reads your messages to the bot); false turns it off, the briefing stays.
+      COACH_TELEGRAM_INBOUND: ${COACH_TELEGRAM_INBOUND:-}
       COACH_BRIEFING_TIME: ${COACH_BRIEFING_TIME:-}
       COACH_BRIEFING_CUTOFF: ${COACH_BRIEFING_CUTOFF:-}
       COACH_BRIEFING_RETRY_MINUTES: ${COACH_BRIEFING_RETRY_MINUTES:-}
