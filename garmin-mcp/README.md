@@ -103,11 +103,11 @@ untested on real data: each week passes Garmin's own field names through (snake_
 server error the library logs the API path, which contains the activity id (as for the other activity calls), and can
 include Garmin's error message; no health values are logged.
 
-Known uncertainty: the shape of Garmin's daily race-prediction answer (`get_race_predictions`) has not been
-captured on a real account. The tool expects a list of entries keyed `calendarDate`, `time5K`, `time10K`,
-`timeHalfMarathon` and `timeMarathon` like the latest answer and returns `available: false` or an `error` section
-for any other shape. On a Garmin server error the library logs the API path, which contains the Garmin display
-name, as for the other calls.
+Garmin's daily race-prediction answer (`get_race_predictions`) was captured on a real account on 2026-10-11 (types
+only): one entry per day, keyed `calendarDate`, `time5K`, `time10K`, `timeHalfMarathon` and `timeMarathon` in
+integer seconds, plus `fromCalendarDate`, `toCalendarDate` and `userId`, which are ignored. The tool returns
+`available: false` or an `error` section for any other shape. On a Garmin server error the library logs the
+API path, which contains the Garmin display name, as for the other calls.
 
 Known uncertainty: a custom cycling power range is sent as `power.zone` + `targetValueOne/Two`
 (the convention of python-garminconnect's typed models); after creating the first such workout, check in Garmin
