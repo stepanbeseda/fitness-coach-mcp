@@ -449,6 +449,28 @@ def test_suggestion_checks_in_schema(store, db_path):
     assert store.suggestions_for([session_id])[session_id]["result"] == "matched"
 
 
+def test_suggestion_times_are_the_utc_update_times(store):
+    first, second = _one_session(store), _one_session(store, date(2026, 10, 5))
+    assert store.suggestion_times([]) == {}
+    assert store.suggestion_times([first, second]) == {}  # no suggestion yet
+    store.upsert_suggestions([(first, "no_activity", False, None), (second, "no_activity", True, None)], D3)
+    got = store.suggestion_times([first, second, 999])
+    assert set(got) == {first, second}
+    stored = datetime.fromisoformat(got[first])
+    assert stored.tzinfo is not None and stored.utcoffset().total_seconds() == 0
+    assert abs((datetime.now(UTC) - stored).total_seconds()) < 60
+    store.upsert_suggestions([(first, "matched", False, '{"count":1,"sport":"running"}')], date(2026, 10, 8))
+    assert datetime.fromisoformat(store.suggestion_times([first])[first]) >= stored
+    conn = sqlite3.connect(store.path)
+    try:  # the value is the update time, not the evaluation day
+        conn.execute("UPDATE session_suggestions SET updated_at = ? WHERE session_id = ?",
+                     ("2026-10-07T01:30:00+00:00", first))
+        conn.commit()
+    finally:
+        conn.close()
+    assert store.suggestion_times([first]) == {first: "2026-10-07T01:30:00+00:00"}
+
+
 def test_upsert_suggestions_and_suggestions_for(store):
     first, second = _one_session(store), _one_session(store, date(2026, 10, 5))
     evidence = '{"count":1,"sport":"running"}'

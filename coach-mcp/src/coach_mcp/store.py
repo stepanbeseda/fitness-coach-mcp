@@ -461,6 +461,16 @@ class Store:
         )
         return {row["session_id"]: row for row in rows}
 
+    def suggestion_times(self, ids: Sequence[int]) -> dict[int, str]:
+        """session_id -> updated_at (UTC ISO) of its stored suggestion, for the ids that have one."""
+        if not ids:
+            return {}
+        marks = ", ".join("?" for _ in ids)
+        rows = self._all(
+            f"SELECT session_id, updated_at FROM session_suggestions WHERE session_id IN ({marks})", tuple(ids)
+        )
+        return {row["session_id"]: row["updated_at"] for row in rows}
+
     def update_session_status(
         self, session_id: int, status: str, new_date: date | None, note: tuple[date, str] | None
     ) -> tuple[int | None, int | None]:

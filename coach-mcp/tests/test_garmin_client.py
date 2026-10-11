@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
 
 import anyio
 import httpx2
@@ -11,8 +11,17 @@ from fakes import RawText, fake_garmin_app, fake_garmin_running
 
 from coach_mcp import garmin as garmin_module
 from coach_mcp.config import Settings
-from coach_mcp.garmin import ALLOWED_TOOLS, BRIEFING_TOOLS, HISTORY_TOOLS, GarminReader
+from coach_mcp.garmin import (
+    ALLOWED_TOOLS,
+    BRIEFING_TOOLS,
+    HISTORY_TOOLS,
+    SYNC_TOOL,
+    GarminReader,
+    LastSync,
+    parse_last_sync,
+)
 from garmin_payloads import (
+    DEVICE_STATUS,
     GREEN_SCHEDULED,
     GREEN_SNAPSHOT,
     GREEN_TREND,
@@ -22,6 +31,7 @@ from garmin_payloads import (
 )
 
 D = date(2026, 10, 7)
+SYNC_0507 = LastSync(datetime(2026, 10, 7, 3, 7, tzinfo=UTC), datetime(2026, 10, 7, 5, 7))
 TOKEN = "garmin-backend-token-0123456789abcdef"
 NOT_LOGGED_IN = "Garmin is not logged in. On the server run scripts/garmin-login.sh to sign in."
 
@@ -38,13 +48,14 @@ def reader_for(app, tmp_path, token: str | None = TOKEN) -> GarminReader:
 
 
 @pytest.mark.anyio
-async def test_fetch_calls_the_three_read_tools_with_dates_and_token(tmp_path):
+async def test_fetch_calls_the_four_read_tools_with_dates_and_token(tmp_path):
     app, calls = fake_garmin_app(TOKEN)
     async with fake_garmin_running(app):
         data = await reader_for(app, tmp_path).fetch(D)
     assert data.auth == "ok" and data.auth_problem is False and data.credentials_missing is False
     assert data.calls == {name: "ok" for name in BRIEFING_TOOLS}
     assert calls == [
+        ("get_device_status", {}),  # first: an upload during the read then shows up at the next check
         ("get_recovery_snapshot", {"date": "2026-10-07"}),
         ("get_hrv_trend", {"days": 7, "end_date": "2026-10-07"}),
         ("list_scheduled_workouts", {"start_date": "2026-10-06", "end_date": "2026-10-07"}),
@@ -52,6 +63,8 @@ async def test_fetch_calls_the_three_read_tools_with_dates_and_token(tmp_path):
     assert data.snapshot == GREEN_SNAPSHOT
     assert data.hrv_trend == GREEN_TREND
     assert data.scheduled == GREEN_SCHEDULED
+    assert data.device == DEVICE_STATUS
+    assert data.last_sync == SYNC_0507
 
 
 @pytest.mark.anyio
@@ -136,7 +149,12 @@ async def test_non_auth_tool_error_marks_only_that_call(tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     async with fake_garmin_running(app):
         data = await reader_for(app, tmp_path).fetch(D)
-    assert data.calls == {"get_recovery_snapshot": "ok", "get_hrv_trend": "error", "list_scheduled_workouts": "ok"}
+    assert data.calls == {
+        "get_device_status": "ok",
+        "get_recovery_snapshot": "ok",
+        "get_hrv_trend": "error",
+        "list_scheduled_workouts": "ok",
+    }
     assert data.hrv_trend is None and data.snapshot == GREEN_SNAPSHOT and data.scheduled == GREEN_SCHEDULED
     assert data.auth_problem is False
     assert "garmin status=partial" in caplog.text
@@ -150,7 +168,8 @@ async def test_only_allowlisted_tools_can_be_called():
 
     with pytest.raises(ValueError):
         await garmin_module._call(Boom(), "create_workout", {})  # type: ignore[arg-type]
-    assert BRIEFING_TOOLS == ("get_recovery_snapshot", "get_hrv_trend", "list_scheduled_workouts")
+    assert BRIEFING_TOOLS == ("get_device_status", "get_recovery_snapshot", "get_hrv_trend", "list_scheduled_workouts")
+    assert SYNC_TOOL == "get_device_status" and SYNC_TOOL in ALLOWED_TOOLS
     assert ALLOWED_TOOLS == (*BRIEFING_TOOLS, "list_activities", "get_race_predictions")
     assert set(HISTORY_TOOLS) <= set(ALLOWED_TOOLS)
     assert HISTORY_TOOLS == ("get_recovery_snapshot", "list_activities", "get_race_predictions")
@@ -217,7 +236,12 @@ async def test_a_hung_tool_is_bounded_by_the_overall_timeout(tmp_path, monkeypat
     async with fake_garmin_running(app):
         data = await reader_for(app, tmp_path).fetch(D)
     assert requested[0] == 180  # the reader's own overall deadline for the whole MCP session (the SDK adds more)
-    assert data.calls == {"get_recovery_snapshot": "ok", "get_hrv_trend": "error", "list_scheduled_workouts": "error"}
+    assert data.calls == {
+        "get_device_status": "ok",
+        "get_recovery_snapshot": "ok",
+        "get_hrv_trend": "error",
+        "list_scheduled_workouts": "error",
+    }
     assert data.snapshot == GREEN_SNAPSHOT
 
 
@@ -403,3 +427,128 @@ async def test_auth_state_is_none_when_unreachable(tmp_path):
 
     reader = GarminReader(reader_settings(tmp_path), transport=httpx2.MockTransport(handler))
     assert await reader.auth_state() is None
+
+
+# ---- the cheap retry check (PR 17)
+
+
+class RecordingTransport(httpx2.AsyncBaseTransport):
+    """Delegates to the inner transport and records the request paths."""
+
+    def __init__(self, inner: httpx2.AsyncBaseTransport) -> None:
+        self.inner = inner
+        self.paths: list[str] = []
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        self.paths.append(request.url.path)
+        return await self.inner.handle_async_request(request)
+
+
+@pytest.mark.anyio
+async def test_sync_check_calls_only_the_device_status_tool(tmp_path, caplog):
+    app, calls = fake_garmin_app(TOKEN)
+    transport = RecordingTransport(httpx2.ASGITransport(app=app))
+    reader = GarminReader(reader_settings(tmp_path), transport=transport)
+    caplog.set_level(logging.DEBUG)
+    async with fake_garmin_running(app):
+        last = await reader.sync_check()
+    assert last == SYNC_0507
+    assert calls == [("get_device_status", {})]
+    assert transport.paths and not any(path.endswith("/healthz") for path in transport.paths)
+    assert "garmin sync_check status=ok" in caplog.text
+    for private in ("05:07", "5:07", "03:07", "Example Watch"):  # R6: the log carries outcome words only
+        assert private not in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("kwargs", "status"),
+    [
+        ({"errors": {"get_device_status": "SECRET-ERROR-TEXT"}}, "error"),
+        ({"device": {"last_upload": {"available": False}}}, "unknown"),
+        ({"device": {"last_upload": {"time_utc": "9999-12-31T23:59:59Z", "time_local": "9999-12-31T23:59"}}}, "unknown"),
+        ({"errors": {"get_device_status": "Garmin is not logged in. Run scripts/garmin-login.sh"}}, "auth_error"),
+    ],
+    ids=["tool-error", "unavailable", "year-9999", "login-error"],
+)
+async def test_sync_check_is_none_when_the_tool_gives_no_time(tmp_path, caplog, kwargs, status):
+    app, calls = fake_garmin_app(TOKEN, **kwargs)
+    caplog.set_level(logging.DEBUG)
+    async with fake_garmin_running(app):
+        assert await reader_for(app, tmp_path).sync_check() is None
+    assert [name for name, _ in calls] == ["get_device_status"]
+    assert f"garmin sync_check status={status}" in caplog.text
+    ours = "\n".join(r.getMessage() for r in caplog.records if r.name == "coach_mcp.garmin")
+    assert "SECRET-ERROR-TEXT" not in ours
+
+
+@pytest.mark.anyio
+async def test_sync_check_unreachable_backend(tmp_path, caplog):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("down")
+
+    caplog.set_level(logging.DEBUG)
+    reader = GarminReader(reader_settings(tmp_path), transport=httpx2.MockTransport(handler))
+    assert await reader.sync_check() is None
+    assert "garmin sync_check status=unreachable" in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("token", [None, "short"])
+async def test_sync_check_without_a_token_makes_no_request(tmp_path, token, caplog):
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(200, json={})
+
+    caplog.set_level(logging.DEBUG)
+    reader = GarminReader(reader_settings(tmp_path, token), transport=httpx2.MockTransport(handler))
+    assert await reader.sync_check() is None
+    assert requests == []
+    assert "garmin sync_check status=no_credentials" in caplog.text
+
+
+def _status(utc: object = "2026-10-07T03:12:00Z", local: object = "2026-10-07T05:12") -> dict:
+    return {"last_upload": {"time_utc": utc, "time_local": local}}
+
+
+def _sync(utc: datetime, local: datetime) -> LastSync:
+    return LastSync(utc, local)
+
+
+PARSE_ROWS = {
+    "ok": (_status(), _sync(datetime(2026, 10, 7, 3, 12, tzinfo=UTC), datetime(2026, 10, 7, 5, 12))),
+    "none": (None, None),
+    "list": ([_status()], None),
+    "unavailable": ({"last_upload": {"available": False}}, None),
+    "error": ({"last_upload": {"error": "x"}}, None),
+    "section-not-a-dict": ({"last_upload": "2026-10-07T03:12:00Z"}, None),
+    "no-local": ({"last_upload": {"time_utc": "2026-10-07T03:12:00Z"}}, None),
+    "int": (_status(utc=1790744292000), None),
+    "bad-format": (_status(utc="2026-10-07 03:12:00"), None),
+    "bad-local-format": (_status(local="2026-10-07 05:12"), None),
+    "9999": (_status(utc="9999-12-31T23:59:59Z", local="9999-12-31T23:59"), None),
+    "0001": (_status(utc="0001-01-01T00:00:00Z", local="0001-01-01T00:00"), None),
+    "1999": (_status(utc="1999-12-31T23:59:59Z", local="2000-01-01T00:59"), None),
+    "1999-local": (_status(utc="2000-01-01T00:00:00Z", local="1999-12-31T23:59"), None),
+    "2100-local": (
+        _status(utc="2099-12-31T23:59:59Z", local="2100-01-01T00:59"),
+        _sync(datetime(2099, 12, 31, 23, 59, 59, tzinfo=UTC), datetime(2100, 1, 1, 0, 59)),
+    ),
+    "2101": (_status(utc="2101-01-01T00:00:00Z", local="2101-01-01T01:00"), None),
+    "2101-local": (_status(utc="2100-12-31T23:59:59Z", local="2101-01-01T00:59"), None),
+    "2000-low": (
+        _status(utc="2000-01-01T00:00:00Z", local="2000-01-01T01:00"),
+        _sync(datetime(2000, 1, 1, tzinfo=UTC), datetime(2000, 1, 1, 1, 0)),
+    ),
+    "2100-utc": (
+        _status(utc="2100-01-01T00:00:00Z", local="2100-01-01T01:00"),
+        _sync(datetime(2100, 1, 1, tzinfo=UTC), datetime(2100, 1, 1, 1, 0)),
+    ),
+}
+
+
+@pytest.mark.parametrize(("device", "expected"), list(PARSE_ROWS.values()), ids=list(PARSE_ROWS))
+def test_parse_last_sync_table(device, expected):
+    assert parse_last_sync(device) == expected

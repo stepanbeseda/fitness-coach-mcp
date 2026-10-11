@@ -33,6 +33,10 @@ class Texts:
     reason_no_data: str
     reason_baseline_pending: str
     reason_not_synced: str
+    reason_last_sync: str  # {when}
+    sync_today: str  # {time}
+    sync_yesterday: str  # {time}
+    sync_on: str  # {day} {time}
     # HRV line.
     baseline_from: str  # {low}
     baseline_range: str  # {low} {high}
@@ -45,6 +49,7 @@ class Texts:
     alert_acwr_ratio: str  # {ratio} {word}
     alert_missed_workout: str  # {names}
     alert_missed_session: str  # {sessions}
+    alert_missed_session_stale: str  # {sessions}
     alert_garmin_auth: str
     # Message lines.
     verdict: str  # {level} {advice}
@@ -111,6 +116,10 @@ EN = Texts(
     reason_no_data="the Garmin data could not be loaded",
     reason_baseline_pending="Garmin computes it only after about 3 weeks of wearing the watch",
     reason_not_synced="the watch may not have synced yet",
+    reason_last_sync="last sync with Garmin: {when}",
+    sync_today="today {time}",
+    sync_yesterday="yesterday {time}",
+    sync_on="{day} {time}",
     baseline_from="baseline from {low} ms",
     baseline_range="baseline {low}–{high} ms",
     below_baseline=", below baseline",
@@ -121,6 +130,10 @@ EN = Texts(
     alert_acwr_ratio="The acute to chronic load ratio {ratio} is outside Garmin's optimal range ({word}).",
     alert_missed_workout="Yesterday's scheduled workout was not completed: {names}.",
     alert_missed_session="Planned yesterday with no activity in Garmin: {sessions}.",
+    alert_missed_session_stale=(
+        "Planned yesterday with no activity in Garmin at the nightly check, before the watch's last sync "
+        "(may be out of date): {sessions}."
+    ),
     alert_garmin_auth="Garmin is not logged in: run scripts/garmin-login.sh on the server.",
     verdict="Verdict: {level} – {advice}",
     missing_value="missing",
@@ -172,6 +185,10 @@ CS = Texts(
     reason_no_data="data z Garminu se nepodařilo načíst",
     reason_baseline_pending="Garmin ji počítá až po zhruba 3 týdnech nošení hodinek",
     reason_not_synced="hodinky možná ještě nesynchronizovaly",
+    reason_last_sync="poslední synchronizace s Garminem: {when}",
+    sync_today="dnes {time}",
+    sync_yesterday="včera {time}",
+    sync_on="{day} {time}",
     baseline_from="baseline od {low} ms",
     baseline_range="baseline {low}–{high} ms",
     below_baseline=", pod baseline",
@@ -182,6 +199,10 @@ CS = Texts(
     alert_acwr_ratio="Poměr akutní a chronické zátěže {ratio} je mimo optimální rozsah Garminu ({word}).",
     alert_missed_workout="Včera naplánovaný trénink nebyl splněn: {names}.",
     alert_missed_session="Včera v plánu bez aktivity v Garminu: {sessions}.",
+    alert_missed_session_stale=(
+        "Včera v plánu bez aktivity v Garminu při noční kontrole, před poslední synchronizací hodinek "
+        "(nemusí platit): {sessions}."
+    ),
     alert_garmin_auth="Garmin není přihlášený: na serveru spusť scripts/garmin-login.sh.",
     verdict="Verdikt: {level} – {advice}",
     missing_value="chybí",
