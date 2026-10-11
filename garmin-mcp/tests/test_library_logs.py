@@ -1,11 +1,14 @@
 """What garminconnect itself logs for the calls PR 19 and PR 17 added (plan section 1: logs carry no arguments or
-health values). Real library, stub inner client, no network."""
+health values). Real library, stub inner client, no network. The upload of a workout (PR 07) goes through the
+library's real inner client with a fake HTTP session, because the stub would hide what it logs and re-sends."""
 
+import json
 import logging
 
 import pytest
 from garminconnect import Garmin, GarminConnectConnectionError, GarminConnectNotFoundError
 
+import fixtures as fx
 from garmin_coach_mcp.__main__ import configure_logging
 
 ACTIVITY_ID = 20003
@@ -92,3 +95,94 @@ def test_configure_logging_keeps_garminconnect_above_debug():
     finally:
         for n, level in before.items():
             logging.getLogger(n).setLevel(level)
+
+
+# ----------------------------------------------------- upload_workout through the real inner client (PR 07)
+
+UPLOAD_URL = "https://connectapi.garmin.com/workout-service/workout"
+ERROR_BODY = '{"message": "Invalid step", "echo": "BENCH_PRESS body-marker"}'
+
+
+class FakeResponse:
+    def __init__(self, status: int) -> None:
+        self.status_code = status
+        self.text = '{"workoutId": 424242}' if status == 200 else ERROR_BODY
+        self.content = self.text.encode()
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class FakeSession:
+    """Stands in for the library's HTTP session: records every request, answers the given statuses in turn."""
+
+    def __init__(self, statuses: list[int]) -> None:
+        self.statuses = list(statuses)
+        self.requests: list[tuple[str, str, object]] = []
+
+    def request(self, method, url, headers=None, **kwargs):
+        self.requests.append((method, url, kwargs.get("json")))
+        return FakeResponse(self.statuses.pop(0))
+
+
+def _real_garmin(statuses: list[int]) -> tuple[Garmin, FakeSession, list[int]]:
+    garmin = Garmin(retry_attempts=2)
+    garmin.client.di_token = "fake-token"  # not a JWT, so the library does not think it has expired
+    session = FakeSession(statuses)
+    garmin.client._api_session = session
+    refreshed: list[int] = []
+    garmin.client._refresh_di_token = lambda: refreshed.append(1)  # the real one calls Garmin's token endpoint
+    return garmin, session, refreshed
+
+
+def _library_records(caplog):
+    return [r for r in caplog.records if r.name.startswith("garminconnect")]
+
+
+@pytest.mark.parametrize("statuses", [[200], [400], [500], [401, 200]], ids=["200", "400", "500", "401-then-200"])
+def test_upload_workout_requests_and_library_records(caplog, statuses):
+    garmin, session, refreshed = _real_garmin(statuses)
+    caplog.set_level(logging.DEBUG, logger="garminconnect")
+    if statuses[-1] == 200:
+        assert garmin.upload_workout(fx.STRENGTH_UPLOAD) == {"workoutId": 424242}
+    else:
+        with pytest.raises(GarminConnectConnectionError, match=f"API Error {statuses[-1]} - Invalid step"):
+            garmin.upload_workout(fx.STRENGTH_UPLOAD)
+    # one POST, also after a 500 with retry_attempts=2; only a 401 makes the library refresh the token and send the
+    # same body once more
+    assert session.requests == [("POST", UPLOAD_URL, fx.STRENGTH_UPLOAD)] * len(statuses)
+    assert len(refreshed) == statuses.count(401)
+    records = _library_records(caplog)
+    assert [r for r in records if r.levelno >= logging.WARNING] == []
+    assert (records[0].name, records[0].levelno, records[0].getMessage()) == (
+        "garminconnect", logging.DEBUG, "Uploading workout using /workout-service/workout")
+    bodies = [r for r in records[1:] if r.name == "garminconnect.client"]
+    if statuses[-1] == 200:
+        assert bodies == []
+    else:  # the positive control of the next test: at DEBUG the library does write Garmin's answer
+        assert len(bodies) == 1 and bodies[0].levelno == logging.DEBUG
+        assert bodies[0].getMessage() == f"API error response: status={statuses[-1]} body={ERROR_BODY!r}"
+
+
+def test_upload_error_body_never_reaches_the_server_log(caplog):
+    names = ("", "garminconnect", "garminconnect.client", "mcp")
+    before = {name: logging.getLogger(name).level for name in names}
+    try:
+        for name in names[1:]:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+        configure_logging("DEBUG")
+        # basicConfig is a no-op under pytest; without this line the test passes whatever the configuration does
+        logging.getLogger().setLevel(logging.DEBUG)
+        for status in (400, 500):
+            garmin, _, _ = _real_garmin([status])
+            with pytest.raises(GarminConnectConnectionError):
+                garmin.upload_workout(fx.STRENGTH_UPLOAD)
+        assert _library_records(caplog) == []
+        assert [r for r in caplog.records if "body-marker" in r.getMessage() or "BENCH_PRESS" in r.getMessage()] == []
+        assert logging.getLogger("garminconnect").level == logging.WARNING
+        # garminconnect.client inherits; a level of its own would bypass the parent
+        assert logging.getLogger("garminconnect.client").level == logging.NOTSET
+        assert logging.getLogger("mcp").level == logging.WARNING
+    finally:
+        for name, level in before.items():
+            logging.getLogger(name).setLevel(level)

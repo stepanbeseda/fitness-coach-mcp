@@ -1,9 +1,13 @@
+import copy
 import json
+from datetime import timedelta
 
 import pytest
 
 import fixtures as fx
 from conftest import BACKEND_TOKEN, MCP_HEADERS, auth_headers, running_client
+from garmin_coach_mcp.formatting import today
+from test_workouts import STRENGTH_SPEC
 
 EXPECTED_TOOLS = {
     "get_recovery_snapshot",
@@ -18,6 +22,7 @@ EXPECTED_TOOLS = {
     "get_activity",
     "list_workouts",
     "get_workout",
+    "find_strength_exercise",
     "create_workout",
     "schedule_workout",
     "list_scheduled_workouts",
@@ -32,6 +37,7 @@ EXPECTED_TOOLS = {
     "log_weight",
 }
 WRITE_TOOLS = {"create_workout", "schedule_workout", "unschedule_workout", "log_weight"}
+LOCAL_TOOLS = {"find_strength_exercise"}  # answer from the bundled catalogue: no Garmin call, not open world
 
 INIT = {
     "jsonrpc": "2.0",
@@ -88,6 +94,7 @@ async def test_initialize_list_and_call(app, fake):
         init = r.json()["result"]
         assert init["serverInfo"]["name"] == "garmin-coach"
         assert "get_recovery_snapshot" in init["instructions"]
+        assert "find_strength_exercise" in init["instructions"]
 
         r = await client.post("/mcp", headers=auth_headers(), json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert r.status_code == 202
@@ -98,7 +105,7 @@ async def test_initialize_list_and_call(app, fake):
         for name, tool in by_name.items():
             assert tool["title"] and tool["description"]
             ann = tool["annotations"]
-            assert ann["openWorldHint"] is True
+            assert ann["openWorldHint"] is (name not in LOCAL_TOOLS)
             assert ann["readOnlyHint"] is (name not in WRITE_TOOLS)
         assert by_name["unschedule_workout"]["annotations"]["destructiveHint"] is True
         assert by_name["create_workout"]["annotations"]["destructiveHint"] is False
@@ -106,6 +113,7 @@ async def test_initialize_list_and_call(app, fake):
         assert "only after the athlete confirmed" in by_name["log_weight"]["description"]
         schema = json.dumps(by_name["create_workout"]["inputSchema"])
         assert "heart_rate_zone" in schema and "lap_button" in schema and "repeat" in schema
+        assert "exercise" in schema and "weight_kg" in schema
         assert len(json.dumps(tools)) < 40_000
 
         r = await rpc(client, "tools/call", {"name": "get_recovery_snapshot", "arguments": {"date": "2026-09-30"}}, id_=3)
@@ -246,6 +254,62 @@ async def test_create_workout_via_mcp_validates_schema(app, fake):
         assert result["isError"] is False, result
         assert json.loads(result["content"][0]["text"])["workout_id"] == 424242
         assert fake.uploaded[0]["workoutSegments"][0]["workoutSteps"][0]["zoneNumber"] == 2
+
+
+async def _call(client, name, arguments, id_=50):
+    r = await rpc(client, "tools/call", {"name": name, "arguments": arguments}, id_=id_)
+    return r.json()["result"]
+
+
+@pytest.mark.anyio
+async def test_find_strength_exercise_over_http(app, fake):
+    async with running_client(app) as client:
+        result = await _call(client, "find_strength_exercise", {"query": "Bench Press (Barbell)", "limit": 2})
+        assert result["isError"] is False, result
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["count"] == 2 and payload["matches"][0]["name"] == "BARBELL_BENCH_PRESS"
+
+        default = await _call(client, "find_strength_exercise", {"query": "bench press"})
+        assert json.loads(default["content"][0]["text"])["count"] == 5  # the default limit
+        many = await _call(client, "find_strength_exercise", {"query": "plank", "limit": 20})
+        assert json.loads(many["content"][0]["text"])["count"] == 20
+
+        for arguments in ({"query": "plank", "limit": 21}, {"query": "plank", "limit": 0},
+                          {"query": "p"}, {"query": "p" * 81}):
+            assert (await _call(client, "find_strength_exercise", arguments))["isError"] is True, arguments
+        assert (await _call(client, "find_strength_exercise", {"query": "p" * 80}))["isError"] is False
+    assert fake.calls == []  # a catalogue lookup makes no Garmin call
+
+
+@pytest.mark.anyio
+async def test_create_strength_workout_via_mcp(app, fake):
+    day = (today("Europe/Prague") + timedelta(days=2)).isoformat()
+    async with running_client(app) as client:
+        result = await _call(client, "create_workout", {**STRENGTH_SPEC, "schedule_date": day})
+        assert result["isError"] is False, result
+        assert fake.uploaded[0] == fx.STRENGTH_UPLOAD
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["unmapped"] == ["Hevy: Zercher Carry"] and payload["scheduled"]["date"] == day
+
+        fake.responses["get_workout_by_id"] = fx.STRENGTH_WORKOUT_DETAIL
+        detail = json.loads((await _call(client, "get_workout", {"workout_id": 9002}))["content"][0]["text"])
+        assert detail["steps"][0]["sets"] == 3 and detail["steps"][3]["seconds"] == 45
+
+        fake.responses["get_workouts"] = [fx.STRENGTH_WORKOUT_ROW]
+        listed = json.loads((await _call(client, "list_workouts", {}))["content"][0]["text"])
+        assert listed["workouts"][0]["sport"] == "strength_training"
+
+        with_target = copy.deepcopy(STRENGTH_SPEC)
+        with_target["steps"][0]["target"] = {"type": "heart_rate_zone", "zone": 2}
+        unknown = copy.deepcopy(STRENGTH_SPEC)
+        unknown["steps"][0]["name"] = "BARBELL_BENCH_PRES"
+        interval = copy.deepcopy(STRENGTH_SPEC)
+        interval["steps"].append({"type": "interval", "end": {"type": "time", "seconds": 60}})
+        for bad, message in ((with_target, "takes no pace, power"), (unknown, "unknown Garmin exercise"),
+                             (interval, "only exercise items")):
+            result = await _call(client, "create_workout", bad)
+            assert result["isError"] is True and message in result["content"][0]["text"], result
+    assert len(fake.uploaded) == 1
 
 
 @pytest.mark.anyio

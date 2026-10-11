@@ -16,10 +16,14 @@ from conftest import BACKEND_TOKEN, READONLY_TOKEN, auth_headers, running_client
 from garmin_coach_mcp.access import READ_ONLY_REFUSAL, ReadOnlyGuard, request_role
 from garmin_coach_mcp.auth import ROLE_FULL, ROLE_KEY, ROLE_READ_ONLY
 from garmin_coach_mcp.server import asgi_app, build_server, create_app
-from test_http import EXPECTED_TOOLS, INIT, WRITE_TOOLS, rpc
+from test_http import EXPECTED_TOOLS, INIT, LOCAL_TOOLS, WRITE_TOOLS, rpc
 
 READ_TOOLS = EXPECTED_TOOLS - WRITE_TOOLS
-READ_ARGS = {"get_activity": {"activity_id": 20001}, "get_workout": {"workout_id": 9001}}
+READ_ARGS = {
+    "get_activity": {"activity_id": 20001},
+    "get_workout": {"workout_id": 9001},
+    "find_strength_exercise": {"query": "bench press"},
+}
 NEXT_WEEK = (dt.datetime.now(ZoneInfo("Europe/Prague")).date() + dt.timedelta(days=7)).isoformat()
 WRITE_ARGS = {
     "create_workout": {
@@ -62,7 +66,7 @@ async def test_read_only_token_calls_every_read_tool(app, fake, name):
         r = await rpc(client, "tools/call", {"name": name, "arguments": READ_ARGS.get(name, {})}, headers=ro_headers())
         result = result_of(r)
         assert result["isError"] is False, result
-        assert fake.calls, "the tool body did not reach the Garmin client"
+        assert bool(fake.calls) is (name not in LOCAL_TOOLS), "the tool body did not reach the Garmin client"
 
 
 @pytest.mark.anyio
