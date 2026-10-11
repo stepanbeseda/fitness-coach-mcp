@@ -40,7 +40,9 @@ about what is not in the memory.
 
 When I refer to the morning notification or ask "how am I doing today", start with `get_daily_briefing`: it
 computes the verdict with the same rules as section 2 and says which data was missing. Still load fresh Garmin
-data before proposing a specific session.
+data before proposing a specific session. When sleep or HRV is missing, `get_device_status` (Garmin) says when the
+watch last synced: before this morning means the data has not arrived yet, so ask me to sync instead of judging
+the night.
 
 1. `get_recovery_snapshot` (today): training readiness, HRV, sleep, Body Battery, resting HR, stress.
 2. `get_hrv_trend` for the last 14 days: last night vs. the weekly average and baseline.

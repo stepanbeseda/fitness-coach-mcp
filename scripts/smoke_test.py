@@ -153,6 +153,8 @@ def main() -> int:
         print(f"server: {info.get('serverInfo')} | {len(tools)} tools: {', '.join(tools)}")
         section(f"Garmin: recovery snapshot {date.today().isoformat()} (HRV, sleep, readiness, Body Battery)")
         print(garmin.call("get_recovery_snapshot", {})[:3000])
+        section("Garmin: device status (last upload)")
+        print(garmin.call("get_device_status", {})[:1000])
         section("Garmin: performance metrics (race predictions, heart-rate zones)")
         text = garmin.call("get_performance_metrics", {})
         try:

@@ -463,8 +463,8 @@ Once a day, `coach-mcp` can send a short briefing to your chat with your own Tel
 - the numbers behind it (readiness, HRV vs. baseline, sleep, Body Battery);
 - today's plan from the coach memory;
 - new alerts: HRV below baseline 3+ nights, resting HR 5+ bpm above its 7-day average, load outside Garmin's
-  optimal range, yesterday's missed workout in Garmin's calendar and in the coach plan, an invalid Garmin
-  login.
+  optimal range, yesterday's missed workout in Garmin's calendar and in the coach plan (held back until the
+  watch has synced after midnight), an invalid Garmin login.
 
 It is computed without an LLM, and the `get_daily_briefing` tool computes it the same way from current Garmin
 data. The text is in English by default; `COACH_LANGUAGE=cs` switches it to Czech (catalogue in
@@ -492,9 +492,11 @@ morning briefing 7 Oct`, with `⚠️` when there are new alerts). To turn the b
 `COACH_TELEGRAM_CHAT_ID` from `.env` and run `docker compose up -d coach-mcp`.
 
 The briefing goes out at `COACH_BRIEFING_TIME` (default 06:30, time zone `TZ`). When the watch does not have
-sleep or HRV yet, it retries every `COACH_BRIEFING_RETRY_MINUTES` minutes (15). At `COACH_BRIEFING_CUTOFF`
-(09:30) at the latest, it sends what it has and says what is missing. When Garmin is not logged in, it sends
-the briefing right away. If the service starts after the cutoff, nothing is sent that day. By hand (e.g. for
+sleep or HRV yet, it retries every `COACH_BRIEFING_RETRY_MINUTES` minutes (15). A retry first asks only when the
+watch last uploaded and reads the full data again only after a new upload; when data is missing, the message names
+that time (for example `last sync with Garmin: yesterday 22:14`). At `COACH_BRIEFING_CUTOFF` (09:30) at the
+latest, it sends what it has and says what is missing. When Garmin is not logged in, it sends the briefing right
+away. If the service starts after the cutoff, nothing is sent that day. By hand (e.g. for
 a test; the alert state does not change):
 
 ```bash
@@ -502,7 +504,7 @@ docker compose exec coach-mcp python -m coach_mcp send-briefing
 ```
 
 The scheduler log (`docker compose logs coach-mcp`) contains only outcomes (`briefing status=sent|waiting|skipped|
-gave_up`, `push status=…`, `garmin status=…`), never the message content, numbers, chat id or token. A manual
+gave_up`, `push status=…`, `garmin status=…`, `garmin sync_check status=…`), never the message content, numbers, chat id or token. A manual
 `send-briefing` runs as a separate process: it prints the same lines to the terminal only, not to the
 container log.
 

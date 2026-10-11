@@ -5,7 +5,7 @@ days, equipment), a day-by-day training plan with status, and a notes log. The d
 `coach-data` volume. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp` in a private Docker network; MCP
 clients reach it only through the gateway (`/coach/mcp`), which sends an internal bearer token
 (`/run/secrets/coach_backend_token`). Without the token the server rejects every MCP request (fail closed). The
-only services it calls itself are `garmin-mcp` (five read tools, read-only token `garmin_readonly_token`),
+only services it calls itself are `garmin-mcp` (six read tools, read-only token `garmin_readonly_token`),
 `hevy-mcp` (two read tools, internal token `hevy_backend_token`), optionally the Telegram Bot API (morning
 briefing) and, on request, Open-Meteo (weather forecast, rounded coordinates only). Every night it stores the
 daily history from Garmin and strength workouts from Hevy for trends, the weekly report, correlations and strength
@@ -53,9 +53,9 @@ error with this advice (without any text from SQLite). Results are newest first:
 ## Morning briefing
 
 Once a day (and on request through the `get_daily_briefing` tool) the server reads the morning data from
-`garmin-mcp` (`get_recovery_snapshot`, `get_hrv_trend`, `list_scheduled_workouts`), adds today's plan from its own
-memory and computes a verdict without an LLM. The **worst indicator** decides; a missing value rules out green (at
-most yellow) and is named in the message.
+`garmin-mcp` (`get_device_status`, `get_recovery_snapshot`, `get_hrv_trend`, `list_scheduled_workouts`), adds today's
+plan from its own memory and computes a verdict without an LLM. The **worst indicator** decides; a missing value
+rules out green (at most yellow) and is named in the message.
 
 | Indicator | Green | Yellow | Red |
 |---|---|---|---|
@@ -79,13 +79,20 @@ exception is both missed-session alerts (Garmin calendar and the coach's plan): 
 which some session planned for yesterday was left undone (it is a different session each day). An unknown
 condition (missing data) does not change the state.
 
+Both missed-session alerts are held back (unknown) while the watch has not synced since yesterday ended, because
+yesterday's activity may not have reached Garmin yet; a held-back alert is not repeated the next day. When the
+coach's nightly check ran before the watch's last sync, the missed-session line says so. With the sync time
+unknown, both behave as before.
+
 The scheduler runs at `COACH_BRIEFING_TIME` (default 06:30, time zone `TZ`). When sleep or last night's HRV is
 missing, it retries every `COACH_BRIEFING_RETRY_MINUTES` minutes and at `COACH_BRIEFING_CUTOFF` at the latest it
 sends what it has. A Garmin login problem means the push goes out immediately. When the service starts after the
 cutoff, nothing is sent that day. A missing HRV baseline (Garmin computes it only after about 3 weeks of wearing
 the watch) is not waited for, only named. On a temporary Telegram error (5xx, 429, network) sending is retried
 until the cutoff; on a permanent error (another 4xx, e.g. a wrong token or chat id, bot blocked) it gives up for
-that day.
+that day. From the second attempt on, the scheduler first asks `garmin-mcp` only for the last upload time
+(`get_device_status`) and reads the full data again only after a new upload (or when the previous read was within
+30 minutes of the upload, had an error section, or the time is unknown).
 
 The message is plain text: the first line is the verdict with a coloured circle and the date
 (`🟡 YELLOW · morning briefing 7 Oct`, with `⚠️` after the circle when there are new alerts), then an empty line and
@@ -108,7 +115,7 @@ Readiness: 61 (yellow)
 HRV: missing
 Sleep: 6 h 15 min, score 70 (yellow)
 Body Battery at wake: missing
-Missing: HRV, Body Battery (the watch may not have synced yet). Without these data the verdict cannot be green.
+Missing: HRV, Body Battery (last sync with Garmin: today 5:12). Without these data the verdict cannot be green.
 For full load: readiness at least 70; sleep at least 7 h.
 Today in Garmin: Easy run 40 min
 Alerts:
@@ -244,10 +251,10 @@ data stays uncovered (`available: false`) and the next attempt is in an hour, un
 hours; nothing is given up, a failed listing is repeated in full next time and a failed template is retried at
 most once a day.
 
-From `garmin-mcp` the server may call only five read tools (`get_recovery_snapshot`, `get_hrv_trend`,
-`list_scheduled_workouts`, `list_activities`, `get_race_predictions`). The coach code does not call its write
-tools, and `garmin-mcp` rejects them with the coach's read-only token before they run. From `hevy-mcp` it may
-call only `get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
+From `garmin-mcp` the server may call only six read tools (`get_device_status`, `get_recovery_snapshot`,
+`get_hrv_trend`, `list_scheduled_workouts`, `list_activities`, `get_race_predictions`). The coach code does not call
+its write tools, and `garmin-mcp` rejects them with the coach's read-only token before they run. From `hevy-mcp` it
+may call only `get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
 `history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=…`
 (`repaired` = days whose missing sections loaded in a repair call of this run; `reconcile=error kind=…` when plan
 reconciliation fails; the history run does not fail because of it), one for the race predictions
