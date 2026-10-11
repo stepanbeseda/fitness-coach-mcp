@@ -96,7 +96,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 18 | History repair | 05 | done |
 | 19 | More Garmin signals | — | done |
 | 20 | Operations alerts via Telegram | 08 | done |
-| 21 | Static checks in the test stage | — | planned |
+| 21 | Static checks in the test stage | — | done |
 | 22 | Two-way Telegram | 08 | planned |
 
 Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
@@ -1547,6 +1547,50 @@ Out of scope: formatting the whole tree, CI.
 4. The four-command check is green.
 
 **Requested:** 2026-10-09, by the owner, from the project review (item U6).
+
+**Delivered:** 2026-10-11, PR #35 (`mao/pr21-static-checks`), squash-merged
+into `main` as `81d6310`, no rebase. `ruff` 0.17.0 (lint of `src` and `tests`)
+and `mypy` 2.4.0 (`strict = true`, `src`) run as two separate `RUN` steps in
+the `test` stage of `garmin-mcp`, `gateway` and `coach-mcp`, configured in each
+`pyproject.toml` (`select = ["E4", "E7", "E902", "F", "B", "RUF100"]`; no
+formatter, no import sorting, no line-length rule). The six dev locks gain
+exactly ruff, mypy and mypy's four own requirements (`mypy-extensions`,
+`pathspec`, `librt`, `ast-serialize`) through `scripts/lock-deps.sh`; the
+runtime locks and images are unchanged. The fixes in `src` (20 files) are type
+annotations, typing-only imports and 21 `# type: ignore[code]` comments with a
+reason each; no behaviour changes (AST equivalence of base and head, identical
+`tools/list`, the base `tests/` pass on the new `src`). Five one-line lint
+edits in four existing `coach-mcp` tests. New `tests/test_static_config.py`
+(identical in the three services, 11 tests each) runs the installed ruff and
+mypy with the service's own `pyproject.toml` on canned snippets, one row per
+`select` entry and one for `strict`. `scripts/check.sh` requires the ruff
+summary (`All checks passed!`) and the mypy summary (`Success: no issues
+found`) in each build log, so a stage that stops running them fails with
+`CHECK FAILED step=<svc>`. `README.md`, both service READMEs and
+`.claude/mao/project.md` updated. No compose, secret, schema or runtime
+dependency change; no deploy needed. All four criteria met offline (`CHECK OK
+tree=ec3de085d85d garmin=305 gateway=91 coach=1281 e2e=OK`; 12 build-level
+mutants and 21 config mutants caught, the `check.sh` guard proven). Owner
+decisions (2026-10-11, both "recommended"): the new dev dependencies (ruff,
+mypy and mypy's four requirements, dev locks only) approved; ruff lints `src`
+and `tests`, which reads Done-when 3 ("the existing tests pass unchanged") as
+"no test is adapted to the fixes" (the base tests also pass unchanged on the
+new `src`: 294 / 80 / 1270). Deviation: `E902` is in `select` and each config
+test has a `missing.py-E902` row, beyond the spec, because the spec's claim
+that a missing path is `E902` "whether selected or not" was false (spec check
+N1, review O1); fixed in a second commit and delta-reviewed. Review took two
+rounds: round 1 APPROVED (0 blocking, 6 non-blocking), round 2 a delta review
+of the `E902` fix APPROVED. Spec check: 0 blocking, 5 non-blocking. Accepted
+and left open: (O2) a bare `# type: ignore` without a code is still accepted
+(`enable_error_code = ["ignore-without-code"]` would close it, no occurrence
+in the tree); (O3) the config tests guard `select` and `strict` only, so a
+path-scoped weakening (`per-file-ignores`, `exclude`, a mypy per-module
+override) shows only in a diff of `pyproject.toml`; a path removed from the
+`ruff check` line (`ruff check src`) is accepted in writing in spec 6.3 and
+not caught by `E902`. Note for later PRs (for example PR 22): every branch must
+now pass ruff and strict mypy in the test stage, so new code is annotated and
+lint-clean before the check; the expected test counts are now 305 / 91 / 1281
+(garmin / gateway / coach). Nothing needs the test host.
 
 ### PR 22 — Two-way Telegram
 
