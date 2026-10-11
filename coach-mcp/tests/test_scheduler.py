@@ -1226,7 +1226,8 @@ def test_reusable_table():
     erred["list_scheduled_workouts"] = "error"
     assert reusable(garmin_data(device=DEVICE_0500, calls=erred)) is False
     assert reusable(garmin_data(device=DEVICE_0500, snapshot={**GREEN_SNAPSHOT, "stress": {"error": "x"}})) is False
-    assert reusable(garmin_data(device=DEVICE_0500, snapshot={**GREEN_SNAPSHOT, "stress": {"available": False}})) is True
+    unavailable = {**GREEN_SNAPSHOT, "stress": {"available": False}}
+    assert reusable(garmin_data(device=DEVICE_0500, snapshot=unavailable)) is True
     assert reusable(garmin_data(device=DEVICE_0500, snapshot=None)) is True  # no sections to inspect
 
 

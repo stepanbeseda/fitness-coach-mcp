@@ -530,7 +530,9 @@ def render(
 
     if new_alerts:
         lines.append(t.alerts)
-        lines.extend(f"- {_alert_text(t, key, data, day, nights_below, missed_sessions, missed_stale)}" for key in new_alerts)
+        lines.extend(
+            f"- {_alert_text(t, key, data, day, nights_below, missed_sessions, missed_stale)}" for key in new_alerts
+        )
 
     alerting = bool(new_alerts)
     title = t.title.format(

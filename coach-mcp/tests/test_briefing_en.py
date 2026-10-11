@@ -75,7 +75,8 @@ def test_every_catalogue_names_every_key(texts):
 
 
 def _missing(local: str, utc: str) -> str:
-    data = garmin_data(snapshot={k: v for k, v in GREEN_SNAPSHOT.items() if k != "sleep"}, device=device_status(utc, local))
+    snapshot = {k: v for k, v in GREEN_SNAPSHOT.items() if k != "sleep"}
+    data = garmin_data(snapshot=snapshot, device=device_status(utc, local))
     body = build_briefing(DAY, data, [], {}, language="en").message.body
     return next(ln for ln in body.splitlines() if ln.startswith("Missing:"))
 

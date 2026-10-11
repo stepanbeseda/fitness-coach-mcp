@@ -466,7 +466,10 @@ async def test_sync_check_calls_only_the_device_status_tool(tmp_path, caplog):
     [
         ({"errors": {"get_device_status": "SECRET-ERROR-TEXT"}}, "error"),
         ({"device": {"last_upload": {"available": False}}}, "unknown"),
-        ({"device": {"last_upload": {"time_utc": "9999-12-31T23:59:59Z", "time_local": "9999-12-31T23:59"}}}, "unknown"),
+        (
+            {"device": {"last_upload": {"time_utc": "9999-12-31T23:59:59Z", "time_local": "9999-12-31T23:59"}}},
+            "unknown",
+        ),
         ({"errors": {"get_device_status": "Garmin is not logged in. Run scripts/garmin-login.sh"}}, "auth_error"),
     ],
     ids=["tool-error", "unavailable", "year-9999", "login-error"],

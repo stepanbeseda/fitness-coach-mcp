@@ -796,7 +796,9 @@ NO_SLEEP = snapshot(sleep=None)
 
 def test_missing_line_names_the_last_sync():
     line = missing_line(garmin_data(snapshot=NO_SLEEP, device=ds("2026-10-07T05:12")))
-    assert line == "Chybí: spánek (poslední synchronizace s Garminem: dnes 5:12). Bez těchto dat nemůže být verdikt zelený."
+    assert line == (
+        "Chybí: spánek (poslední synchronizace s Garminem: dnes 5:12). Bez těchto dat nemůže být verdikt zelený."
+    )
 
 
 @pytest.mark.parametrize(
@@ -877,9 +879,11 @@ def test_a_held_back_condition_that_does_not_hold_is_unknown_too():
     done = scheduled([{"date": YESTERDAY, "name": "Tempo", "completed": True}])
     held = conditions(device=ds("2026-10-06T21:40"), yesterday_sessions=sessions, scheduled=done)
     assert held["missed_workout"] is None and held["missed_planned_session"] is None
-    b = build_briefing(DAY, garmin_data(device=ds("2026-10-06T21:40"), scheduled=done), [], {}, yesterday_sessions=sessions)
+    held_data = garmin_data(device=ds("2026-10-06T21:40"), scheduled=done)
+    b = build_briefing(DAY, held_data, [], {}, yesterday_sessions=sessions)
     assert "missed_workout" not in b.alert_updates and "missed_planned_session" not in b.alert_updates
-    synced = build_briefing(DAY, garmin_data(device=ds("2026-10-07T06:00"), scheduled=done), [], {}, yesterday_sessions=sessions)
+    synced_data = garmin_data(device=ds("2026-10-07T06:00"), scheduled=done)
+    synced = build_briefing(DAY, synced_data, [], {}, yesterday_sessions=sessions)
     assert synced.alert_updates["missed_workout"] == (False, False)
     assert synced.alert_updates["missed_planned_session"] == (False, False)
 
@@ -942,7 +946,9 @@ def test_a_check_at_or_after_the_last_sync_is_plain():
     assert PLAIN_LINE in other_zone
 
 
-@pytest.mark.parametrize("checked_at", [{}, {2: "2026-10-07T05:00:00+00:00"}, {1: "garbage"}, {1: "2026-10-07T01:30:00"}])
+@pytest.mark.parametrize(
+    "checked_at", [{}, {2: "2026-10-07T05:00:00+00:00"}, {1: "garbage"}, {1: "2026-10-07T01:30:00"}]
+)
 def test_an_unusable_check_time_is_stale(checked_at):
     lines = alert_lines(SYNCED_0658, checked_at)
     assert STALE_LINE in lines and PLAIN_LINE not in lines
