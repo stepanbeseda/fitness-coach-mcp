@@ -133,3 +133,24 @@ async def test_token_is_read_fresh_on_every_send(tmp_path):
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
         f"https://api.telegram.org/bot{SECOND_TOKEN}/sendMessage",
     ]
+
+
+@pytest.mark.anyio
+async def test_send_text_sends_exactly_the_text(tmp_path):
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, json={"ok": True})
+
+    assert await make_push(tmp_path, handler).send_text("Poznámka uložena (7. 10.).") == "sent"
+    (request,) = seen
+    assert str(request.url) == f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    assert json.loads(request.content) == {"chat_id": 123456789, "text": "Poznámka uložena (7. 10.)."}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("status", "outcome"), [(200, "sent"), (429, "transient"), (500, "transient"), (403, "permanent")])
+async def test_send_text_classifies_like_send(tmp_path, status, outcome):
+    push = make_push(tmp_path, lambda request: httpx2.Response(status))
+    assert await push.send_text("x") == outcome

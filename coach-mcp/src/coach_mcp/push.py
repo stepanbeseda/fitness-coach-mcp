@@ -39,6 +39,10 @@ class PushSender(Protocol):
     async def send(self, msg: PushMessage) -> PushOutcome: ...
 
 
+class TextSender(Protocol):
+    async def send_text(self, text: str) -> PushOutcome: ...
+
+
 class TelegramPush:
     """Sends one plain-text message to the configured chat through ``sendMessage``.
 
@@ -51,11 +55,15 @@ class TelegramPush:
         self._transport = transport
 
     async def send(self, msg: PushMessage) -> PushOutcome:
+        return await self.send_text(msg.text)
+
+    async def send_text(self, text: str) -> PushOutcome:
+        """One plain-text message with exactly ``text`` (the replies of the inbound part use this directly)."""
         token = read_bot_token(self._settings.telegram_token_file)
         if token is None:
             log.warning("push status=permanent reason=no_token")
             return "permanent"
-        body = {"chat_id": int(self._settings.telegram_chat_id), "text": msg.text}
+        body = {"chat_id": int(self._settings.telegram_chat_id), "text": text}
         started = time.monotonic()
         try:
             async with httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), transport=self._transport) as http:

@@ -13,7 +13,7 @@ trap 'rm -rf "$WORK"' EXIT
 FAILED=0
 
 FUNCS=(ensure_dir write_secret has_secret new_backend_token cmd_backend_tokens
-       ensure_backend_tokens ensure_garmin_readonly_token cmd_all)
+       ensure_backend_tokens ensure_garmin_readonly_token cmd_all show_telegram_chat_ids)
 for f in "${FUNCS[@]}"; do
   # One function per name: a one-line function ends on its own line, a block at the next "}" line.
   body="$(awk -v f="$f" 'p == 0 && index($0, f "() {") == 1 { p = 1; print; if ($0 ~ /}[ \t]*$/) p = 0; next }
@@ -109,6 +109,26 @@ echo "[setup-secrets.sh without arguments (cmd_all) on an existing install]"
 run_case all "$OLD3; $REST" "cmd_all"
 check "read-only token created by cmd_all" 'len_ok garmin_readonly_token'
 check "no prompts, no recreate" '[[ $(log_count PROMPT) == 0 && $(log_count RECREATE) == 0 ]]'
+
+# show_telegram_chat_ids with a stubbed Bot API: TG holds "<HTTP status> <reply body>".
+TG_STUB='wait_enter() { :; }; telegram_api() { printf "%s" "${TG#* }" > "$3"; printf "%s" "${TG%% *}"; }'
+CHAT_HINT='INFO With two-way Telegram on, coach-mcp reads your messages first: docker compose stop coach-mcp, then run this again.'
+NO_CHAT='WARN No private chat with the bot found (HTTP %s). Message the bot and run scripts/setup-secrets.sh telegram-chat-id.'
+
+echo "[telegram-chat-id: a private chat is listed, without the two-way hint]"
+run_case chat-found "$TG_STUB; TG='200 {\"ok\":true,\"result\":[{\"update_id\":1,\"message\":{\"chat\":{\"id\":123456789,\"type\":\"private\",\"first_name\":\"A\"}}}]}'" \
+  "show_telegram_chat_ids fake-token > \"\$LOG.out\""
+check "the chat id is printed" 'grep -qxF "  123456789 (A)" "$CASE/log.out" && logged "OK Private chats with the bot (chat id and name):"'
+check "no hint" '[[ $(log_count "INFO With two-way") == 0 && $(log_count WARN) == 0 ]]'
+
+echo "[telegram-chat-id: nothing found, the hint names the running two-way bot]"
+run_case chat-empty "$TG_STUB; TG='200 {\"ok\":true,\"result\":[]}'" "show_telegram_chat_ids fake-token"
+check "warning and hint" 'logged "$(printf "$NO_CHAT" 200)" && logged "$CHAT_HINT" && logged "INFO Afterwards: docker compose start coach-mcp."'
+check "exit 0" '[[ "$(cat "$CASE/rc")" == 0 ]]'
+
+echo "[telegram-chat-id: a second getUpdates consumer is refused]"
+run_case chat-conflict "$TG_STUB; TG='409 {\"ok\":false,\"error_code\":409}'" "show_telegram_chat_ids fake-token"
+check "warning with the status and the hint" 'logged "$(printf "$NO_CHAT" 409)" && logged "$CHAT_HINT"'
 
 echo
 if [[ $FAILED == 0 ]]; then echo "SETUP-SECRETS OK"; else echo "SETUP-SECRETS FAILED"; exit 1; fi

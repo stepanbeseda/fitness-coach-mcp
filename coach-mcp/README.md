@@ -7,10 +7,11 @@ clients reach it only through the gateway (`/coach/mcp`), which sends an interna
 (`/run/secrets/coach_backend_token`). Without the token the server rejects every MCP request (fail closed). The
 only services it calls itself are `garmin-mcp` (six read tools, read-only token `garmin_readonly_token`),
 `hevy-mcp` (two read tools, internal token `hevy_backend_token`), optionally the Telegram Bot API (morning
-briefing) and, on request, Open-Meteo (weather forecast, rounded coordinates only). Every night it stores the
-daily history from Garmin and strength workouts from Hevy for trends, the weekly report, correlations and strength
-progress, and uses that history to suggest a status for past planned sessions. Nothing is deleted: goals are
-closed, constraints are marked as resolved, and replaced sessions stay as `superseded`.
+briefing and the athlete's messages to the bot) and, on request, Open-Meteo (weather forecast, rounded
+coordinates only). Every night it stores the daily history from Garmin and strength workouts from Hevy for
+trends, the weekly report, correlations and strength progress, and uses that history to suggest a status for past
+planned sessions. Nothing is deleted: goals are closed, constraints are marked as resolved, and replaced sessions
+stay as `superseded`.
 
 ## Tools
 
@@ -104,7 +105,8 @@ scheduler stops unexpectedly, the log has `briefing status=stopped` and `/health
 The push text is localized: `COACH_LANGUAGE` is `en` (default) or `cs`. Only the words change; the verdict, the
 rules, the numbers and the JSON from `get_daily_briefing` are the same in every language (apart from its `push`
 text). The catalogues are in `src/coach_mcp/messages.py`; adding a language means one more `Texts` instance
-in `LANGUAGES` and one more `WeeklyTexts` instance in `WEEKLY_LANGUAGES` (the Monday report). Session titles
+in `LANGUAGES`, one more `WeeklyTexts` instance in `WEEKLY_LANGUAGES` (the Monday report) and one more
+`ReplyTexts` instance in `REPLY_LANGUAGES` (the replies of Two-way Telegram). Session titles
 from the plan and Garmin workout names are shown as stored. Example (English):
 
 ```text
@@ -158,6 +160,70 @@ docker compose exec coach-mcp python -m coach_mcp send-weekly-report
 
 It prints `weekly status=<sent|transient|permanent> week=<label> goals=<n>`. Exit code: 0 sent, 1 failed, 2 push
 not configured or wrong argument.
+
+## Two-way Telegram
+
+With push on, the switch `COACH_TELEGRAM_INBOUND` not `false` and a private chat id (a positive number), a third
+background task (`src/coach_mcp/inbound.py`) reads the athlete's messages to the bot and answers them by fixed
+rules, without an LLM. It only makes outbound calls: long polling of the Bot API method `getUpdates` (50 s per
+request, at most 10 updates, message updates only) and `sendMessage` for the answers. With a group chat id the task
+does not start and the log says `inbound status=off reason=group_chat`.
+
+A message is handled only when it is a text message of a private chat whose chat id and sender id both equal
+`COACH_TELEGRAM_CHAT_ID` and whose sender is not a bot. Everything else is confirmed to Telegram and dropped: no
+answer, nothing stored, and the log only counts it. The athlete's own message is the confirmation the write tools
+ask the coach for.
+
+| Message | Effect | Answer |
+|---|---|---|
+| `/today`, `/dnes` | none (reads Garmin through `garmin-mcp` like `get_daily_briefing`; writes no briefing or alert state) | the text of `get_daily_briefing` → `push.text` at that moment |
+| `/plan` | none | the sessions of the current ISO week, one line each: `#<id> <weekday> <date> · <the briefing's session line>` |
+| `/done <id>`, `/skip <id>` | the session becomes `done` / `skipped` (the rules of `update_session`; `/done` also refuses a session dated after today) | `Recorded: <session line>`; for a missing, malformed or unknown id the usage line and today's `planned` sessions |
+| `/help`, `/start`, any other `/…` | none | the command list (after `Unknown command.` for an unknown one) |
+| other text | a note dated by the local day the message was sent (Telegram's `date`, when it is not older than 48 hours; otherwise today) | `Note saved (<date>).`; a text over 2000 characters or with a NUL character is refused |
+| no text (photo, sticker, …) | none | `Only text messages are supported.` |
+
+A command may end with `@<bot name>`, is not case-sensitive and takes nothing but its id: `/done 12 knee hurts`,
+`/plan next` and `/today x` answer with the usage line and change nothing. An id is 1 to 9 digits, optionally
+after `#`. The answers come from the `ReplyTexts` catalogue of `COACH_LANGUAGE`, are plain text and are cut to
+4000 bytes like the briefing.
+
+**Once only.** The table `telegram_inbound` holds the bot's id (the digits before the colon of its token) and the
+next `getUpdates` offset. An update's effect and the offset are stored before the answer is sent; a note and its
+offset in one transaction, so a restart can neither lose a note nor store it twice. `/done` and `/skip` are
+repeatable, so their status and the offset are two writes. The answer is tried twice (2 s apart) on a temporary
+Telegram error and then given up (`reply=failed`); the effect stays.
+
+**First start, stops and old offsets.** With no stored offset, or one of another bot, the task first discards
+what Telegram still holds for the bot (`inbound status=started discarded=N`): the messages of the bot set-up must
+not become notes. After that, messages sent while the service was stopped are handled at the next start, as long
+as Telegram keeps them (24 hours according to its documentation). An offset that was last advanced two or more
+days ago is not sent: Telegram may restart the update ids after a week without updates, and an old offset would
+confirm, and so lose, a new update with a lower id.
+
+**Errors.** No answer of Telegram ends the task; it waits and asks again:
+
+| `getUpdates` answers | Log | Wait |
+|---|---|---|
+| network error, timeout, 429, 5xx | `inbound poll=transient` | 5 s, doubling up to 300 s, back to 5 s after the next good answer |
+| 200 that is not a `getUpdates` answer (not JSON, `ok` not true, an item without an integer `update_id`, more than 1 MiB) | `inbound poll=bad_answer` | the same |
+| token file missing or malformed | `inbound poll=no_token` | the same |
+| 401, 404 | `inbound poll=unauthorized` | 300 s |
+| 409 (a webhook is set or another program reads the updates) | `inbound poll=conflict` | 60 s |
+| any other status | `inbound poll=rejected` | 300 s |
+
+A database error while handling a message stops the batch (`inbound status=crashed kind=…`) and the same messages
+are asked for again. Any other error of one message is answered with `Something went wrong (internal error).`,
+logged as `inbound status=failed kind=…` and skipped, so one bad message never blocks the ones behind it.
+
+Log lines carry fixed words only, never a message text, the chat id, the bot id or the token:
+`inbound cmd=today|plan|done|skip|help|note|unknown|unsupported|- status=ok|bad_argument|refused|unknown|failed
+reply=sent|failed ms=…`, `inbound status=on|started|ignored|failed|crashed|stopped|off`, `inbound poll=…`,
+`inbound briefing=failed kind=…`, `inbound reply=crashed kind=…`. `/healthz` reports `"inbound":"on"`, `"off"`
+or, when the task ended unexpectedly, `"stopped"` (`healthcheck.sh` reports that as the problem `coach-inbound`).
+Whether Telegram answers 409 to a second reader, how it treats an offset after its ids restart, the real shape of
+its messages (a text message, a photo without a `text` field, the `/command@botname` form, the 4096-character limit)
+were not run against Telegram before the first deploy; the task is written to survive either way.
 
 ## Goal progress
 
@@ -311,6 +377,8 @@ with `no_activity` (alert above).
 - `race_predictions`: Garmin's predicted 5 km, 10 km, half-marathon and marathon times in seconds per day.
 - `prediction_sync`: the range the prediction history is complete from and the date of the last complete fetch.
 - `weekly_reports`: the ISO weeks (`2026-W41`) whose Monday report was sent.
+- `telegram_inbound`: one row for Two-way Telegram: the bot's id and the next `getUpdates` offset with the time it
+  last advanced. No message text is stored here; a note from Telegram is an ordinary row of `notes`.
 
 The schema version is in `PRAGMA user_version`; migrations are forward-only (an ordered list of SQL scripts, each
 in one transaction). An older image refuses to open a newer database so that it does not damage it. Online backups
@@ -318,6 +386,23 @@ in one transaction). An older image refuses to open a newer database so that it 
 root `README.md` (section Backups); the `coach-data` volume is the only copy of this data.
 
 Run `scripts/backup.sh` before moving to an older version.
+
+**Going back to a version without two-way Telegram** (schema 9 → 8). An older image refuses a database with
+schema 9 (`database schema version 9 is newer`). Before deploying the older version, drop the table
+`telegram_inbound`; every goal, plan, note (those that came from Telegram included), briefing state and history
+row stays, only the stored offset is lost. After the next upgrade the inbound part starts like on a first start:
+it ignores what Telegram holds at that moment. The service must be stopped; run the commands one at a time:
+
+```bash
+docker compose stop coach-mcp
+docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 9 or sys.exit(f"schema version {v}, expected 9: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE telegram_inbound; PRAGMA user_version = 8; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+The second command must print `schema version 8`. Then deploy the older version (`git checkout <commit before
+PR 22>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
+does not have schema 9 and nothing changed. On an empty volume it ends with the error `unable to open database
+file` and creates nothing. To go back to an even older version, run this 9 → 8 procedure first and then the ones
+below.
 
 **Going back to a version without goal progress** (schema 8 → 7). An older image refuses a database with
 schema 8 (`database schema version 8 is newer`). Before deploying the older version, drop the three new tables
@@ -478,11 +563,12 @@ Weather data: [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0 licence).
 | `COACH_MCP_HOST` | `0.0.0.0` | address the server listens on |
 | `COACH_MCP_PORT` | `8000` | port (1 to 65535) |
 | `TZ` | `Europe/Prague` | what "today" means; in compose it is set through `ATHLETE_TZ` in `.env` |
-| `COACH_LANGUAGE` | `en` | language of the Telegram messages (morning briefing, Monday report): `en` or `cs` (case-insensitive); see Morning briefing |
+| `COACH_LANGUAGE` | `en` | language of the Telegram messages (morning briefing, Monday report, replies of Two-way Telegram): `en` or `cs` (case-insensitive); see Morning briefing |
 | `COACH_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR`; logs: only the tool name, result and duration, never arguments or stored texts |
 | `COACH_MCP_ALLOWED_HOSTS` | *(empty)* | enables Host header checking (e.g. `coach-mcp:8000`) |
-| `COACH_TELEGRAM_CHAT_ID` | *(empty)* | chat id of your chat with the bot (integer, negative for groups); enables the morning briefing; never logged |
+| `COACH_TELEGRAM_CHAT_ID` | *(empty)* | chat id of your chat with the bot (integer, negative for groups); enables the morning briefing and, for a private chat (a positive id), Two-way Telegram; never logged |
 | `COACH_TELEGRAM_TOKEN_FILE` | `/run/secrets/telegram_bot_token` | bot token from @BotFather; with a chat id set it must look like a token, otherwise the service does not start |
+| `COACH_TELEGRAM_INBOUND` | `true` | Two-way Telegram (`true` / `false`): read and answer the athlete's messages to the bot; effective only with a private chat id |
 | `COACH_GARMIN_MCP_URL` | `http://garmin-mcp:8000/mcp` | address of `garmin-mcp` (ends with `/mcp`) |
 | `COACH_GARMIN_TOKEN_FILE` | `/run/secrets/garmin_readonly_token` | read-only token for `garmin-mcp` (min. 16 characters); `garmin-mcp` rejects write tools with it |
 | `COACH_HEVY_MCP_URL` | `http://hevy-mcp:3000/mcp` | address of `hevy-mcp` (ends with `/mcp`) |

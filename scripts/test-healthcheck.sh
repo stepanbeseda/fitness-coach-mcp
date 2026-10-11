@@ -26,6 +26,7 @@ T_NOTRUN='coach-mcp: not running'
 T_DB="coach: database unavailable $ARROW docker compose logs coach-mcp"
 T_SCHED="coach: morning briefing scheduler stopped $ARROW docker compose logs coach-mcp and docker compose restart coach-mcp"
 T_HIST="coach: nightly history stopped $ARROW docker compose logs coach-mcp and docker compose restart coach-mcp"
+T_INB="coach: two-way Telegram stopped $ARROW docker compose logs coach-mcp and docker compose restart coach-mcp"
 TRY_AGAIN='The next run with --notify tries again.'
 R1='COACH_TELEGRAM_CHAT_ID is not set in .env (scripts/setup-secrets.sh telegram-chat-id shows it)'
 R2='COACH_TELEGRAM_CHAT_ID in .env is not a numeric Telegram chat id'
@@ -91,6 +92,7 @@ case "$svc" in
     if [[ "$code" == *"get('db')"* ]]; then [[ ! -f "$FAKE/coach_db_bad" ]]; exit $?
     elif [[ "$code" == *"'scheduler'"* ]]; then if [[ -f "$FAKE/scheduler" ]]; then cat "$FAKE/scheduler"; else echo on; fi; exit 0
     elif [[ "$code" == *"'history'"* ]]; then if [[ -f "$FAKE/history" ]]; then cat "$FAKE/history"; else echo on; fi; exit 0
+    elif [[ "$code" == *"'inbound'"* ]]; then if [[ -f "$FAKE/inbound" ]]; then cat "$FAKE/inbound"; else echo on; fi; exit 0
     else unexpected "compose exec coach-mcp python -c <code>"; fi ;;
   *) unexpected "compose exec $svc $*" ;;
 esac
@@ -178,7 +180,7 @@ begin() {
 }
 fake_reset() {
   local f
-  for f in down ts_bad funnel_off garmin_bad coach_db_bad scheduler history meta_bad challenge_bad dns_bad \
+  for f in down ts_bad funnel_off garmin_bad coach_db_bad scheduler history inbound meta_bad challenge_bad dns_bad \
            disc_bad authz_bad hevy_bad tg_code tg_reply health-ts health-gateway health-hevy-mcp \
            health-garmin-mcp health-coach-mcp ts_json; do
     rm -f "$FAKE/$f"
@@ -610,19 +612,36 @@ fake scheduler stopped
 run_hc --quiet --notify
 check "text" '[[ $RC == 1 && $NREQ == 1 && "$(sent_text)" == "$WARN fitness-coach-mcp: 2 problems${NL}New:${NL}- $T_SCHED${NL}Still:${NL}- coach-mcp: running/starting${NL}Resolved:${NL}- $T_DB" ]]'
 
+echo "[H27: two-way Telegram: stopped is a problem, on, off and an older image are not]"
+begin h27
+fake inbound stopped
+run_hc --notify
+check "stopped: exit 1, one request, the line and the key" '[[ $RC == 1 && $NREQ == 1 ]] && out_has "✘ $T_INB" && [[ "$(state_keys)" == "coach-inbound" ]]'
+check "stopped: the message names it" '[[ "$(sent_text)" == "$WARN fitness-coach-mcp: 1 problem${NL}New:${NL}- $T_INB" ]]'
+fake inbound on
+run_hc --notify
+check "on: exit 0, the recovery message, the ok line" '[[ $RC == 0 && $NREQ == 1 ]] && out_has "✔ coach: two-way Telegram on"'
+fake inbound off
+run_hc
+check "off: exit 0 and its own ok line" '[[ $RC == 0 ]] && out_has "✔ coach: two-way Telegram off (COACH_TELEGRAM_INBOUND, or no private chat id in .env)"'
+fake inbound '?'
+run_hc
+check "an image without the field: exit 0 and a warning" '[[ $RC == 0 ]] && out_has "! coach: two-way Telegram state unknown"'
+
 # --- H23: every call site has its own key ----------------------------------------------------------------------
 echo "[H23: keys]"
 begin h23a
 BDIR="$CASE/backups"; mkdir -p "$BDIR"; write_env "BACKUP_DIR=$BDIR"
 fake ts_bad; fake funnel_off; fake meta_bad; fake challenge_bad; fake dns_bad; fake garmin_bad; fake coach_db_bad
-fake scheduler stopped; fake history stopped; fake hevy_bad; fake down gateway; fake health-garmin-mcp running/unhealthy
+fake scheduler stopped; fake history stopped; fake inbound stopped; fake hevy_bad; fake down gateway
+fake health-garmin-mcp running/unhealthy
 run_hc --quiet --notify
 nprob="$(grep '^✘ ' "$WORK/out" | grep -vc '^✘ Problems:' || true)"
-check "everything broken: exit 1, Problems: 15" '[[ $RC == 1 ]] && out_has "✘ Problems: 15"'
-check "problem lines = state lines = distinct keys" '[[ "$nprob" == 15 && "$(lines_of "$SF")" == 15 && "$(cut -f1 "$SF" | sort -u | wc -l | tr -d " ")" == 15 ]]'
+check "everything broken: exit 1, Problems: 16" '[[ $RC == 1 ]] && out_has "✘ Problems: 16"'
+check "problem lines = state lines = distinct keys" '[[ "$nprob" == 16 && "$(lines_of "$SF")" == 16 && "$(cut -f1 "$SF" | sort -u | wc -l | tr -d " ")" == 16 ]]'
 check "no key error" '! grep -q "needs a problem key" "$WORK/err" "$WORK/out"'
 check "the backup key is among them and was sent" 'grep -q "^backup	" "$SF" && grep -q "backup: no archive in BACKUP_DIR yet" "$LAST_JSON"'
-check "all keys" '[[ "$(state_keys)" == "container-gateway,container-garmin-mcp,tailscale-node,funnel-config,tailnet-metadata,tailnet-mcp-hevy,tailnet-mcp-garmin,tailnet-mcp-coach,funnel-dns,garmin-tokens,coach-db,coach-briefing,coach-history,hevy-key,backup" ]]'
+check "all keys" '[[ "$(state_keys)" == "container-gateway,container-garmin-mcp,tailscale-node,funnel-config,tailnet-metadata,tailnet-mcp-hevy,tailnet-mcp-garmin,tailnet-mcp-coach,funnel-dns,garmin-tokens,coach-db,coach-briefing,coach-history,coach-inbound,hevy-key,backup" ]]'
 begin h23b
 fake disc_bad; fake authz_bad
 run_hc --quiet --notify

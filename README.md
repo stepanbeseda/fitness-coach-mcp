@@ -15,6 +15,7 @@ OAuth 2.1 gateway on your own server:
 - **Coach memory** (`coach-mcp/`, custom server on SQLite). It stores goals, constraints (injuries, available
   days, equipment), a dated training plan with status, and a notes log. On top of that it computes:
   - a deterministic morning briefing (green / yellow / red), optionally pushed to Telegram;
+  - answers to what you write to the Telegram bot: today's briefing, this week's plan, done / skipped, notes;
   - goal progress (race predictions, VO2max) and a Monday weekly report in Telegram;
   - nightly Garmin and Hevy history for trends beyond 28 days, a weekly report, strength progress (estimated
     1RM) and correlations;
@@ -190,7 +191,7 @@ flowchart TB
 
     hevyapi["Hevy API"]
     gc["Garmin Connect"]
-    tg["Telegram Bot API<br/>morning briefing, optional"]
+    tg["Telegram Bot API<br/>briefing and your replies, optional"]
     om["Open-Meteo<br/>rounded coordinates only"]
 
     hevy --> hevyapi
@@ -219,7 +220,7 @@ tailnet-only) untouched, and the gateway does not have to publish any port on th
 
 | Layer | What it does |
 |---|---|
-| Network | No published port on the host. The gateway listens only on 127.0.0.1 in the sidecar's namespace, so the only way in is `tailscale serve`. Backends are only on a private Docker network. They call out only to their own APIs (Hevy, Garmin Connect). `coach-mcp` optionally calls the Telegram Bot API (`api.telegram.org`) for the morning briefing (see Operations → Morning briefing) and Open-Meteo (`api.open-meteo.com`, no key) for the weather forecast, which receives only rounded coordinates (see Operations → Weather). Other host services and the host's own `tailscale serve` are not changed. |
+| Network | No published port on the host. The gateway listens only on 127.0.0.1 in the sidecar's namespace, so the only way in is `tailscale serve`. Backends are only on a private Docker network. They call out only to their own APIs (Hevy, Garmin Connect). `coach-mcp` optionally calls the Telegram Bot API (`api.telegram.org`) for the morning briefing and to fetch what you write to the bot (long polling, an outbound call too; see Operations → Morning briefing and Two-way Telegram) and Open-Meteo (`api.open-meteo.com`, no key) for the weather forecast, which receives only rounded coordinates (see Operations → Weather). Other host services and the host's own `tailscale serve` are not changed. |
 | Funnel | Only discovery (`/.well-known/*`), the 401 response and `/token` are public. Anything carrying a token, and `/token` itself, passes through Funnel only from `160.79.104.0/21` (Anthropic's published outbound range for MCP connectors). |
 | Login | `/authorize` (argon2id password + TOTP) only from your own tailnet devices (`Tailscale-User-Login` = `OWNER_TAILSCALE_LOGIN`, never through Funnel). Lockout with exponential backoff, TOTP code reuse protection, CSRF cookie. |
 | OAuth | MCP auth spec 2025-11-25: PKCE S256 required. `resource` (RFC 8707) makes each token valid for one endpoint only (a Hevy token does not work on Garmin). `iss` (RFC 9207). Access token 1 h, refresh token 90 days, rotation with reuse detection (with a 120 s retry window). Revocation (RFC 7009). |
@@ -480,6 +481,7 @@ and tailnet for Telegram's servers and stay in the chat history until you delete
 end-to-end encrypted. The bot token (`secrets/telegram_bot_token`) gives full control of the bot. If it leaks,
 revoke it with @BotFather and store the new one with `scripts/setup-secrets.sh telegram-token`.
 The same chat also receives the healthcheck alerts, which carry no health data (Operations alerts).
+What you write to the bot is covered under Two-way Telegram below.
 
 To turn it on:
 
@@ -526,6 +528,50 @@ docker compose exec coach-mcp python -m coach_mcp send-weekly-report
 ```
 
 The log words are `weekly status=sent|waiting|skipped|gave_up|crashed|state_error`.
+
+### Two-way Telegram
+
+With the briefing on and `COACH_TELEGRAM_CHAT_ID` set to your private chat with the bot, `coach-mcp` also reads
+what you write to the bot and answers by fixed rules, without an LLM:
+
+| You send | What happens |
+|---|---|
+| `/today` or `/dnes` | The answer is today's briefing, computed now from current Garmin data (it can take a minute or two). Nothing is recorded and the scheduled briefing is not affected; alerts already sent this morning are not repeated. |
+| `/plan` | This week's sessions (Monday to Sunday) with their ids (`#12`) and status. |
+| `/done <id>`, `/skip <id>` | The session is marked done or skipped (`/done 12` or `/done #12`). Without an id, or with one that does not exist, nothing changes and the answer lists today's open sessions with their ids. A session of a later day cannot be done yet; one that was moved or replaced by a newer plan cannot be changed. |
+| `/help`, `/start`, an unknown command | The list of commands. |
+| any other text | It is saved as a note, dated by the day you sent it (at most 2000 characters; a longer text is refused, not cut). |
+
+Your own message is the confirmation: unlike the coach in Claude, the bot does not ask again. Moving or creating
+sessions stays with the coach. The answers are plain text in the language of `COACH_LANGUAGE`.
+
+- **Who is heard.** Only text messages in the private chat whose chat id and sender id both equal
+  `COACH_TELEGRAM_CHAT_ID`. Everything else (other people, groups, channels, edited messages) is dropped without
+  an answer. Photos, voice messages and other media from you get a short "text only" answer.
+- **How it connects.** `coach-mcp` asks Telegram for new messages itself (long polling of `getUpdates`, outbound
+  HTTPS like the briefing), so no port is opened and nothing reaches the server from outside.
+- **After a stop.** Messages sent while `coach-mcp` was stopped are handled when it starts again, as long as
+  Telegram still holds them (about 24 hours). The first start with a bot ignores what was sent to it before.
+- **No answer?** The note or the status may still have been stored (an answer is tried twice): `/plan` shows the
+  status, the coach sees the note. Editing a message in Telegram does not change a stored note.
+- **Turning it off.** `COACH_TELEGRAM_INBOUND=false` in `.env` and `docker compose up -d coach-mcp`; the briefing
+  stays. With a group chat id (negative) the inbound part is always off.
+- **One reader only.** Do not set a webhook for the bot or run another program that reads its updates; the log
+  then says `inbound poll=conflict`. While `coach-mcp` runs, `scripts/setup-secrets.sh telegram-chat-id` finds
+  no chat for the same reason: stop `coach-mcp` first (`docker compose stop coach-mcp`), start it afterwards.
+  These two Telegram behaviours follow its documentation and were not run against the real bot before the first
+  deploy (see `coach-mcp/README.md`).
+
+`scripts/healthcheck.sh` reports the inbound part (`on`, `off`, or `stopped` as a problem). The log
+(`docker compose logs coach-mcp`) has one line per handled message with the command word and the outcome
+(`inbound cmd=note status=ok reply=sent`), `inbound poll=…` when Telegram cannot be asked and
+`inbound status=ignored count=…` for dropped messages; never a message text, the chat id or the token.
+
+**Privacy:** what you write to the bot passes through Telegram's servers and stays in the chat history, like
+the briefing, and so do the answers (for example the week's plan from `/plan`). `coach-mcp` keeps the text of a
+note in its database (the `coach-data` volume and its backups) and nothing else from your messages. Messages from
+anyone else are neither stored nor logged. Whoever can write from your Telegram account can add notes and mark
+sessions, and whoever holds the bot token can read what you send to the bot until `coach-mcp` has fetched it.
 
 ### Nightly history
 
@@ -840,6 +886,8 @@ the newest backup.
 | `get_weather_forecast`: "Weather service unreachable / timed out / answered HTTP …" | Open-Meteo or the internet does not work. Errors are not cached, so the next call tries again; `docker compose logs coach-mcp`, lines `weather status=error`. |
 | `coach-mcp` does not start, log says `COACH_HOME_… must be set together / must be a number / must be between` | Fix or delete both `COACH_HOME_LATITUDE` and `COACH_HOME_LONGITUDE` in `.env`. |
 | `coach-mcp` does not start, log says `COACH_LANGUAGE must be one of en, cs` | Fix or delete `COACH_LANGUAGE` in `.env`. |
+| The bot does not answer in Telegram | `docker compose logs coach-mcp`, lines `inbound …`: `poll=unauthorized` = the token is wrong or revoked → `scripts/setup-secrets.sh telegram-token`; `poll=conflict` = a webhook or another program reads the bot's updates; `status=off reason=group_chat` = the chat id is a group; no `inbound` line at all = `COACH_TELEGRAM_INBOUND=false` or no chat id; `status=ignored` = the message came from another chat or account than `COACH_TELEGRAM_CHAT_ID`; `reply=failed` = the message was handled but the answer could not be sent. |
+| `scripts/setup-secrets.sh telegram-chat-id` finds no chat although you wrote to the bot | Two-way Telegram already fetched the message: `docker compose stop coach-mcp`, write to the bot, run the command again, then `docker compose start coach-mcp`. |
 | The morning notification did not arrive | `docker compose logs coach-mcp`: `skipped` = the service started after the cutoff; `gave_up` = Telegram rejected the message (token, chat id, bot blocked or nobody has written to it yet) or did not respond; no `briefing` line = the briefing is off (`healthcheck.sh` says so). |
 | Hevy tools return 401 | Invalid Hevy key or Hevy PRO expired → `scripts/setup-secrets.sh hevy-key`. |
 | Garmin tools say to run scripts/garmin-login.sh | Tokens are missing or expired → `scripts/garmin-login.sh`. |
@@ -854,7 +902,7 @@ the newest backup.
 ```
 docker-compose.yml       services, hardening, networks, volumes, secrets
 compose.test.yml         overlay for the e2e test (no Tailscale login, no internet)
-.env.example             non-secret configuration (hostname, owner, UID/GID, morning briefing, weather location)
+.env.example             non-secret configuration (hostname, owner, UID/GID, briefing and Telegram, weather location)
 tailscale/               sidecar image (non-root) + serve.json with Funnel
 gateway/                 OAuth 2.1 gateway (Python, Starlette), tests, config.toml
 hevy-mcp/                wrapper around the official image (secrets from files, telemetry off)

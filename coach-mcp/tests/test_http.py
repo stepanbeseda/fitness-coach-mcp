@@ -15,6 +15,7 @@ from fakes import (
     FakeHistorySource,
     FakePush,
     FakeStrengthSource,
+    FakeTelegram,
     StopLoop,
     fake_garmin_app,
     fake_garmin_running,
@@ -24,6 +25,7 @@ from conftest import BACKEND_TOKEN, MCP_HEADERS, TODAY, auth_headers, call_tool,
 from coach_mcp.__main__ import configure_logging
 from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminData, GarminReader
+from coach_mcp.push import TelegramPush
 from coach_mcp.server import create_app
 from coach_mcp.store import SCHEMA_VERSION, Store
 from coach_mcp.tools import SEARCH_QUERY_ERROR
@@ -98,6 +100,7 @@ async def test_healthz_reports_db_state(app, store, monkeypatch):
             "schema_version": SCHEMA_VERSION,
             "scheduler": "off",
             "history": "off",
+            "inbound": "off",
         }
 
         def broken():
@@ -379,7 +382,9 @@ GARMIN_TOKEN = "garmin-backend-token-0123456789abcdef"
 
 
 def push_settings(settings: Settings, **overrides) -> Settings:
-    fields = {**settings.__dict__, "telegram_chat_id": "123456789"}
+    # The inbound part stays off here: these tests are about the scheduler, and a poller without an injected
+    # transport would call Telegram. The inbound lifecycle tests switch it on with a fake transport.
+    fields = {**settings.__dict__, "telegram_chat_id": "123456789", "telegram_inbound": False}
     fields.update(overrides)
     return Settings(**fields)
 
@@ -979,3 +984,100 @@ async def test_weather_log_has_no_coordinates(settings, store, caplog, restore_l
     assert "weather status=error reason=unreachable" in caplog.text
     for secret in ("48.21", "16.37", "48.2082", "47.07", "15.44"):
         assert secret not in caplog.text, secret
+
+
+# ---------------------------------------------------------- two-way Telegram
+
+INBOUND_BOT_ID = "111111111"
+INBOUND_TOKEN = f"{INBOUND_BOT_ID}:AAfake-token-fake-token-fake-token-1"
+
+
+def inbound_app(settings, store, tmp_path, telegram, **overrides):
+    """An app with push and the inbound part on; Telegram is the fake, in both directions."""
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(INBOUND_TOKEN + "\n", encoding="utf-8")
+    inbound_sleep = overrides.pop("inbound_sleep", never_wake)
+    cfg = push_settings(settings, **{"telegram_inbound": True, "telegram_token_file": token_file, **overrides})
+    return create_app(
+        cfg, store, garmin=FakeGarmin(garmin_data()), push=FakePush(), now=at_0630, sleep=never_wake,
+        replies=TelegramPush(cfg, transport=telegram.transport()), inbound_transport=telegram.transport(),
+        inbound_sleep=inbound_sleep,
+    )
+
+
+def owner_update(update_id: int, text: str) -> dict:
+    sender = {"id": 123456789, "is_bot": False}
+    chat = {"id": 123456789, "type": "private"}
+    return {"update_id": update_id, "message": {"from": sender, "chat": chat, "date": int(at_0630().timestamp()), "text": text}}
+
+
+@pytest.mark.anyio
+async def test_inbound_on_handles_a_message_from_lifespan_and_the_coach_sees_the_note(
+    settings, store, tmp_path, caplog, restore_logging
+):
+    configure_logging("DEBUG")
+    caplog.set_level(logging.DEBUG)
+    store.advance_inbound(INBOUND_BOT_ID, None, at_0630())  # past the first-start drain
+    telegram = FakeTelegram([owner_update(5, "z telefonu")], hang=True)
+    app = inbound_app(settings, store, tmp_path, telegram)
+    with anyio.fail_after(10):
+        async with running_client(app) as client:
+            await wait_for(lambda: telegram.texts == ["Note saved (7 Oct)."])
+            await wait_for(lambda: len(telegram.polls) == 2)  # the next long poll is pending
+            assert telegram.polls[1]["offset"] == 6 and telegram.polls[1]["timeout"] == 50
+            assert (await client.get("/healthz")).json()["inbound"] == "on"
+            context = payload(await call_tool(client, "get_coach_context", {}))
+            assert [(n["date"], n["text"]) for n in context["notes"]] == [("2026-10-07", "z telefonu")]
+            left_at = time.monotonic()
+        assert time.monotonic() - left_at < 2  # the pending long poll is cancelled, not waited for
+    await anyio.sleep(0.05)  # let the task's done-callback run
+    assert "inbound status=on" in caplog.text
+    assert "inbound status=stopped" not in caplog.text and "Exception in callback" not in caplog.text
+    for forbidden in ("z telefonu", INBOUND_TOKEN, "api.telegram.org"):
+        assert forbidden not in caplog.text, forbidden
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("overrides", "reason_logged"),
+    [({"telegram_inbound": False}, False), ({"telegram_chat_id": "-100123456789"}, True)],
+)
+async def test_inbound_off_by_the_switch_or_for_a_group_chat(settings, store, tmp_path, caplog, overrides, reason_logged):
+    caplog.set_level(logging.DEBUG)
+    telegram = FakeTelegram([owner_update(5, "nikdo necte")])
+    app = inbound_app(settings, store, tmp_path, telegram, **overrides)
+    async with running_client(app) as client:
+        body = (await client.get("/healthz")).json()
+        assert body["inbound"] == "off" and body["scheduler"] == "on"
+        await anyio.sleep(0.05)
+    assert telegram.polls == [] and telegram.sent == [] and store.inbound_state() is None
+    assert ("inbound status=off reason=group_chat" in caplog.text) is reason_logged
+
+
+@pytest.mark.anyio
+async def test_inbound_off_without_push_logs_no_reason(settings, store, caplog):
+    caplog.set_level(logging.DEBUG)
+    app = create_app(settings, store, today=lambda: TODAY)
+    async with running_client(app) as client:
+        assert (await client.get("/healthz")).json()["inbound"] == "off"
+    assert "inbound status=off" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_inbound_that_dies_is_reported_stopped(settings, store, tmp_path, caplog, restore_logging):
+    configure_logging("DEBUG")
+    caplog.set_level(logging.DEBUG)
+    store.advance_inbound(INBOUND_BOT_ID, None, at_0630())
+
+    async def dying_sleep(_seconds: float) -> None:
+        raise RuntimeError("boom")  # outside run()'s try: the inbound task dies
+
+    app = inbound_app(settings, store, tmp_path, FakeTelegram(), inbound_sleep=dying_sleep)
+    with anyio.fail_after(10):
+        async with running_client(app) as client:
+            await wait_for(lambda: "inbound status=stopped kind=RuntimeError" in caplog.text)
+            body = (await client.get("/healthz")).json()
+            assert body["inbound"] == "stopped" and body["status"] == "ok" and body["scheduler"] == "on"
+            left_at = time.monotonic()
+        assert time.monotonic() - left_at < 2  # the dead task is not awaited again on shutdown
+    assert "boom" not in caplog.text

@@ -148,6 +148,15 @@ case "$hist" in
   *) report_warn "coach: nightly history state unknown" ;;
 esac
 
+# 5e. two-way Telegram (informational)
+inb="$(dc exec -T coach-mcp python -c "import json,urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)).get('inbound', '?'))" 2>/dev/null || echo '?')"
+case "$inb" in
+  on) report_ok "coach: two-way Telegram on" ;;
+  off) report_ok "coach: two-way Telegram off (COACH_TELEGRAM_INBOUND, or no private chat id in .env)" ;;
+  stopped) report_fail coach-inbound "coach: two-way Telegram stopped → docker compose logs coach-mcp and docker compose restart coach-mcp" ;;
+  *) report_warn "coach: two-way Telegram state unknown" ;;
+esac
+
 # 6. Hevy API key
 if [[ -r "$SECRETS_DIR/hevy_api_key" ]]; then
   code="$(printf 'api-key: %s\n' "$(tr -d '\r\n' < "$SECRETS_DIR/hevy_api_key")" | curl -sS --max-time 15 \
