@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from coach_mcp.__main__ import configure_logging
-from coach_mcp.config import CHAT_ID_ERROR, Settings, db_path_from_env
+from coach_mcp.config import CHAT_ID_ERROR, Settings, db_path_from_env, read_bot_id
 
 
 def test_from_env_defaults():
@@ -19,6 +19,8 @@ def test_from_env_defaults():
     assert s.allowed_hosts == []
     assert s.telegram_chat_id == ""
     assert s.telegram_token_file == Path("/run/secrets/telegram_bot_token")
+    assert s.telegram_inbound is True
+    assert s.inbound_enabled is False
     assert s.garmin_url == "http://garmin-mcp:8000/mcp"
     assert s.garmin_token_file == Path("/run/secrets/garmin_readonly_token")
     assert s.hevy_url == "http://hevy-mcp:3000/mcp"
@@ -151,6 +153,7 @@ def test_blank_briefing_values_fall_back_to_defaults():
     names = (
         "COACH_TELEGRAM_CHAT_ID",
         "COACH_TELEGRAM_TOKEN_FILE",
+        "COACH_TELEGRAM_INBOUND",
         "COACH_GARMIN_MCP_URL",
         "COACH_GARMIN_TOKEN_FILE",
         "COACH_BRIEFING_TIME",
@@ -343,3 +346,46 @@ def test_hevy_settings_overrides():
 def test_invalid_hevy_url_is_rejected(url):
     with pytest.raises(ValueError, match="COACH_HEVY_MCP_URL"):
         Settings.from_env({"COACH_HEVY_MCP_URL": url})
+
+
+def test_inbound_switch():
+    assert Settings.from_env({"COACH_TELEGRAM_INBOUND": ""}).telegram_inbound is True
+    assert Settings.from_env({"COACH_TELEGRAM_INBOUND": "true"}).telegram_inbound is True
+    assert Settings.from_env({"COACH_TELEGRAM_INBOUND": "false"}).telegram_inbound is False
+    assert Settings.from_env({"COACH_TELEGRAM_INBOUND": " FALSE "}).telegram_inbound is False
+    with pytest.raises(ValueError, match="COACH_TELEGRAM_INBOUND must be true or false"):
+        Settings.from_env({"COACH_TELEGRAM_INBOUND": "off"})
+
+
+@pytest.mark.parametrize(
+    ("chat_id", "switch", "enabled"),
+    [
+        ("", True, False),  # no push, no inbound part
+        ("123456789", True, True),
+        ("1", True, True),
+        ("123456789", False, False),
+        ("-100123456789", True, False),  # a group: the briefing goes there, nothing is read from it
+        ("-1", True, False),
+    ],
+)
+def test_inbound_runs_only_for_a_private_chat(chat_id, switch, enabled):
+    settings = Settings(telegram_chat_id=chat_id, telegram_inbound=switch)
+    assert settings.inbound_enabled is enabled
+    assert settings.push_enabled is bool(chat_id)
+
+
+@pytest.mark.parametrize(
+    ("content", "bot_id"),
+    [
+        ("123456789:AAfake-token-fake-token-fake-token-1\n", "123456789"),
+        ("7:AAfake-token-fake-token-fake-token-1", "7"),
+        ("", None),
+        ("123456789:short", None),
+        (None, None),
+    ],
+)
+def test_read_bot_id(tmp_path, content, bot_id):
+    path = tmp_path / "telegram_bot_token"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    assert read_bot_id(path) == bot_id

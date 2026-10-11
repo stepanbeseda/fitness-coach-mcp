@@ -109,6 +109,12 @@ def read_bot_token(path: Path) -> str | None:
     return token if BOT_TOKEN_RE.fullmatch(token) else None
 
 
+def read_bot_id(path: Path) -> str | None:
+    """The bot's numeric id (the digits before the colon of its token), or None without a usable token."""
+    token = read_bot_token(path)
+    return None if token is None else token.split(":", 1)[0]
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: Path = Path("/data/coach/coach.db")
@@ -124,6 +130,8 @@ class Settings:
     # Morning briefing to Telegram (off while the chat id is empty).
     telegram_chat_id: str = field(default="", repr=False)  # personal: never in a repr or a log
     telegram_token_file: Path = Path("/run/secrets/telegram_bot_token")
+    # Two-way Telegram: read the athlete's messages to the bot (effective only with a private chat id).
+    telegram_inbound: bool = True
     garmin_url: str = "http://garmin-mcp:8000/mcp"
     garmin_token_file: Path = Path("/run/secrets/garmin_readonly_token")
     hevy_url: str = "http://hevy-mcp:3000/mcp"
@@ -145,6 +153,11 @@ class Settings:
     @property
     def push_enabled(self) -> bool:
         return bool(self.telegram_chat_id)
+
+    @property
+    def inbound_enabled(self) -> bool:
+        """The inbound part runs only for a private chat: a group id is negative, and group chats are not served."""
+        return self.push_enabled and self.telegram_inbound and not self.telegram_chat_id.startswith("-")
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -183,6 +196,10 @@ class Settings:
                 f"COACH_TELEGRAM_CHAT_ID is set but {telegram_token_file} does not hold a Telegram bot token "
                 "(scripts/setup-secrets.sh telegram-token)"
             )
+
+        raw_inbound = _opt(env, "COACH_TELEGRAM_INBOUND", "true").lower()
+        if raw_inbound not in ("true", "false"):
+            raise ValueError("COACH_TELEGRAM_INBOUND must be true or false")
 
         garmin_url = _opt(env, "COACH_GARMIN_MCP_URL", "http://garmin-mcp:8000/mcp")
         _url("COACH_GARMIN_MCP_URL", garmin_url)
@@ -237,6 +254,7 @@ class Settings:
             allowed_hosts=_split(env.get("COACH_MCP_ALLOWED_HOSTS")),
             telegram_chat_id=telegram_chat_id,
             telegram_token_file=telegram_token_file,
+            telegram_inbound=raw_inbound == "true",
             garmin_url=garmin_url,
             garmin_token_file=Path(_opt(env, "COACH_GARMIN_TOKEN_FILE", "/run/secrets/garmin_readonly_token")),
             hevy_url=hevy_url,

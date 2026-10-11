@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import anyio
+import httpx2
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
@@ -412,3 +413,53 @@ def fake_hevy_app(
         ),
     )
     return BearerAuthMiddleware(app, _StaticToken(token), prefix="/mcp"), calls  # type: ignore[arg-type]
+
+
+class FakeTelegram:
+    """A Bot API look-alike for ``httpx2.MockTransport``.
+
+    ``getUpdates`` follows the documented offset rule: updates below ``offset`` are confirmed (dropped), the
+    rest is returned in id order, at most ``limit``. ``script`` entries (a ``httpx2.Response`` or an exception)
+    are answered first, one per ``getUpdates``. ``send_codes`` are the statuses of ``sendMessage`` in order
+    (the last one repeats). With ``hang`` an empty long poll never returns (it ends by cancellation).
+    """
+
+    def __init__(
+        self, updates: list[dict[str, Any]] | None = None, *, script: list[Any] | None = None,
+        send_codes: list[int] | None = None, hang: bool = False,
+    ) -> None:
+        self.pending: list[dict[str, Any]] = list(updates or [])
+        self.script: list[Any] = list(script or [])
+        self.send_codes = list(send_codes or [200])
+        self.hang = hang
+        self.polls: list[dict[str, Any]] = []
+        self.sent: list[dict[str, Any]] = []
+        self.urls: list[str] = []
+
+    @property
+    def texts(self) -> list[str]:
+        return [body["text"] for body in self.sent]
+
+    def transport(self) -> httpx2.MockTransport:
+        return httpx2.MockTransport(self._handle)
+
+    async def _handle(self, request: httpx2.Request) -> httpx2.Response:
+        self.urls.append(str(request.url))
+        body = json.loads(request.content)
+        if request.url.path.endswith("/sendMessage"):
+            self.sent.append(body)
+            return httpx2.Response(self.send_codes[min(len(self.sent), len(self.send_codes)) - 1], json={"ok": True})
+        assert request.url.path.endswith("/getUpdates")
+        self.polls.append(body)
+        if self.script:
+            answer = self.script.pop(0)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+        offset = body.get("offset")
+        if offset is not None:
+            self.pending = [u for u in self.pending if u["update_id"] >= offset]
+        batch = sorted(self.pending, key=lambda u: u["update_id"])[: body.get("limit", 100)]
+        if not batch and self.hang and body.get("timeout"):
+            await anyio.sleep_forever()
+        return httpx2.Response(200, json={"ok": True, "result": batch})

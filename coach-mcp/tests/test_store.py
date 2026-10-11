@@ -17,8 +17,8 @@ from coach_mcp.store import (
 
 # The schema version of the strength tables: the only number that changes when this migration is renumbered.
 STRENGTH_VERSION = 5
-# The latest schema version (goal progress, PR 14); the other number pinned by hand.
-LATEST_VERSION = 8
+# The latest schema version (two-way Telegram, PR 22); the other number pinned by hand.
+LATEST_VERSION = 9
 
 
 def _tables(path) -> set[str]:
@@ -55,6 +55,7 @@ def test_empty_file_gets_schema_and_version(db_path):
         "race_predictions",
         "prediction_sync",
         "weekly_reports",
+        "telegram_inbound",
     } <= _tables(db_path)
     assert _user_version(db_path) == SCHEMA_VERSION == len(MIGRATIONS) == LATEST_VERSION
     assert s.check() == SCHEMA_VERSION
@@ -1296,3 +1297,89 @@ def test_downgrade_8_sql_returns_to_a_version_7_file(db_path, monkeypatch):
     assert _user_version(db_path) == PREDICTION_VERSION
     goal = again.get_goal(goal_id)
     assert goal is not None and goal["title"] == "Keep me" and goal["metric"] is None
+
+
+# ------------------------------------------------- two-way Telegram (migration 9, PR 22)
+
+INBOUND_VERSION = next(i + 1 for i, script in enumerate(MIGRATIONS) if "telegram_inbound" in script)
+# Keep in sync with the 9 -> 8 downgrade command in coach-mcp/README.md.
+DOWNGRADE_9_SQL = "BEGIN IMMEDIATE; DROP TABLE telegram_inbound; PRAGMA user_version = 8; COMMIT;"
+AT = datetime(2026, 10, 7, 12, 0, tzinfo=ZoneInfo("Europe/Prague"))
+
+
+def test_migration_9_upgrades_a_version_8_file_with_data(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: INBOUND_VERSION - 1])
+        old = Store(db_path)
+        note_id = old.insert_note(date(2026, 10, 7), "A note")
+        old.record_weekly_report_sent("2026-W41")
+    assert _user_version(db_path) == INBOUND_VERSION - 1 and "telegram_inbound" not in _tables(db_path)
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:INBOUND_VERSION])
+    new = Store(db_path)
+    assert _user_version(db_path) == INBOUND_VERSION and "telegram_inbound" in _tables(db_path)
+    assert new.inbound_state() is None
+    note = new.get_note(note_id)
+    assert note is not None and note["text"] == "A note" and new.weekly_report_sent("2026-W41")
+
+
+def test_migration_9_checks(store, db_path):
+    insert = "INSERT INTO telegram_inbound (id, bot_id, next_update_id, advanced_at) VALUES (?, ?, ?, 'x')"
+    for bad in ((2, "111111111", 5), (1, "", 5), (1, "1" * 21, 5), (1, None, 5), (1, "111111111", -1)):
+        with pytest.raises(sqlite3.IntegrityError):
+            _raw(db_path, insert, bad)
+    _raw(db_path, insert, (1, "1" * 20, 0))
+    with pytest.raises(sqlite3.IntegrityError):  # one row only
+        _raw(db_path, insert, (1, "111111111", 6))
+    _raw(db_path, "UPDATE telegram_inbound SET next_update_id = NULL, bot_id = '1'")
+
+
+def test_advance_inbound_keeps_one_row(store):
+    assert store.inbound_state() is None
+    store.advance_inbound("111111111", None, AT)
+    assert store.inbound_state() == {
+        "bot_id": "111111111", "next_update_id": None, "advanced_at": "2026-10-07T10:00:00+00:00",
+    }
+    store.advance_inbound("111111111", 42, AT.replace(hour=13))
+    store.advance_inbound("222222222", 7, AT.replace(hour=14))
+    assert store.inbound_state() == {
+        "bot_id": "222222222", "next_update_id": 7, "advanced_at": "2026-10-07T12:00:00+00:00",
+    }
+
+
+def test_a_note_and_its_offset_are_one_transaction(store):
+    store.advance_inbound("111111111", 10, AT)
+    before = store.inbound_state()
+    with pytest.raises(sqlite3.IntegrityError):  # the note fails its CHECK: the offset must not move
+        store.insert_note(date(2026, 10, 7), "x" * 2001, inbound=("111111111", 11, AT))
+    assert store.inbound_state() == before and store.latest_notes(5) == []
+    with pytest.raises(sqlite3.IntegrityError):  # the offset fails its CHECK: the note must not stay
+        store.insert_note(date(2026, 10, 7), "kept?", inbound=("", 11, AT))
+    assert store.inbound_state() == before and store.latest_notes(5) == []
+    note_id = store.insert_note(date(2026, 10, 7), "both", inbound=("111111111", 11, AT.replace(hour=13)))
+    state = store.inbound_state()
+    assert state is not None and state["next_update_id"] == 11 and state["advanced_at"] == "2026-10-07T11:00:00+00:00"
+    assert [n["id"] for n in store.latest_notes(5)] == [note_id]
+    plain = store.insert_note(date(2026, 10, 7), "no offset")  # the coach's add_note path
+    assert store.inbound_state() == state and plain == note_id + 1
+
+
+def test_downgrade_9_sql_returns_to_a_version_8_file(db_path, monkeypatch):
+    # It is a 9 -> 8 recipe: the file is built at the inbound version.
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:INBOUND_VERSION])
+        new = Store(db_path)
+    note_id = new.insert_note(date(2026, 10, 7), "From Telegram", inbound=("111111111", 11, AT))
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_9_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == INBOUND_VERSION - 1 and "telegram_inbound" not in _tables(db_path)
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[: INBOUND_VERSION - 1])
+    old = Store(db_path)
+    note = old.get_note(note_id)
+    assert note is not None and note["text"] == "From Telegram"
+    assert [n["id"] for n in old.search_notes("telegram", None, None, None, 10)] == [note_id]
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:INBOUND_VERSION])
+    again = Store(db_path)
+    assert _user_version(db_path) == INBOUND_VERSION and again.inbound_state() is None

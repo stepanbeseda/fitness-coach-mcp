@@ -30,7 +30,8 @@ from .config import Settings
 from .garmin import GarminReader, GarminSource, HistorySource, exception_kind
 from .hevy import HevyReader, StrengthSource
 from .history import HistoryJob
-from .push import PushSender, TelegramPush
+from .inbound import InboundPoller
+from .push import PushSender, TelegramPush, TextSender
 from .scheduler import BriefingScheduler, compose_briefing
 from .store import Store
 from .tools import PlannedSession, to_json
@@ -39,6 +40,7 @@ from .weather import WeatherService
 log = logging.getLogger("coach_mcp.tools")
 briefing_log = logging.getLogger("coach_mcp.briefing")
 history_log = logging.getLogger("coach_mcp.history")
+inbound_log = logging.getLogger("coach_mcp.inbound")
 
 INSTRUCTIONS = (
     "Coach memory of the athlete: goals, constraints (injuries, limitations, availability, equipment), "
@@ -71,6 +73,7 @@ INSTRUCTIONS = (
     " A race or VO2max goal carries a metric and a target_value (set_goal); get_goal_progress returns its current "
     "value, the values 4 and 12 weeks ago, the trend per week and the projection to the target date, from the "
     "stored history."
+    " Notes and done or skipped sessions can also come from the athlete's own Telegram messages to the bot."
 )
 
 GoalStatus = Literal["active", "achieved", "abandoned"]
@@ -124,8 +127,13 @@ def build_server(
     scheduler: BriefingScheduler | None,
     history: HistoryJob | None = None,
     weather: WeatherService,
+    inbound: InboundPoller | None = None,
 ) -> MCPServer:
-    state = {"scheduler": "on" if scheduler is not None else "off", "history": "on" if history is not None else "off"}
+    state = {
+        "scheduler": "on" if scheduler is not None else "off",
+        "history": "on" if history is not None else "off",
+        "inbound": "on" if inbound is not None else "off",
+    }
 
     def on_scheduler_done(done: asyncio.Task[None]) -> None:
         if done.cancelled():  # the normal shutdown
@@ -141,6 +149,13 @@ def build_server(
         exc = done.exception()  # also marks the exception as retrieved
         history_log.error("history status=stopped kind=%s", exception_kind(exc) if exc is not None else "returned")
 
+    def on_inbound_done(done: asyncio.Task[None]) -> None:
+        if done.cancelled():  # the normal shutdown
+            return
+        state["inbound"] = "stopped"
+        exc = done.exception()  # also marks the exception as retrieved
+        inbound_log.error("inbound status=stopped kind=%s", exception_kind(exc) if exc is not None else "returned")
+
     @contextlib.asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
         tasks: list[asyncio.Task[None]] = []
@@ -150,6 +165,9 @@ def build_server(
         if history is not None:
             tasks.append(asyncio.create_task(history.run()))
             tasks[-1].add_done_callback(on_history_done)
+        if inbound is not None:
+            tasks.append(asyncio.create_task(inbound.run()))
+            tasks[-1].add_done_callback(on_inbound_done)
         try:
             yield None
         finally:
@@ -500,6 +518,7 @@ def build_server(
                 "schema_version": version,
                 "scheduler": state["scheduler"],
                 "history": state["history"],
+                "inbound": state["inbound"],
             }
         )
 
@@ -519,6 +538,9 @@ def create_app(
     history_sleep: Callable[[float], Awaitable[None]] | None = None,
     strength_source: StrengthSource | None = None,
     weather_transport: httpx2.AsyncBaseTransport | None = None,
+    replies: TextSender | None = None,
+    inbound_transport: httpx2.AsyncBaseTransport | None = None,
+    inbound_sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     store = store or Store(settings.db_path)
@@ -554,8 +576,23 @@ def create_app(
         scheduler = BriefingScheduler(
             settings, store, garmin, push or TelegramPush(settings), now=now, sleep=sleep or asyncio.sleep
         )
+    inbound = None
+    if settings.inbound_enabled:
+        inbound = InboundPoller(
+            settings,
+            store,
+            garmin,
+            replies or TelegramPush(settings),
+            now=now,
+            sleep=inbound_sleep or asyncio.sleep,
+            transport=inbound_transport,
+        )
+    elif settings.push_enabled and settings.telegram_inbound:
+        inbound_log.info("inbound status=off reason=group_chat")
     weather = WeatherService(settings, now=now, transport=weather_transport)
-    server = build_server(store, settings, today, garmin=garmin, scheduler=scheduler, history=history, weather=weather)
+    server = build_server(
+        store, settings, today, garmin=garmin, scheduler=scheduler, history=history, weather=weather, inbound=inbound
+    )
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=bool(settings.allowed_hosts),
         allowed_hosts=settings.allowed_hosts,

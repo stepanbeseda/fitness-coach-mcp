@@ -216,6 +216,15 @@ CREATE TABLE weekly_reports (
   sent_at TEXT NOT NULL
 );
 """,
+    # Two-way Telegram (PR 22): the bot whose updates were handled and the next getUpdates offset.
+    """
+CREATE TABLE telegram_inbound (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  bot_id         TEXT NOT NULL CHECK (length(bot_id) BETWEEN 1 AND 20),
+  next_update_id INTEGER CHECK (next_update_id IS NULL OR next_update_id >= 0),
+  advanced_at    TEXT NOT NULL
+);
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -281,6 +290,15 @@ def _insert_note(conn: sqlite3.Connection, day: date, text: str, session_id: int
     )
     assert cur.lastrowid is not None
     return cur.lastrowid
+
+
+def _set_inbound(conn: sqlite3.Connection, bot_id: str, next_update_id: int | None, at: datetime) -> None:
+    conn.execute(
+        "INSERT INTO telegram_inbound (id, bot_id, next_update_id, advanced_at) VALUES (1, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET bot_id = excluded.bot_id, next_update_id = excluded.next_update_id, "
+        "advanced_at = excluded.advanced_at",
+        (bot_id, next_update_id, at.astimezone(UTC).isoformat(timespec="seconds")),
+    )
 
 
 def _insert_session(
@@ -763,11 +781,37 @@ class Store:
         rows = self._all("SELECT covered_from, synced_on FROM prediction_sync WHERE id = 1")
         return rows[0] if rows else None
 
+    # ---------------------------------------------------- two-way Telegram
+
+    def inbound_state(self) -> dict[str, Any] | None:
+        rows = self._all("SELECT bot_id, next_update_id, advanced_at FROM telegram_inbound WHERE id = 1")
+        return rows[0] if rows else None
+
+    def advance_inbound(self, bot_id: str, next_update_id: int | None, at: datetime) -> None:
+        """Remember that every update of the bot ``bot_id`` below ``next_update_id`` was handled, as of ``at``.
+
+        None: no update was seen yet (the next call asks without an offset).
+        """
+        with self._conn() as conn, conn:
+            _set_inbound(conn, bot_id, next_update_id, at)
+
     # --------------------------------------------------------------- notes
 
-    def insert_note(self, day: date, text: str, session_id: int | None = None) -> int:
+    def insert_note(
+        self,
+        day: date,
+        text: str,
+        session_id: int | None = None,
+        *,
+        inbound: tuple[str, int, datetime] | None = None,
+    ) -> int:
+        """``inbound``: (bot id, next update id, now) of the Telegram update the note came from, stored in the
+        same transaction, so a restart can neither lose the note nor store it twice."""
         with self._conn() as conn, conn:
-            return _insert_note(conn, day, text, session_id)
+            note_id = _insert_note(conn, day, text, session_id)
+            if inbound is not None:
+                _set_inbound(conn, *inbound)
+            return note_id
 
     def latest_notes(self, limit: int) -> list[dict[str, Any]]:
         return self._all("SELECT * FROM notes ORDER BY date DESC, id DESC LIMIT ?", (limit,))

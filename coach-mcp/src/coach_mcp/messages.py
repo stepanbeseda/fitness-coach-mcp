@@ -1,8 +1,10 @@
-"""Text of the morning briefing and the Monday report per language (``COACH_LANGUAGE``): English (default) and Czech.
+"""Text sent to the athlete per language (``COACH_LANGUAGE``), English (default) and Czech: the morning briefing, the
+Monday report and the replies to the athlete's Telegram messages.
 
-Only words live here; the rules, numbers and layout stay in ``briefing.py`` and ``weekly.py``. Every catalogue has the
-same fields, so adding a language means adding one more ``Texts`` instance and a ``LANGUAGES`` entry (and a
-``WeeklyTexts`` instance with a ``WEEKLY_LANGUAGES`` entry for the Monday report).
+Only words live here; the rules, numbers and layout stay in ``briefing.py``, ``weekly.py`` and ``inbound.py``. Every
+catalogue has the same fields, so adding a language means adding one more ``Texts`` instance and a ``LANGUAGES`` entry,
+a ``WeeklyTexts`` instance with a ``WEEKLY_LANGUAGES`` entry (the Monday report) and a ``ReplyTexts`` instance with a
+``REPLY_LANGUAGES`` entry (the replies).
 """
 
 from __future__ import annotations
@@ -411,3 +413,109 @@ WEEKLY_LANGUAGES: Mapping[str, WeeklyTexts] = {"en": WEEKLY_EN, "cs": WEEKLY_CS}
 def weekly_texts(language: str) -> WeeklyTexts:
     """The Monday-report catalogue for ``language``; same keys as ``LANGUAGES``."""
     return WEEKLY_LANGUAGES[language]
+
+
+@dataclass(frozen=True)
+class ReplyTexts:
+    """Words of the replies to the athlete's Telegram messages (``inbound.py``); the rules stay there."""
+
+    weekdays: tuple[str, ...]  # Monday first
+    help: str
+    unknown_command: str
+    unsupported: str
+    usage_today: str
+    usage_plan: str
+    usage_done: str
+    usage_skip: str
+    open_today: str
+    no_open_today: str
+    plan_title: str  # {week} {start} {end}
+    plan_empty: str
+    recorded: str  # {line}
+    unknown_session: str  # {id}
+    session_superseded: str  # {id}
+    session_moved: str  # {id}
+    session_moved_to: str  # {id} {copy} {day}
+    session_future: str  # {id} {day}
+    cannot_change: str  # {id}
+    note_saved: str  # {day}
+    note_too_long: str  # {length} {limit}
+    note_refused: str
+    briefing_failed: str
+    failed: str
+
+
+REPLY_EN = ReplyTexts(
+    weekdays=("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+    help=(
+        "Commands:\n"
+        "/today (or /dnes) – today's briefing\n"
+        "/plan – this week's plan with the session ids\n"
+        "/done <id> – mark a session as done\n"
+        "/skip <id> – mark a session as skipped\n"
+        "Any other text is saved as a note for today."
+    ),
+    unknown_command="Unknown command.",
+    unsupported="Only text messages are supported.",
+    usage_today="Usage: /today (or /dnes) with nothing after it.",
+    usage_plan="Usage: /plan with nothing after it.",
+    usage_done="Usage: /done <id>, for example /done 12. Nothing was changed.",
+    usage_skip="Usage: /skip <id>, for example /skip 12. Nothing was changed.",
+    open_today="Open today:",
+    no_open_today="No open session today.",
+    plan_title="Plan {week} ({start} – {end}):",
+    plan_empty="No sessions this week.",
+    recorded="Recorded: {line}",
+    unknown_session="Session #{id} does not exist.",
+    session_superseded="Session #{id} was replaced by a later plan and cannot be changed.",
+    session_moved="Session #{id} was moved and cannot be changed.",
+    session_moved_to="Session #{id} was moved to #{copy} ({day}); change that one.",
+    session_future="Session #{id} is planned for {day} and cannot be done yet.",
+    cannot_change="Session #{id} cannot be changed.",
+    note_saved="Note saved ({day}).",
+    note_too_long="The note is too long ({length} characters, at most {limit}). Nothing was saved.",
+    note_refused="The note could not be saved.",
+    briefing_failed="The briefing could not be computed right now. Try again later.",
+    failed="Something went wrong (internal error).",
+)
+
+REPLY_CS = ReplyTexts(
+    weekdays=("po", "út", "st", "čt", "pá", "so", "ne"),
+    help=(
+        "Příkazy:\n"
+        "/dnes (nebo /today) – dnešní briefing\n"
+        "/plan – plán na tento týden s id tréninků\n"
+        "/done <id> – označí trénink jako splněný\n"
+        "/skip <id> – označí trénink jako přeskočený\n"
+        "Jakýkoli jiný text se uloží jako dnešní poznámka."
+    ),
+    unknown_command="Neznámý příkaz.",
+    unsupported="Umím jen textové zprávy.",
+    usage_today="Použití: /dnes (nebo /today), bez dalšího textu.",
+    usage_plan="Použití: /plan, bez dalšího textu.",
+    usage_done="Použití: /done <id>, například /done 12. Nic se nezměnilo.",
+    usage_skip="Použití: /skip <id>, například /skip 12. Nic se nezměnilo.",
+    open_today="Dnes otevřené:",
+    no_open_today="Dnes není žádný otevřený trénink.",
+    plan_title="Plán {week} ({start} – {end}):",
+    plan_empty="Tento týden není nic v plánu.",
+    recorded="Zapsáno: {line}",
+    unknown_session="Trénink #{id} neexistuje.",
+    session_superseded="Trénink #{id} nahradil pozdější plán a nejde změnit.",
+    session_moved="Trénink #{id} byl přesunut a nejde změnit.",
+    session_moved_to="Trénink #{id} byl přesunut na #{copy} ({day}); změň ten.",
+    session_future="Trénink #{id} je v plánu až {day} a ještě nemůže být splněný.",
+    cannot_change="Trénink #{id} nejde změnit.",
+    note_saved="Poznámka uložena ({day}).",
+    note_too_long="Poznámka je moc dlouhá ({length} znaků, nejvýš {limit}). Nic se neuložilo.",
+    note_refused="Poznámku se nepodařilo uložit.",
+    briefing_failed="Briefing se teď nepodařilo spočítat. Zkus to později.",
+    failed="Něco se pokazilo (vnitřní chyba).",
+)
+
+REPLY_LANGUAGES: Mapping[str, ReplyTexts] = {"en": REPLY_EN, "cs": REPLY_CS}
+
+
+def reply_texts(language: str) -> ReplyTexts:
+    """The reply catalogue for ``language``; same keys as ``LANGUAGES``."""
+    return REPLY_LANGUAGES[language]
