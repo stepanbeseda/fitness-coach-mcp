@@ -348,3 +348,40 @@ One PR (#33), review in one round (APPROVED, 0 blocking, 8 non-blocking), no reb
   there") pointed at values nobody had run; the spec checker ran the real `parse_last_sync` and the implementer
   used those. The designer regenerates every `.out` from its script after the last edit and states the run command
   with the env it needs (`-e PYTHONPATH=/app/src`). (PR 17 spec check N5)
+
+## Batch of 2026-10-11 (PR 21)
+
+One PR (#35), design in one attempt, review in two rounds (round 1 APPROVED with 0 blocking, round 2 a delta review
+of the one fix), no rebase.
+
+- **A claim the spec check disproved goes back to the designer when a guard depends on it.** Spec 4.1 said ruff
+  raises `E902` for a missing path "whether selected or not"; the spec check ran it (`ruff check nope` under the
+  project's `select`: a warning, `All checks passed!`, exit 0) and filed it non-blocking, no test depended on it.
+  But the claim was the reason for spelling out `src tests` in the Dockerfile `RUN` line, so a misspelled path
+  passed silently; it reached review as a spec error and cost a fix commit and a delta review after approval. A
+  disproved statement that a guard or a prescribed path rests on is a spec error to correct before implementation,
+  not a note. (PR 21 spec check N1, review 1 O1)
+- **Dependencies and a reading that bends a "Done when" item are questions, not decisions.** The designer added
+  ruff, mypy and four transitive mypy requirements (hash-locked, dev only) and linted `tests`, which turns
+  "the existing tests pass unchanged" into "no test is adapted to the fixes" (five one-line edits in four coach
+  test files). Both were decided in the spec and reached the owner only through the worker's note and a later
+  question. The designer lists new dependencies (including transitive ones, from the lock diff) and any reading
+  that departs from the literal wording of a criterion as questions before the spec, with the recommended answer.
+  (PR 21 journal, owner decisions)
+- **A verified reference patch makes the implementation one attempt.** The designer shipped `reference.patch`
+  (applied to the tree, the exact `CHECK OK tree=`), the reproduced locks and the mutation harnesses outside the
+  repo; the spec check reproduced the tree sha and the implementer needed one attempt for the main work, with
+  mutants 12/12 and 21/21 run. For a mechanical change over many files (types, lint) the designer prototypes the
+  whole diff in a scratch copy and states the resulting tree hash. (PR 21 spec check, impl 1)
+- **A spec error with a one-line fix goes straight to the implementer.** The `E902` fix was one `select` token per
+  `pyproject.toml` and one config-test row per service; the orchestrator sent it to the implementer without a new
+  design attempt, and a delta review of that commit (6 files, 30 insertions) approved. Same route as the PR 14
+  post-approval fixes above. (PR 21 impl 2, review 2)
+- **Static-check facts for later PRs.** Every branch now has to pass `ruff check` (`src` and `tests`) and
+  `mypy --strict` (`src`) inside the test stage, and the check fails when the build log lacks the ruff or mypy
+  summary. Ruff with an explicit `select` exits 0 with only a warning for a missing path unless `E902` is selected
+  (it is). The config tests guard the `select` list and `strict` only; a `per-file-ignores`, `exclude`, mypy
+  override or a path dropped from the `RUN` line is caught by reading the diff of `pyproject.toml` and the
+  Dockerfile, so the reviewer reads both whenever a PR touches them. A bare `# type: ignore` is still accepted
+  (every ignore carries a code today); new ignores carry a code and a reason. Expected counts: 305 / 91 / 1281.
+  (PR 21 review 1, O2 and O3)
