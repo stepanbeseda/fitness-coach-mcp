@@ -1,7 +1,7 @@
 # garmin-mcp (garmin-coach-mcp)
 
 A thin MCP server on top of [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) 0.3.17
-with ~23 selected tools for the coach. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp`
+with 25 selected tools for the coach. It runs as Streamable HTTP (stateless, JSON) on `:8000/mcp`
 in a private Docker network; it is reachable only through the gateway, which sends an internal bearer token
 (`/run/secrets/garmin_backend_token`). Without the token the server rejects all MCP requests (fail closed).
 A second, read-only token (`/run/secrets/garmin_readonly_token`) belongs to `coach-mcp`. With it the server answers
@@ -18,7 +18,7 @@ broke in March 2026; `Taxuspt/garmin_mcp` has 153 tools and is stuck on garminco
 
 | Read (readOnly) | Write |
 |---|---|
-| `get_recovery_snapshot` – readiness, HRV, sleep, Body Battery, resting HR, stress, training status in one call | `create_workout` – structured run/ride (+ optionally schedule it) |
+| `get_recovery_snapshot` – readiness, HRV, sleep, Body Battery, resting HR, stress, training status in one call | `create_workout` – structured run, ride or strength session (exercises with sets, reps or seconds, kg, rest; + optionally schedule it) |
 | `get_training_readiness`, `get_hrv_trend`, `get_sleep`, `get_body_battery`, `get_daily_summary`, `get_training_status` | `schedule_workout` – on a date (idempotent) |
 | `list_activities`, `get_activity` (laps, HR zones, weather; for strength activities the sets recorded on the watch: exercise, reps, kg) | `unschedule_workout` – remove from the calendar (destructive) |
 | `get_performance_metrics` – race predictions (time + pace/km), lactate threshold (HR, pace, power), heart-rate zones per sport, cycling power zones, endurance and hill score, weekly VO2max trend | |
@@ -28,7 +28,8 @@ broke in March 2026; `Taxuspt/garmin_mcp` has 153 tools and is stuck on garminco
 | `get_personal_records` (personal records), `get_gear` (shoes, bikes: distance covered, activity count, limit, retired) | `log_weight` – manual weigh-in in kg (optional date, not in the future) for athletes without a Garmin scale; not idempotent |
 | `get_body_composition` – weigh-ins for a period (max 366 days, default 30): weight, BMI, body fat %, muscle mass, body water %, bone mass + summary (first/last, change, 7-day average) | |
 | `get_nutrition` – one day: calories vs. goal, protein/carbs/fat vs. goals, meals, hydration vs. goal; whatever Garmin does not have returns `available: false` | |
-| `list_workouts`, `get_workout`, `list_scheduled_workouts` | *(no deleting workouts or editing activities)* |
+| `find_strength_exercise` – search Garmin's strength exercise catalogue (bundled with the library, about 1 500 exercises) for a title such as a Hevy title; ranked matches with category and name for `create_workout`; no Garmin call | |
+| `list_workouts`, `get_workout` (steps; for strength: exercises, sets, reps or seconds, kg, rest, note), `list_scheduled_workouts` | *(no deleting workouts or editing activities)* |
 
 Step targets: HR zone 1–5, heart-rate range, pace `M:SS`/km (running), power in W (cycling), cadence.
 
@@ -113,6 +114,20 @@ The device payloads (`mylastused` and the device list) were captured on a real a
 the upload time `lastUsedDeviceUploadTime` is an integer in epoch milliseconds, UTC; the device list has no upload
 time per device, so the tool reports the account's last upload and names the device it came from. Identifiers and
 serial numbers are not returned.
+
+Strength workouts: `create_workout` with `sport: "strength"` takes exercise items (`category` and `name` from
+`find_strength_exercise`, `sets`, `reps` or `seconds`, optional `weight_kg`, `rest_seconds`, optional `note`).
+An exercise Garmin's catalogue does not have is sent with its `title` only: the step then has no exercise name
+and carries the title as its note, and the result lists it under `unmapped`. Read tools show Garmin's sport key
+`strength_training`. The payload follows python-garminconnect's `StrengthWorkout` model: one repeat group per
+exercise (sets) with a rest step, the weight in grams with the kilogram unit. It was uploaded to a real account
+on 2026-10-12: Garmin stored the exercise names, the weight, the notes, a step without an exercise and a hold by
+time, and the Garmin Connect mobile app and the watch showed them. Not verified: a single set (sent without a
+repeat group), a set block without rest, a weight on a step without an exercise, and workouts authored in the
+Garmin app with units other than kg. Hevy stays the place of record for strength training; nothing is written
+back to Hevy. A workout is uploaded with one request; only when Garmin answers 401 (an expired access token) the
+library renews the token and sends the same request once more. If one `create_workout` call ever leaves two
+workouts of the same name in the library, delete the extra one in Garmin Connect.
 
 Known uncertainty: a custom cycling power range is sent as `power.zone` + `targetValueOne/Two`
 (the convention of python-garminconnect's typed models); after creating the first such workout, check in Garmin
