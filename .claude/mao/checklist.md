@@ -42,6 +42,13 @@ repeated findings.
   guard, not only the removal of the guard: `<=` against `<`, `any` against
   `all` or `sum`, `upper()` dropped, a tie rule reversed, a type guard turned
   into `True`; each has a case that tells it apart, and the reviewer runs them.
+- [ ] Every case that a criterion enumerates (for example "a missing, malformed
+  or unreadable token") has its own test row; a case without a row is a
+  finding, because its guard survives mutation. Expected values prescribed by a
+  spec were run through the real helper they depend on.
+- [ ] Ids, tokens and host names in tests and fixtures are obviously fake
+  (`123456789`, `fake-token`, `example.test`), never a random-looking value
+  that could be real; if one slipped in, squash before the push.
 - [ ] A test that builds a database of version N uses `MIGRATIONS[:N]` for
   the build and the reopen; the latest version is derived, not hand-pinned.
 - [ ] Parallel or rebased work: docker builds and e2e run under `flock
@@ -109,7 +116,8 @@ repeated findings.
   `README.md`, `docs/coach-instructions.md` and `INSTRUCTIONS` in `server.py`;
   `coach-mcp/README.md` and `INSTRUCTIONS` in
   `coach-mcp/src/coach_mcp/server.py` for coach tools.
-- [ ] Czech docs stay Czech; code, comments and commits are English.
+- [ ] Documentation, scripts, CLI output, code, comments and commits are English (plan section 1,
+  superseded 2026-10-09); athlete-facing text comes from the `messages.py` catalogues, every language.
 - [ ] Links in docs lead to existing files.
 - [ ] Operator recipes added or changed in docs (backup/restore, recovery)
   were run on scratch volumes, fresh and existing, and the result is

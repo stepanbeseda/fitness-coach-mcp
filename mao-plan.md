@@ -89,13 +89,13 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 11 | Online and scheduled backups | 03 | done |
 | 12 | Read-only Garmin token for the coach | 04 | done |
 | 13 | Plan reconciliation | 05 | done |
-| 14 | Goal progress and the Monday report | 05, 08 | planned |
+| 14 | Goal progress and the Monday report | 05, 08 | done |
 | 15 | Searchable coach memory | 03 | done |
 | 16 | Correlations | 05 | done |
 | 17 | Sync-aware briefing | 04 | planned |
 | 18 | History repair | 05 | done |
 | 19 | More Garmin signals | — | done |
-| 20 | Operations alerts via Telegram | 08 | planned |
+| 20 | Operations alerts via Telegram | 08 | done |
 | 21 | Static checks in the test stage | — | planned |
 | 22 | Two-way Telegram | 08 | planned |
 
@@ -1101,6 +1101,54 @@ Out of scope: weight and body-composition goals, goals without a metric
 
 **Requested:** 2026-10-09, by the owner, from the project review (feature 2).
 
+**Delivered:** 2026-10-11, PR #29 (`mao/pr14-goal-progress-monday-report`),
+squash-merged into `main` as `836a263`, no rebase needed. `coach-mcp` schema 7
+to 8: migration 8 adds `goals.metric` and `goals.target_value` (with CHECKs;
+old goals keep both NULL) and the tables `race_predictions`, `prediction_sync`
+and `weekly_reports`. `set_goal` validates the metric (`race_5k`, `race_10k`,
+`race_half_marathon`, `race_marathon`, `vo2max_running`) and the target (H:MM:SS
+or MM:SS for races, ml/kg/min for VO2max); changing the metric needs a new
+target. New read tool `get_goal_progress` (least-squares trend over 12 weeks,
+the values 4 and 12 weeks ago, a projection at most 26 weeks ahead, reason codes
+instead of prose, `available: false` without enough data). New read-only
+`garmin-mcp` tool `get_race_predictions` (daily range up to 366 days, whole
+seconds per distance, fail-soft), in the coach allowlist. The nightly history
+gets a race-prediction part (one paced call, no charge or give-up on an item
+error, the whole missed range asked again the next night; log word
+`part=predictions`). `BriefingScheduler` sends the Monday report once per ISO
+week after a sent briefing (same window, cutoff, late-start and retry rules;
+text from the new `WeeklyTexts` catalogue in `messages.py`, `en` and `cs`, so
+"in Czech" of the chapter became "in every catalogue language");
+`COACH_WEEKLY_PUSH` (default in `config.py`, on while push is on) and the
+container command `send-weekly-report` (writes no state). `README.md`, both
+service READMEs, `.env.example`, `docker-compose.yml`,
+`docs/coach-instructions.md` and the privacy note updated; `scripts/smoke-test.sh`
+prints counts-only `get_race_predictions` and `get_goal_progress` lines; an 8
+to 7 downgrade recipe (README, `coach-mcp/README.md`) was run verbatim on scratch
+volumes by the implementer and the reviewer. No secret, mount or dependency
+change. Criteria 1 to 6 met offline (`CHECK OK tree=746f4071402d garmin=258
+gateway=80 coach=1193 e2e=OK`; about 100 implementer mutants and 42 reviewer
+mutants, all killed or equivalent). Deviations: the shape of Garmin's daily
+race-prediction payload was established from the library source and canned
+payloads only (owner capture, section 5); decision D4 accepts the library's
+ERROR log line on a Garmin 5xx, which contains the account display name (as for
+PR 01 N2; test T-P10 pins it and will turn red on purpose when the redacting
+log filter of section 5 lands); small decisions outside the spec (VO2max bounds
+checked on the stored 1-decimal value, `points` 0 and not null without a
+current value, `update_goal` with an unknown id and nothing else still says
+"nothing to update") were accepted by the reviewer. Review took two rounds:
+round 1 APPROVED with five non-blocking findings, O1 (pause before the
+predictions call), O2 (trend window anchor and the Monday-only rule) and O4
+(wrong doc rows) fixed in one commit and a delta review (round 2) APPROVED;
+O3 and O5 stay open (section 5). Spec check found two blocking errors, both
+fixed in the spec before implementation: T-P3 prescribed that the string
+`"1290"` is dropped although `formatting.num` keeps numeric strings (the shaper
+now has an explicit type guard), and the T-P10 DEBUG control. Still needs the
+test host or the deploy (criterion 7): the owner's capture of the daily
+race-prediction payload (spec section 11), `scripts/smoke-test.sh`,
+`get_goal_progress` for the owner's goal after `set_goal` with a metric, and
+one Monday message in the owner's chat (or `send-weekly-report` once).
+
 ### PR 15 — Searchable coach memory
 
 `get_coach_context` returns the active goals and constraints and the latest
@@ -1393,6 +1441,46 @@ monitoring.
 
 **Requested:** 2026-10-09, by the owner, from the project review (item U5).
 
+**Delivered:** 2026-10-11, PR #30 (`mao/pr20-operations-alerts-telegram`),
+squash-merged into `main` as `ba6de49`, rebased onto PR 14 without conflicts
+(plus one README sentence in PR 14's Telegram privacy note pointing to
+Operations alerts). Scripts, tests and docs only: no `coach-mcp` or
+`garmin-mcp` change, no migration (schema stays 8), no image rebuild, no
+compose, secret or dependency change. `scripts/healthcheck.sh` gives every
+failing check a stable problem key; `--notify` posts one plain-text message
+(`New:`, `Still:`, `Resolved:`) when the set of keys changes and once when it
+becomes empty (state in `${XDG_STATE_HOME:-~/.local/state}/fitness-coach-mcp/`,
+never in the repo); a changed line under the same key is not a change. New
+section 8, backup age: with `BACKUP_DIR` set, a missing, unreadable, too old
+(`BACKUP_MAX_AGE_HOURS`, default 26) or future-dated newest archive is the
+problem `backup`, which is how a failed `scripts/backup.sh` reaches Telegram.
+A missing or malformed chat id or token, an unreadable token file, a busy lock,
+an unwritable state directory, a failed `mktemp -d` or a message Telegram did
+not accept ends with `Notify failed: ...` and the current problems on stderr,
+exit 1 and the state untouched. The token reaches `curl` on stdin, the chat id
+and text travel in a temporary file, neither is on a command line or in any
+output. `TELEGRAM_TOKEN_RE` and `telegram_api` moved from `setup-secrets.sh` to
+`lib.sh`. New offline harness `scripts/test-healthcheck.sh` (stub `docker` and
+`curl`, argv shims), run by `scripts/e2e-test.sh`, ends with `HEALTHCHECK OK`.
+`README.md` (Operations row and cron line, "Operations alerts (Telegram)",
+Backups bullet, Troubleshooting rows) and `.env.example`
+(`BACKUP_MAX_AGE_HOURS`) updated. Criteria 1 to 4 met offline (`CHECK OK
+tree=958f957d3f39 garmin=258 gateway=80 coach=1193 e2e=OK`; 47 implementer and
+14 reviewer mutants, all killed). Deviations: a healthy run whose notify step
+fails prints nothing on stdout and exits 1; a ninth failure reason (`mktemp`)
+and a state file read with `errors="replace"` came from review 1; the owner
+decisions D4, O5 and O7 of section 5. Review took three rounds: round 1
+CHANGES (one blocking test gap: the unreadable-token case that criterion 2
+lists had no harness row, so its guard survived mutation; eight non-blocking
+findings), round 2 APPROVED, round 3 a delta review after the rebase
+APPROVED. The branch was squashed to one commit before the push because an
+earlier commit carried a random-looking 10-digit harness chat id from the spec
+(lesson in `lessons.md`). Spec check: 0 blocking, 8 non-blocking, all applied.
+Still needs the test host (criterion 5, owner-run, after the batch's other
+deploys): stop `coach-mcp` once outside 03:30 to 04:30 and 06:30 to 09:30, one
+message, restart, one recovery message; the full procedure is in the deploy
+bundle `DEPLOY-2026-10-11.md`.
+
 ### PR 21 — Static checks in the test stage
 
 The Python code is fully typed, but nothing checks it. Add `ruff` and `mypy`
@@ -1505,7 +1593,9 @@ from Telegram, media messages.
   `COACH_HOME_LATITUDE` / `COACH_HOME_LONGITUDE` (PR 06) to `.env` with an
   editor. Criteria that still need the test host: PR 06 #7, PR 09 #8, PR 11 #6,
   PR 12 #6, PR 13 #6; the owner steps are in the PR bodies. PR 18 and PR 19 are
-  merged (2026-10-10) and also wait for the deploy bundle of 2026-10-10.
+  merged (2026-10-10) and also wait for the deploy bundle of 2026-10-10. Update 2026-10-10: the
+  run of 2026-10-09 and PR 18 and PR 19 were deployed that night (schema 7); PR 14 and
+  PR 20 (merged 2026-10-11) wait for `DEPLOY-2026-10-11.md`.
 - **PR 06 weather.** The CC BY 4.0 attribution sentence in the READMEs comes
   from the designer's knowledge of Open-Meteo's terms; confirm it on
   open-meteo.com. Open-Meteo's behaviour on DST transition days has not been
@@ -1541,8 +1631,9 @@ from Telegram, media messages.
   run is named `...T004700Z` in summer); side copies `*.pred-obnovou-*` stay in
   a volume until the owner deletes them with the README command; `audit.jsonl`,
   `ts-state` and `secrets/` are not backed up and off-site copies stay the
-  owner's job; the README "Struktura repa" line is 120 characters. PR 20 can
-  read the newest archive's name as the freshness signal of the backup.
+  owner's job; the README "Struktura repa" line is 120 characters. Resolved
+  by PR 20 (2026-10-11): `scripts/healthcheck.sh` section 8 reads the newest
+  archive's name as the freshness signal of the backup.
 - **PR 12 read-only token, non-blocking findings.** N1: a missing read-only
   token is signalled only by a start-up WARNING in `garmin-mcp`; `/healthz` and
   `scripts/healthcheck.sh` do not report it and an emptied file at runtime logs
@@ -1601,6 +1692,38 @@ from Telegram, media messages.
   treadmill run or an indoor ride (the weather then shows `available: false`);
   the owner may need to pick an outdoor activity by hand for the temperature and
   wind comparison. Left open because fixing it changes smoke-test behaviour.
+- **PR 14 goal progress.** (a) The shape of Garmin's daily race-prediction
+  payload (key names such as `calendarDate` and `time5K`, list against dict, int
+  against float, order, what "no predictions" looks like) is unverified: the
+  shaper was built from the library source and canned payloads, and degrades to
+  `available: false` or an error section when the real shape differs. The owner
+  captures it once on the test host (spec section 11,
+  `docker compose exec -T garmin-mcp python - < .claude/mao-log/PR-14-proto/capture.py`,
+  key names, types and counts only); a difference goes back to a designer as an
+  addendum for fixtures and shaper keys. (b) Accepted D4: on a Garmin 5xx the
+  `garminconnect` library writes an ERROR line that contains the account display
+  name, as it does for the existing latest-value call (PR 01 N2); test T-P10 pins
+  the line and turns red on purpose when the redacting log filter proposed under
+  PR 19 (c) lands. (c) Review-1 O3: the `ms=` field of the Garmin log line of the
+  predictions part is not covered by a test (the mutant that stops subtracting the
+  predictions seconds is cosmetic). (d) Review-1 O5: the README rollback command
+  redeploys only `coach-mcp`, while the spec says `garmin-mcp` and `coach-mcp`
+  together; keeping the new `garmin-mcp` is harmless.
+- **PR 20 operations alerts, accepted by decision.** (a) Review-1 O4: warnings
+  (`!` lines) are not sent, and the new cron line drops stdout, so
+  `claude CIMD: cannot download` (which silently disables the client-metadata
+  drift check), `hevy: API not responding` and an unreadable Hevy key file show
+  only in a manual run of `scripts/healthcheck.sh`; the old daily mail carried
+  them. (b) Review-1 O5: with Docker down or `.env` unreadable the script stops
+  before the notify step, so the largest outage reaches only the cron mail
+  (stderr), never Telegram. (c) Review-1 O7: the Claude client-metadata key is
+  checked statically only; the failing branch needs a download the offline
+  harness does not make. (d) Telegram's real reply to a rejected message and the
+  live `docker compose ps -q` output of a stopped service are unverified until
+  criterion 5 runs (both end in "not sent" or single-key handling). (e) A failed
+  backup is detected as a stale newest archive about 2 hours after the missed run
+  with the default limit; weekly backups need a larger `BACKUP_MAX_AGE_HOURS`
+  (for example 192).
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between
