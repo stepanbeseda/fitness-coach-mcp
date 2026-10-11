@@ -11,8 +11,10 @@ chapter and a table row; existing chapters are never rewritten, only the
   backends (`hevy-mcp/`, `garmin-mcp/`) behind one OAuth 2.1 gateway
   (`gateway/`), exposed only through a dedicated Tailscale node. It is not
   multi-user, has no web UI of its own and stores no health data outside the
-  owner's server; the only exception is the morning briefing, which since
-  PR 08 is sent to the owner's Telegram chat and kept there by Telegram.
+  owner's server; the only exceptions are the morning briefing, which since
+  PR 08 is sent to the owner's Telegram chat and kept there by Telegram, and,
+  since PR 22, what the owner writes to that bot, which passes through
+  Telegram before `coach-mcp` fetches it.
 - **One way in.** Every MCP backend is reachable only through the gateway. A
   new backend means: a `[[backends]]` entry in `gateway/config.toml`, its own
   internal token secret, a hardened service in `docker-compose.yml` (the
@@ -97,7 +99,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 19 | More Garmin signals | — | done |
 | 20 | Operations alerts via Telegram | 08 | done |
 | 21 | Static checks in the test stage | — | done |
-| 22 | Two-way Telegram | 08 | **in progress** (branch `mao/pr22-two-way-telegram`) |
+| 22 | Two-way Telegram | 08 | done |
 
 Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
 10, 11, 12, 13, 14, 09, 07, 15, 16, 17, 18, then 19, 20, 21 and last 22 (the
@@ -1622,6 +1624,52 @@ from Telegram, media messages.
 
 **Requested:** 2026-10-09, by the owner, from the project review (feature 3); questions and answers round 1 (2026-10-11).
 
+**Delivered:** 2026-10-12, PR #37 (`mao/pr22-two-way-telegram`), squash-merged
+into `main` as `8f30e91`, no rebase. `coach-mcp` gets a third background task
+next to the scheduler and the history job, `InboundPoller` in the new module
+`coach_mcp/inbound.py`: long polling of the Bot API method `getUpdates`
+(outbound HTTPS, no port), handling only text messages of the private chat
+whose chat id and sender id both equal `COACH_TELEGRAM_CHAT_ID`, answering by
+`sendMessage` as plain text. Commands: `/dnes` or `/today` (the current
+briefing text, records nothing), `/plan` (this week with session ids), `/done
+<id>`, `/skip <id>`, `/help`; any other text is a note for today (2000
+characters at most, dated by the day it was sent). Text after the id, a bad,
+unknown or unchangeable id are bad arguments and change nothing. Schema
+migration 9 adds the table `telegram_inbound` (the next update offset, one
+row); a note and its offset are written in one transaction, the first start
+(or another bot) discards the backlog, and an offset older than two days is not
+sent. The 9 to 8 way back is in `coach-mcp/README.md`. Replies come from the new
+`ReplyTexts` catalogue in `messages.py` (English and Czech, 24 fields each,
+exact text pinned in both). `COACH_TELEGRAM_INBOUND` (default `true`; on only
+with the briefing on and a private chat id, `false` turns it off) is in
+`docker-compose.yml`, `.env.example` and both READMEs; `/healthz` gets the key
+`inbound`, `scripts/healthcheck.sh` reports a stopped poller as
+`coach-inbound`, and `setup-secrets.sh telegram-chat-id` hints when no chat is
+found. Logs carry outcome words only. No new tool, secret or dependency
+(`httpx2` was already locked). The README privacy note covers what the owner
+writes and the answers (for example the week's plan). Criteria 1 to 4 met
+offline (`CHECK OK tree=c67391b7a5ca garmin=305 gateway=91 coach=1542 e2e=OK`;
+188 mutants, none survived). Deviations: criterion 2 reworded by the owner's
+answer to question Q1 before the spec (replies come from the catalogue in both
+languages, not Czech text outside it); the test count is 1542, not the spec's
+1515 (18 tests apply spec-check notes N1 and N2, 9 come from review 1); the
+spec-check note N4 (a test clock for `time.monotonic()` in `step`) was first
+declined by the implementer and applied in round 2 as a patch of the clock for
+the `inbound` module only, without a constructor change. All six clarifying
+questions were answered with the recommended default. Review took two rounds:
+round 1 APPROVED (0 blocking, 8 non-blocking, O1 to O5 and O8 fixed in one
+commit), round 2 a delta review of that commit APPROVED, `src/` unchanged.
+Spec check: 0 blocking, 4 non-blocking, all applied or answered. Still needs
+the test host (criterion 5, owner-run, after the batch's earlier deploys): `/plan`
+and a free-text note from the owner's phone, the note returned by
+`get_coach_context`, and the evidence for the Bot API facts that were not run
+(`getUpdates` with a JSON POST body, the offset and 24-hour rules, 409 for a
+second reader or a webhook, the shape of a private text message, a photo
+without `text`, the `/command@botname` form); the procedure is in the deploy
+bundle `DEPLOY-2026-10-12.md`. Open non-blocking: (O6) an `update_id` of 2**63
+or more would stop the queue; (O7) every `sqlite3.Error` is treated as
+transient (spec decision D11); both in section 5.
+
 ## 5. Open items
 
 - **PR 04 push channel.** Decided 2026-10-06 (PR 04): ntfy on the public
@@ -1690,7 +1738,9 @@ from Telegram, media messages.
   merged (2026-10-10) and also wait for the deploy bundle of 2026-10-10. Update 2026-10-10: the
   run of 2026-10-09 and PR 18 and PR 19 were deployed that night (schema 7); PR 14 and
   PR 20 (merged 2026-10-11) wait for `DEPLOY-2026-10-11.md`. PR 17 (merged 2026-10-11, #33)
-  waits for `DEPLOY-2026-10-11-pr17.md`.
+  waits for `DEPLOY-2026-10-11-pr17.md`. PR 22 (merged 2026-10-12, #37)
+  waits for `DEPLOY-2026-10-12.md`; `coach-mcp` then migrates 7 to 9 in one start when the earlier
+  bundles have not run (spec appendix B, "Order").
 - **PR 06 weather.** The CC BY 4.0 attribution sentence in the READMEs comes
   from the designer's knowledge of Open-Meteo's terms; confirm it on
   open-meteo.com. Open-Meteo's behaviour on DST transition days has not been
@@ -1846,6 +1896,18 @@ from Telegram, media messages.
   example) after midnight lifts the hold-back and is the time named in the line; the line says "last
   sync with Garmin", which stays true, and the alert behaviour then equals that before PR 17.
   Criterion 7 and the real briefing text wait for the test host.
+- **PR 22 two-way Telegram, open by decision (review 1, 2026-10-11).** O6: an `update_id` of 2**63 or more
+  makes `advance_inbound` raise `OverflowError` (not `sqlite3.Error`), so the queue stops with no reply and no
+  offset (`inbound.py`, `_updates` accepts any non-negative integer); Telegram's ids are far below it, an
+  upper bound in `_updates` would turn it into the named state `bad_answer`. O7: every `sqlite3.Error` is
+  transient (spec decision D11), so a permanent error of one message (`IntegrityError`) would repeat the batch
+  for good; no input reaches a CHECK of `notes` or `telegram_inbound` today, and if one is added
+  `IntegrityError` belongs with the per-message errors. The Telegram Bot API facts of spec table 4.6 and
+  `coach-mcp/README.md` were not run offline: `getUpdates` with a JSON POST body, the offset and 24-hour
+  rules, 409 for a second reader or a webhook, the shape of a private text message, a photo without `text`,
+  the `/command@botname` form and the 4096-character limit of a message. Each has a named state in the code
+  (`inbound poll=rejected`, `poll=conflict`, `status=ignored`); spec appendix B steps 6 and 7 are the
+  evidence procedure, with criterion 5, after the deploy of `DEPLOY-2026-10-12.md`.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between
