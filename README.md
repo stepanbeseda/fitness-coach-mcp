@@ -149,6 +149,8 @@ The parts most relevant to building LLM agents that act on real, personal data:
   to repeat.
 - **Tested offline.** About 770 test functions run against fakes and canned payloads, with no network. An
   end-to-end test runs the full OAuth + MCP flow in a throwaway Compose project (`scripts/check.sh`).
+- **Statically checked.** Every image build lints the three Python services with `ruff` and type-checks their
+  `src/` with `mypy` in strict mode before the tests run; a finding fails the build.
 - **Plan-driven, AI-assisted development.** The project was built in small reviewed PRs from a written plan
   ([`mao-plan.md`](mao-plan.md): decisions, boundaries and a brief for each PR), largely with Claude Code.
 
@@ -431,13 +433,16 @@ tests can run at the same time: `E2E_PROJECT=fcm-e2e-pr07 E2E_TAG=pr07 scripts/e
 carry the project prefix, and no service publishes a port on the host.
 
 `scripts/check.sh` is the single command for checking a change. It builds the test stages of `garmin-mcp`,
-`gateway` and `coach-mcp` (`docker build --target test --no-cache-filter test`, so the tests really run), then
-runs the e2e test with `E2E_PROJECT=fcm-e2e-<tag>` and `E2E_TAG=<tag>`.
+`gateway` and `coach-mcp` (`docker build --target test --no-cache-filter test`, so `ruff`, `mypy` and the tests
+really run), then runs the e2e test with `E2E_PROJECT=fcm-e2e-<tag>` and `E2E_TAG=<tag>`.
 - The tag is `--tag`, else `CHECK_TAG`, else `local`.
 - Every build and the e2e run hold the lock `/tmp/fcm-docker.lock` (`CHECK_LOCK=0` turns it off). It does not
   read `.env`.
 - Logs go to a temporary directory printed at the start. On failure it names the step and prints the last 40
   lines of its log.
+- A test stage runs `ruff check src tests`, `mypy` (strict mode, `src/`) and `pytest`; both static checks are
+  configured in the service's `pyproject.toml`. A stage whose log lacks the ruff or mypy summary line fails
+  the check too.
 - The last line on success is `CHECK OK tree=<HEAD tree, 12 chars>[-dirty] garmin=<n> gateway=<n> coach=<n>
   e2e=OK` (`n` = number of passed tests, `-dirty` = uncommitted changes).
 - `--only garmin|gateway|coach|e2e` runs a subset (`CHECK PARTIAL`). `--keep-images` keeps the built images
@@ -643,7 +648,9 @@ Nothing updates by itself. The procedure:
 
 1. `scripts/check-updates.sh`: what is new.
 2. Change the pin (`tailscale/Dockerfile`, `hevy-mcp/Dockerfile` including the digest, or `pyproject.toml`).
-   For Python, run `scripts/lock-deps.sh` (optionally `--upgrade`).
+   For Python, run `scripts/lock-deps.sh` (optionally `--upgrade`). `ruff` and `mypy` are pinned to exact
+   versions in the `test` / `dev` extra of each `pyproject.toml`, because a newer version can report new
+   findings; `scripts/check-updates.sh` does not list them.
 3. `scripts/check.sh` (tests of all services + e2e: build and the whole OAuth/MCP flow without touching
    production).
 4. `scripts/setup-secrets.sh` adds the secrets a new version is missing (e.g. `secrets/garmin_readonly_token`

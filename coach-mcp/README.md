@@ -506,7 +506,8 @@ An invalid value stops startup with an error (the container does not start) inst
 docker build --target test coach-mcp
 ```
 
-Tests run on every build (no network, SQLite in a temporary directory, a fixed date 2026-10-07 and a fake clock
+The test stage runs `ruff check src tests`, `mypy` (strict mode, `src/`; both configured in `pyproject.toml`)
+and the tests on every build (no network, SQLite in a temporary directory, a fixed date 2026-10-07 and a fake clock
 instead of real time; fake backends stand in for Garmin, Telegram and Open-Meteo).
 Dependency locks (`requirements.lock`, `requirements-dev.lock`) are regenerated only through
 `scripts/lock-deps.sh`.

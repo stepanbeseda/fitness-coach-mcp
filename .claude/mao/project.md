@@ -43,7 +43,8 @@ PR's worktree where noted.
   each step under `flock /tmp/fcm-docker.lock`:
   1. `docker build --target test --no-cache-filter test` of `garmin-mcp`,
      `gateway` and `coach-mcp` (images `fcm-<svc>-check-pr<NN>`), reading the
-     pytest "N passed" count from each build log;
+     pytest "N passed" count from each build log (the stage runs ruff, mypy
+     and pytest; a log without the ruff or mypy summary line fails the step);
   2. `scripts/e2e-test.sh` with `E2E_PROJECT=fcm-e2e-pr<NN> E2E_TAG=pr<NN>`
      (builds all images as `fcm-e2e/<svc>:pr<NN>`, throwaway secrets, no
      internet/Tailscale), requiring "E2E OK" and "E2E backup OK".
