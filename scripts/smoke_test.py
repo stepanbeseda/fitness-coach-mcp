@@ -174,6 +174,11 @@ def main() -> int:
         print(f"nutrition: {garmin.call('get_nutrition', {})[:1500]}")
         section("Garmin: PR 19 signals (running tolerance, strength sets, activity weather)")
         garmin_new_signals(garmin)
+        section("Garmin: strength exercise catalogue (find_strength_exercise)")
+        data = json.loads(garmin.call("find_strength_exercise", {"query": "bench press", "limit": 3}))
+        print(f"find_strength_exercise: {data['count']} matches for {data['query']!r}")
+        for match in data["matches"]:
+            print(f"  {match['exercise']} ({match['category']}/{match['name']})")
     except Exception as exc:  # noqa: BLE001
         failures += 1
         print(f"FAIL: {exc}")

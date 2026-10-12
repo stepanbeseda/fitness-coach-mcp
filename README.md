@@ -9,7 +9,7 @@ OAuth 2.1 gateway on your own server:
   Body Battery, training readiness, activities (with the weather and the sets of strength sessions recorded on
   the watch), performance metrics (race predictions and their daily history, lactate threshold, heart-rate and
   power zones, VO2max), running tolerance, personal records, gear, body composition, nutrition and hydration. It
-  can log a manual weigh-in and create structured run/ride workouts scheduled to the watch.
+  can log a manual weigh-in and create structured run, ride and strength workouts scheduled to the watch.
 - **Hevy** (`hevy-mcp/`, upstream [`chrisdoc/hevy-mcp`](https://github.com/chrisdoc/hevy-mcp) 6.1.16). It covers
   strength-training history, routines, exercise templates and writing routines and workouts.
 - **Coach memory** (`coach-mcp/`, custom server on SQLite). It stores goals, constraints (injuries, available
@@ -116,6 +116,7 @@ Alerts:
 | Coach `update_session` | Sunday's long run → `done` |
 | Hevy `search-exercise-templates`, `update-routine` | "Lower body A": squat 3×5 at 90 kg, RDL 2×8, split squat removed |
 | Garmin `create_workout`, `schedule_workout` | "Threshold 3×10" with pace and HR targets, scheduled for Friday |
+| Garmin `find_strength_exercise`, `create_workout` | "Lower body A" from Hevy sent to the watch: squat 3×5 at 90 kg, RDL 2×8, one exercise Garmin does not know sent by its title |
 | Coach `add_note` | "Yellow day 12 Oct (short sleep, HRV 2 nights below baseline): lower body cut 25 %, threshold moved to Fri for rain." |
 
 </details>
@@ -127,7 +128,7 @@ Alerts:
 
 The parts most relevant to building LLM agents that act on real, personal data:
 
-- **Tools designed for a model, not a REST mirror.** About 20 curated Garmin tools return compact,
+- **Tools designed for a model, not a REST mirror.** 25 curated Garmin tools return compact,
   coach-oriented JSON instead of raw API payloads. A section Garmin cannot provide comes back as `"error"` or
   `"available": false` instead of failing the whole call. Tool descriptions and the servers' MCP
   `instructions` tell the model which tool to call first and when (for example, read performance metrics
@@ -327,7 +328,7 @@ scripts/garmin-login.sh --check
 
 ```bash
 scripts/healthcheck.sh             # containers, node, Funnel, discovery, tailnet-only login, Garmin, Hevy, coach database
-scripts/smoke-test.sh              # tools/list on all three endpoints, coach memory summary, last 3 Hevy workouts, today's HRV/sleep, race predictions and HR zones, running tolerance, strength sets and activity weather
+scripts/smoke-test.sh              # tools/list on all three endpoints, coach memory summary, last 3 Hevy workouts, today's HRV/sleep, race predictions and HR zones, running tolerance, strength sets and activity weather, strength exercise catalogue
 ```
 
 ## Funnel

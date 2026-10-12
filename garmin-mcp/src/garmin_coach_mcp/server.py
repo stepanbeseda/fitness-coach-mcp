@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from . import __version__, activities, body, health, performance, workouts
+from . import __version__, activities, body, exercises, health, performance, workouts
 from .access import ReadOnlyGuard
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
@@ -39,6 +39,8 @@ INSTRUCTIONS = (
     "Before raising weekly running volume call get_running_tolerance (weekly running load vs. tolerance). "
     "get_activity also returns the weather and, for strength activities, the sets recorded on the watch. "
     "When last night's sleep or HRV is missing, get_device_status says when the watch last synced. "
+    "A strength session can go to the watch as well: map each exercise with find_strength_exercise, "
+    'then create_workout with sport "strength"; Hevy stays the place of record for strength training. '
     "Dates are YYYY-MM-DD in the athlete's local time zone; "
     "omit them for today. create_workout, schedule_workout, unschedule_workout and log_weight change the "
     "athlete's Garmin data: show the plan or value and get explicit confirmation first."
@@ -47,8 +49,8 @@ INSTRUCTIONS = (
 DateArg = Annotated[str | None, Field(description="YYYY-MM-DD in local time; omit for today.")]
 
 
-def _read(title: str) -> ToolAnnotations:
-    return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=True)
+def _read(title: str, *, open_world: bool = True) -> ToolAnnotations:
+    return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=open_world)
 
 
 def _write(title: str, *, destructive: bool, idempotent: bool = False) -> ToolAnnotations:
@@ -314,31 +316,61 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
     async def get_workout(
         workout_id: Annotated[int, Field(gt=0, description="Workout id from list_workouts.")],
     ) -> Any:
-        """One saved workout with its steps (type, duration/distance, target) and its Garmin
-        Connect URL."""
+        """One saved workout with its steps (type, duration/distance, target; for a strength workout the
+        exercises with sets, reps or seconds, weight in kg, rest and note) and its Garmin Connect URL."""
         return await workouts.get_workout(service, workout_id)
+
+    @tool("find_strength_exercise", _read("Find strength exercise", open_world=False))
+    async def find_strength_exercise(
+        query: Annotated[
+            str,
+            Field(
+                min_length=2,
+                max_length=80,
+                description="Exercise title, e.g. the Hevy title 'Bench Press (Barbell)' (2-80 characters).",
+            ),
+        ],
+        limit: Annotated[int, Field(ge=1, le=20, description="Maximum matches returned (1-20).")] = 5,
+    ) -> Any:
+        """Search Garmin's strength exercise catalogue (bundled with the server, about 1 500 exercises)
+        for an exercise title, for example a Hevy title such as "Bench Press (Barbell)". Returns the best
+        matches first: exercise (Garmin's display name), category and name (pass both to create_workout)
+        and a score from 0 to 1 (1 = the same words). It is a word match: check that the match is the
+        same movement and equipment. An empty list, or no match that fits, means Garmin does not know the
+        exercise: send it to create_workout with its title instead of category and name."""
+        return exercises.find(query, limit)
 
     @tool("create_workout", _write("Create structured workout", destructive=False))
     async def create_workout(
         name: Annotated[str, Field(min_length=1, max_length=80, description="Workout name shown on the watch.")],
-        sport: Annotated[Literal["running", "cycling"], Field(description="Sport of the workout.")],
+        sport: Annotated[Literal["running", "cycling", "strength"], Field(description="Sport of the workout.")],
         steps: Annotated[
             list[workouts.WorkoutItem],
-            Field(min_length=1, max_length=30, description="Ordered steps; use a 'repeat' item for interval blocks."),
+            Field(
+                min_length=1,
+                max_length=30,
+                description="Ordered steps; use a 'repeat' item for interval blocks, 'exercise' items for strength.",
+            ),
         ],
         description: Annotated[str | None, Field(max_length=500, description="Optional notes.")] = None,
         schedule_date: Annotated[
             str | None, Field(description="YYYY-MM-DD to also put it on the Garmin calendar (syncs to the watch).")
         ] = None,
     ) -> Any:
-        """Create a structured running or cycling workout in Garmin Connect and optionally
+        """Create a structured running, cycling or strength workout in Garmin Connect and optionally
         schedule it, so it syncs to the watch. Only call after the athlete confirmed the plan.
-        Each step: type (warmup|interval|recovery|rest|cooldown), end ({"type":"time","seconds":N}
-        | {"type":"distance","meters":N} | {"type":"lap_button"}) and optional target:
-        {"type":"heart_rate_zone","zone":1-5} | {"type":"heart_rate","min_bpm","max_bpm"} |
+        Running and cycling steps: type (warmup|interval|recovery|rest|cooldown), end
+        ({"type":"time","seconds":N} | {"type":"distance","meters":N} | {"type":"lap_button"}) and
+        optional target: {"type":"heart_rate_zone","zone":1-5} | {"type":"heart_rate","min_bpm","max_bpm"} |
         {"type":"pace","slowest":"5:30","fastest":"5:10"} (running, per km) |
         {"type":"power","min_watts","max_watts"} (cycling) | {"type":"cadence","min","max"}.
-        Interval blocks: {"type":"repeat","iterations":N,"steps":[...]}. Creating twice makes two
+        Interval blocks: {"type":"repeat","iterations":N,"steps":[...]}.
+        Strength (sport "strength") takes only exercise items, in order:
+        {"type":"exercise","category","name","sets","reps" or "seconds","weight_kg","rest_seconds","note"};
+        category and name come from find_strength_exercise. An exercise Garmin does not know is sent with
+        "title" (its name in Hevy) instead of category and name: the watch shows it without an exercise
+        name, with the title as its note, and the result lists it under "unmapped". All sets of one item
+        are the same; add a second item for a warm-up set or another weight. Creating twice makes two
         workouts, so do not retry blindly after an error; check list_workouts first."""
         return await workouts.create_workout(service, name, sport, steps, description, schedule_date)
 

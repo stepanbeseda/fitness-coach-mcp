@@ -5,25 +5,31 @@ Garmin payloads that upload fine but silently lose their targets. Garmin field
 conventions follow python-garminconnect's typed workout models
 (``garminconnect.workout``): custom heart-rate / power / cadence ranges use the
 zone target type with ``targetValueOne/Two`` (no ``zoneNumber``), pace ranges are
-``pace.zone`` in m/s with the slower pace as the lower value.
+``pace.zone`` in m/s with the slower pace as the lower value. A strength workout is a list of exercise items
+(sets, reps or seconds, weight, rest); each becomes one repeat group of an exercise step and a rest step, in the
+shape python-garminconnect's ``StrengthWorkout`` model describes and a real upload to Garmin accepted.
 """
 
 from __future__ import annotations
 
 import itertools
+from collections.abc import Iterator
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 
 from garminconnect.workout import (
+    WEIGHT_UNIT_KILOGRAM,
     CyclingWorkout,
     ExecutableStep,
     RepeatGroup,
     RunningWorkout,
+    StrengthWorkout,
     WorkoutSegment,
 )
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from . import exercises
 from .formatting import (
     as_dict,
     as_list,
@@ -41,6 +47,14 @@ from .garmin_client import GarminService
 
 MAX_TOTAL_STEPS = 50
 WORKOUT_URL = "https://connect.garmin.com/modern/workout/{workout_id}"
+GRAMS_PER_KG = 1000.0  # Garmin stores a step weight in grams when the unit tag is kilogram (factor 1000.0)
+REPS_SET_SECONDS = 30  # assumed length of a set that ends by repetitions, for the duration estimate
+NO_TARGET = "a strength exercise takes no pace, power, heart-rate or cadence target (give reps or seconds, and weight_kg)"
+ONLY_EXERCISES = (
+    'a strength workout takes only exercise items ({"type":"exercise", ...}); warmup, interval, recovery, rest, '
+    "cooldown and repeat steps with their pace, power or heart-rate targets are for running and cycling"
+)
+NO_EXERCISES = "exercise items are only supported for strength workouts"
 
 # ------------------------------------------------------------------ input schema
 
@@ -143,21 +157,101 @@ class Repeat(_Strict):
     steps: list[Step] = Field(min_length=1, max_length=10, description="Steps repeated as a block.")
 
 
-WorkoutItem = Annotated[Step | Repeat, Field(discriminator="type")]
+class Exercise(_Strict):
+    type: Literal["exercise"]
+    category: str | None = Field(
+        default=None,
+        max_length=60,
+        description="Garmin exercise category from find_strength_exercise, e.g. 'BENCH_PRESS'. "
+        "Omit category and name when Garmin has no match.",
+    )
+    name: str | None = Field(
+        default=None,
+        max_length=80,
+        description="Garmin exercise name from find_strength_exercise, e.g. 'BARBELL_BENCH_PRESS'.",
+    )
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=60,
+        description="The athlete's own title of the exercise (the Hevy title). Required without category and "
+        "name: it is then the note of the step.",
+    )
+    sets: int = Field(ge=1, le=20, description="Number of sets (1-20).")
+    reps: int | None = Field(default=None, ge=1, le=200, description="Repetitions per set (1-200). Give reps or seconds.")
+    seconds: int | None = Field(
+        default=None, ge=5, le=3600, description="Seconds per set for a hold or a carry (5-3600), instead of reps."
+    )
+    weight_kg: float | None = Field(
+        default=None, ge=0.1, le=500, description="Target weight in kg; omit for body weight."
+    )
+    rest_seconds: int = Field(ge=0, le=900, description="Rest after each set in seconds (0-900; 0 = no rest step).")
+    note: str | None = Field(default=None, max_length=100, description="Short cue shown with the exercise.")
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("title must not be blank")
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_target(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "target" in data:
+            raise ValueError(NO_TARGET)
+        return data
+
+    @model_validator(mode="after")
+    def _check(self) -> Exercise:
+        # Four independent checks; the order decides which message wins when several apply.
+        if (self.reps is None) == (self.seconds is None):
+            raise ValueError("give exactly one of reps and seconds")
+        if (self.category is None) != (self.name is None):
+            raise ValueError(
+                "category and name go together (both from find_strength_exercise); "
+                "omit both for an exercise Garmin does not know"
+            )
+        if self.category is None and self.title is None:
+            raise ValueError("an exercise without category and name needs a title")
+        if self.category is not None and exercises.display_name(self.category, self.name) is None:
+            raise ValueError(
+                f"unknown Garmin exercise {self.category}/{self.name}; "
+                "take category and name from find_strength_exercise"
+            )
+        return self
+
+
+WorkoutItem = Annotated[Step | Repeat | Exercise, Field(discriminator="type")]
+
+
+def _garmin_steps(item: Step | Repeat | Exercise) -> int:
+    """How many Garmin steps an input item becomes."""
+    if isinstance(item, Repeat):
+        return 1 + len(item.steps)
+    if isinstance(item, Exercise):
+        return (1 if item.sets > 1 else 0) + 1 + (1 if item.rest_seconds else 0)
+    return 1
 
 
 class WorkoutSpec(_Strict):
     name: str = Field(min_length=1, max_length=80)
-    sport: Literal["running", "cycling"]
+    sport: Literal["running", "cycling", "strength"]
     steps: list[WorkoutItem] = Field(min_length=1, max_length=30)
     description: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def _check(self) -> WorkoutSpec:
-        total = sum(1 + len(item.steps) if isinstance(item, Repeat) else 1 for item in self.steps)
+        exercise_count = sum(isinstance(item, Exercise) for item in self.steps)
+        if self.sport == "strength":
+            if exercise_count != len(self.steps):
+                raise ValueError(ONLY_EXERCISES)
+        elif exercise_count:
+            raise ValueError(NO_EXERCISES)
+        total = sum(_garmin_steps(item) for item in self.steps)
         if total > MAX_TOTAL_STEPS:
             raise ValueError(f"too many steps ({total}); Garmin workouts are limited to {MAX_TOTAL_STEPS}")
-        for step in _flat_steps(self.steps):
+        for step in _flat_steps([item for item in self.steps if not isinstance(item, Exercise)]):
             if isinstance(step.target, PaceTarget) and self.sport != "running":
                 raise ValueError("pace targets are only supported for running workouts")
             if isinstance(step.target, PowerTarget) and self.sport != "cycling":
@@ -185,6 +279,7 @@ _STEP_TYPES = {
 _END_LAP = {"conditionTypeId": 1, "conditionTypeKey": "lap.button", "displayOrder": 1, "displayable": True}
 _END_TIME = {"conditionTypeId": 2, "conditionTypeKey": "time", "displayOrder": 2, "displayable": True}
 _END_DISTANCE = {"conditionTypeId": 3, "conditionTypeKey": "distance", "displayOrder": 3, "displayable": True}
+_END_REPS = {"conditionTypeId": 10, "conditionTypeKey": "reps", "displayOrder": 10, "displayable": True}
 _END_ITERATIONS = {"conditionTypeId": 7, "conditionTypeKey": "iterations", "displayOrder": 7, "displayable": False}
 _TARGETS = {
     "none": {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1},
@@ -196,6 +291,7 @@ _TARGETS = {
 _SPORTS = {
     "running": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
     "cycling": {"sportTypeId": 2, "sportTypeKey": "cycling", "displayOrder": 2},
+    "strength": {"sportTypeId": 5, "sportTypeKey": "strength_training", "displayOrder": 5},
 }
 _DEFAULT_SPEED_MPS = {"running": 1000 / 360, "cycling": 25 / 3.6}  # 6:00/km, 25 km/h
 
@@ -238,14 +334,70 @@ def _step_seconds(step: Step, sport: str) -> float:
     return 0.0
 
 
+def _exercise_seconds(item: Exercise) -> float:
+    return float(item.sets * ((item.seconds if item.seconds is not None else REPS_SET_SECONDS) + item.rest_seconds))
+
+
 def estimate_duration_seconds(spec: WorkoutSpec) -> int:
     total = 0.0
     for item in spec.steps:
-        if isinstance(item, Repeat):
+        if isinstance(item, Exercise):
+            total += _exercise_seconds(item)
+        elif isinstance(item, Repeat):
             total += item.iterations * sum(_step_seconds(s, spec.sport) for s in item.steps)
         else:
             total += _step_seconds(item, spec.sport)
     return int(round(total))
+
+
+def _exercise_steps(item: Exercise, order: Iterator[int]) -> list[ExecutableStep | RepeatGroup]:
+    """One exercise: a repeat group of the exercise step and a rest step, or the plain steps for a single set."""
+    group_order = next(order) if item.sets > 1 else None
+    fields: dict[str, Any] = {
+        "stepOrder": next(order),
+        "stepType": dict(_STEP_TYPES["interval"]),
+        "targetType": dict(_TARGETS["none"]),
+    }
+    if item.seconds is not None:
+        fields |= {"endCondition": dict(_END_TIME), "endConditionValue": float(item.seconds)}
+    else:
+        fields |= {"endCondition": dict(_END_REPS), "endConditionValue": float(item.reps or 0)}
+    if item.category is not None:
+        fields |= {"category": item.category, "exerciseName": item.name}
+        description = item.note
+    else:  # Garmin does not know the exercise: the step carries the athlete's title as its note
+        description = f"{item.title} - {item.note}" if item.note else item.title
+    if item.weight_kg is not None:
+        fields |= {
+            "weightValue": float(round(item.weight_kg * GRAMS_PER_KG)),
+            "weightUnit": dict(WEIGHT_UNIT_KILOGRAM),
+        }
+    if description:
+        fields["description"] = description
+    steps: list[ExecutableStep | RepeatGroup] = [ExecutableStep(**fields)]
+    if item.rest_seconds:
+        steps.append(
+            ExecutableStep(
+                stepOrder=next(order),
+                stepType=dict(_STEP_TYPES["rest"]),
+                endCondition=dict(_END_TIME),
+                endConditionValue=float(item.rest_seconds),
+                targetType=dict(_TARGETS["none"]),
+            )
+        )
+    if group_order is None:
+        return steps
+    return [
+        RepeatGroup(
+            stepOrder=group_order,
+            stepType=dict(_STEP_TYPES["repeat"]),
+            numberOfIterations=item.sets,
+            workoutSteps=steps,
+            endCondition=dict(_END_ITERATIONS),
+            endConditionValue=float(item.sets),
+            smartRepeat=False,
+        )
+    ]
 
 
 def build_garmin_workout(spec: WorkoutSpec) -> dict[str, Any]:
@@ -264,7 +416,9 @@ def build_garmin_workout(spec: WorkoutSpec) -> dict[str, Any]:
 
     garmin_steps: list[ExecutableStep | RepeatGroup] = []
     for item in spec.steps:
-        if isinstance(item, Repeat):
+        if isinstance(item, Exercise):
+            garmin_steps.extend(_exercise_steps(item, order))
+        elif isinstance(item, Repeat):
             group_order = next(order)
             children = [executable(s) for s in item.steps]
             garmin_steps.append(
@@ -281,7 +435,7 @@ def build_garmin_workout(spec: WorkoutSpec) -> dict[str, Any]:
         else:
             garmin_steps.append(executable(item))
 
-    model = RunningWorkout if spec.sport == "running" else CyclingWorkout
+    model = {"running": RunningWorkout, "cycling": CyclingWorkout, "strength": StrengthWorkout}[spec.sport]
     workout = model(
         workoutName=spec.name,
         estimatedDurationInSecs=estimate_duration_seconds(spec),
@@ -348,22 +502,102 @@ def summarize_steps(steps: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _kg(grams: Any) -> float | int | None:
+    g = num(grams, 3)
+    if g is None or g <= 0:
+        return None
+    return num(g / GRAMS_PER_KG, 2)
+
+
+def _step_key(step: dict[str, Any]) -> Any:
+    return as_dict(step.get("stepType")).get("stepTypeKey")
+
+
+def _end_key(step: dict[str, Any]) -> Any:
+    return as_dict(step.get("endCondition")).get("conditionTypeKey")
+
+
+def _is_repeat(step: dict[str, Any]) -> bool:
+    return step.get("type") == "RepeatGroupDTO" or _step_key(step) == "repeat"
+
+
+def _ordered(steps: Any) -> list[dict[str, Any]]:
+    return sorted((s for s in as_list(steps) if isinstance(s, dict)), key=lambda s: s.get("stepOrder") or 0)
+
+
+def _exercise_summary(step: dict[str, Any], sets: Any, rest: dict[str, Any] | None) -> dict[str, Any]:
+    end, value = _end_key(step), step.get("endConditionValue")
+    category, name = step.get("category"), step.get("exerciseName")
+    return clean(
+        {
+            "exercise": exercises.display_name(category, name),
+            "category": category,
+            "name": name,
+            "sets": num(sets, 0),
+            "reps": num(value, 0) if end == "reps" else None,
+            "seconds": num(value, 0) if end == "time" else None,
+            "end": describe_end(step) if end not in ("reps", "time") else None,
+            "weight_kg": _kg(step.get("weightValue")),
+            "rest_seconds": num(rest.get("endConditionValue"), 0) if rest is not None else None,
+            "note": step.get("description"),
+        }
+    )
+
+
+def _set_block(children: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+    """(exercise step, rest step or None) when a repeat group is one exercise and an optional timed rest."""
+    if not children or len(children) > 2 or _is_repeat(children[0]) or _step_key(children[0]) == "rest":
+        return None
+    if len(children) == 1:
+        return children[0], None
+    rest = children[1]
+    if _step_key(rest) != "rest" or _end_key(rest) != "time":
+        return None
+    return children[0], rest
+
+
+def summarize_strength_steps(steps: Any, *, nested: bool = False) -> list[dict[str, Any]]:
+    """Exercise-oriented summary of the steps of a strength workout.
+
+    A repeat group of one exercise and an optional timed rest is one entry with ``sets``; any other group stays
+    a ``repeat`` with its steps (no ``sets`` inside), so a workout built in the Garmin app degrades to what
+    ``summarize_steps`` would show instead of failing.
+    """
+    out: list[dict[str, Any]] = []
+    for step in _ordered(steps):
+        if _is_repeat(step):
+            children = _ordered(step.get("workoutSteps"))
+            block = _set_block(children)
+            if block is None:
+                out.append({"repeat": step.get("numberOfIterations"), "steps": summarize_strength_steps(children, nested=True)})
+            else:
+                out.append(_exercise_summary(block[0], step.get("numberOfIterations"), block[1]))
+        elif _step_key(step) == "rest":
+            out.append(clean({"type": "rest", "end": describe_end(step), "note": step.get("description")}))
+        else:
+            out.append(_exercise_summary(step, None if nested else 1, None))
+    return out
+
+
 def summarize_workout(w: dict[str, Any], *, with_steps: bool) -> dict[str, Any]:
     workout_id = w.get("workoutId")
+    sport = as_dict(w.get("sportType")).get("sportTypeKey")
     out: dict[str, Any] = {
         "workout_id": workout_id,
         "name": w.get("workoutName"),
-        "sport": as_dict(w.get("sportType")).get("sportTypeKey"),
+        "sport": sport,
         "description": w.get("description"),
         "estimated_duration_min": minutes(w.get("estimatedDurationInSecs"), 0),
         "estimated_distance_km": km(w.get("estimatedDistanceInMeters")) or None,
-        "updated": (w.get("updatedDate") or w.get("createdDate") or "")[:10] or None,
+        # the library list spells the change date updateDate, the detail updatedDate
+        "updated": (w.get("updatedDate") or w.get("updateDate") or w.get("createdDate") or "")[:10] or None,
     }
     if with_steps:
+        summarize = summarize_strength_steps if sport == "strength_training" else summarize_steps
         segments = [s for s in as_list(w.get("workoutSegments")) if isinstance(s, dict)]
         steps: list[dict[str, Any]] = []
         for segment in segments:
-            steps.extend(summarize_steps(segment.get("workoutSteps")))
+            steps.extend(summarize(segment.get("workoutSteps")))
         out["steps"] = steps
         out["url"] = WORKOUT_URL.format(workout_id=workout_id) if workout_id else None
     return clean(out)
@@ -451,7 +685,7 @@ async def get_workout(service: GarminService, workout_id: int) -> dict[str, Any]
 async def create_workout(
     service: GarminService,
     name: str,
-    sport: Literal["running", "cycling"],
+    sport: Literal["running", "cycling", "strength"],
     steps: list[Any],
     description: str | None,
     schedule_date: str | None,
@@ -464,6 +698,7 @@ async def create_workout(
     scheduled_for = _check_schedule_date(schedule_date, service.settings.timezone) if schedule_date else None
     payload = build_garmin_workout(spec)
 
+    summarize = summarize_strength_steps if spec.sport == "strength" else summarize_steps
     created = as_dict(await service.call(lambda c: c.upload_workout(payload)))
     workout_id = created.get("workoutId")
     if not workout_id:
@@ -473,9 +708,12 @@ async def create_workout(
         "name": created.get("workoutName") or spec.name,
         "sport": spec.sport,
         "estimated_duration_min": minutes(payload.get("estimatedDurationInSecs"), 0),
-        "steps": summarize_steps(payload["workoutSegments"][0]["workoutSteps"]),
+        "steps": summarize(payload["workoutSegments"][0]["workoutSteps"]),
         "url": WORKOUT_URL.format(workout_id=workout_id),
     }
+    unmapped = [item.title or "" for item in spec.steps if isinstance(item, Exercise) and item.category is None]
+    if unmapped:
+        result["unmapped"] = unmapped
     if scheduled_for is not None:
         day = scheduled_for.isoformat()
         try:
