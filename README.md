@@ -128,7 +128,7 @@ Alerts:
 
 The parts most relevant to building LLM agents that act on real, personal data:
 
-- **Tools designed for a model, not a REST mirror.** About 20 curated Garmin tools return compact,
+- **Tools designed for a model, not a REST mirror.** 25 curated Garmin tools return compact,
   coach-oriented JSON instead of raw API payloads. A section Garmin cannot provide comes back as `"error"` or
   `"available": false` instead of failing the whole call. Tool descriptions and the servers' MCP
   `instructions` tell the model which tool to call first and when (for example, read performance metrics
