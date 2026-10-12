@@ -84,7 +84,7 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 04 | Morning briefing and alerts | 03 | done |
 | 05 | History store, trends and weekly report | 03 | done |
 | 06 | Weather and calendar | 03 | done |
-| 07 | Strength workouts on the watch | — | planned |
+| 07 | Strength workouts on the watch | — | done |
 | 08 | Daily briefing via Telegram | 04 | done |
 | 09 | Strength history and progress | 05 | done |
 | 10 | Separate e2e image tags and a configurable time zone | — | done |
@@ -631,6 +631,89 @@ sync.
    the watch after sync.
 
 **Requested:** 2026-10-03, by the owner, from the feature brainstorm (idea 6).
+
+**Delivered:** 2026-10-12, PR #40 (`mao/pr07-strength-workouts-watch`),
+squash-merged into `main` as `df6886d`, no rebase. `garmin-mcp` only:
+`create_workout` takes `sport: "strength"` and a third item type `exercise`
+(Garmin `category` and `name`, or a `title` for an exercise Garmin does not
+know; `sets` 1 to 20; `reps` or `seconds`; optional `weight_kg`;
+`rest_seconds`; `note`). A set block is a repeat group of an exercise step and a
+timed rest step; the weight is sent in grams with the kilogram unit. Pace,
+power and heart-rate targets on strength steps are refused with a clear error,
+and so is a whitespace-only `title`; the limit of 50 steps counts the Garmin
+steps. The result lists the `unmapped` exercises. New module `exercises.py` and
+the read-only tool `find_strength_exercise` (query of 3 or more characters,
+ranked matches with category and name, an empty list for nonsense) search the
+catalogue shipped in `garminconnect` 0.3.17 (1 527 exercises, 47 categories),
+make no Garmin call and are open to the coach's read-only token; the Garmin tool
+count is 25. `get_workout` summarises a strength workout (exercises, sets, reps
+or seconds, weight in kg, rest, note) and shows what it does not understand as a
+plain `repeat` / `end`; `list_workouts` lists it with its sport. Tests:
+`test_exercises.py`, additions to `test_workouts.py`, `test_http.py`,
+`test_read_only.py` and `test_library_logs.py` (`upload_workout` through the
+library's real inner client, with its log records), the canned request of the
+spike as `STRENGTH_UPLOAD` in `tests/fixtures.py`; Garmin tests 305 to 424.
+`scripts/smoke_test.py` gets a read-only "Garmin: strength exercise catalogue"
+section. `garmin-mcp/README.md`, `README.md` (also a stale "About 20 curated
+Garmin tools" corrected to 25) and `docs/coach-instructions.md` (a "Strength on
+the watch" rule: map with `find_strength_exercise`, show the mapping, send only
+after confirmation, Hevy stays the place of record) updated. No coach-mcp or
+gateway change, no schema, config, secret, compose or dependency change.
+Criteria 1 to 6 met offline (`CHECK OK tree=db6a4d6ff636 garmin=424 gateway=91
+coach=1542 e2e=OK`; round 1 65 mutants and the delta 18, the survivors were test
+gaps on correct code, closed in round 2, or near-equivalent). Reworded "Done
+when" (the chapter text above is unchanged, plan section 1, PR 19 precedent; the
+acceptance basis was `PR-07-brief.md`): (1) an exercise takes `reps` or
+`seconds`, by the owner's answer to Q2; (2) the canned payload is the
+four-block request Garmin accepted in the spike (a mapped exercise with a
+weight, a mapped one with a note, an unmapped one, a timed one), not a
+three-exercise shape; (4) an unmapped exercise is a step without a Garmin
+exercise, its title in the note, instead of a generic step; (5) `list_workouts`
+lists a strength workout with its sport only, because Garmin's list carries no
+steps, and `get_workout` shows the exercises, sets, repetitions or seconds,
+weights and rests; (6) the check is `scripts/check.sh --tag pr07`. Deviations:
+timed exercises were added by the owner's answer to Q2; the closest-category
+fallback of Q3 is not built, because Garmin accepted a step without an
+exercise (spec decision D3, it stays the documented fallback); a blank title
+is refused and a two-set step count is tested, both added after review round 1.
+Spike (2026-10-12, run once by the orchestrator on the owner's own typed
+command): Garmin accepted the four-block workout at the first upload and stored
+the exercise names, the weight (grams with the kilogram unit), the step notes,
+a step without an exercise (category and name null, the note kept) and a hold by
+time; the owner saw them in the Garmin Connect mobile app and on the watch ("all
+good", notes visible in both). The request body of that upload is the canned
+payload of criterion 2. All three clarifying questions were answered with the
+recommended default. Review took two rounds: round 1 APPROVED (0 blocking, 12
+non-blocking; O1 to O5, O7, O10 and O11 fixed in two commits), round 2 a delta
+review APPROVED with 2 new non-blocking (N1, N2). Spec check: 2 blocking (B1
+four mutation-table entries named a test that does not kill the mutant, B2 the
+library-log claim held only for the stub), 5 non-blocking, fixed in place and
+folded in before implementation.
+Live verification 2026-10-12 (owner rebuilt `garmin-mcp` at `df6886d` and pasted
+the changed `docs/coach-instructions.md` into the project): `scripts/smoke-test.sh`
+green (exit 0), 25 Garmin tools with `find_strength_exercise` listed, the
+"strength exercise catalogue" section printed 3 matches for "bench press".
+Criterion 7 met by the owner's words: names, sets, repetitions, weights and the
+label of a step without an exercise match in Garmin Connect and on the watch.
+Gateway audit since the rebuild (all status 200): `find_strength_exercise` 10
+calls, `create_workout` 1 call. This settles U1: an exercise Garmin does not
+know is shown with the heading "--" and its note (the Hevy title) below it;
+`garmin-mcp/README.md` and `docs/coach-instructions.md` still name no label.
+The owner did not say which squat the coach picked, so O6 was not observed.
+Still unverified: U2 (the shapes the spike did not send: a single set outside a
+repeat group, a set block without a rest, a weight on a step without an exercise
+or on a timed step, a note longer than 27 characters, more than 4 blocks, a
+fractional weight; the one real `create_workout` call returned 200, but the
+audit holds no arguments, so its shape is not recorded), U3 (workouts authored in the Garmin app: supersets,
+pound units, lap-button ends) and U4 (Garmin's step limit; the 50 stays). Open
+non-blocking: (O6) a plain "Squat (Barbell)" ranks Barbell Back Squat fourth
+(design D9); (O8) `get_workout` shows a warm-up step without its type; (O9) a
+`TypeError` on a mixed `stepOrder` of a workout authored in the Garmin app; (N1)
+a validator returning the stripped title would survive the suite; (N2) a
+zero-width space as the whole title passes the blank-title check and a blank
+`note` on an unmapped exercise gives the description `"t -    "`; all in section
+5. The owner deletes the spike workout "MAO spike PR07 - delete me" in Garmin
+Connect (the server has no delete tool).
 
 ### PR 08 — Daily briefing via Telegram
 
@@ -1700,7 +1783,10 @@ no `#id` line, `/done` or `/skip` ran on live data.
   one. Whether Garmin accepts the uploaded payload and keeps the exercise
   names is still unverified, so the spike stays.
   Postponed by the owner on 2026-10-09 (no spike on the real Garmin
-  account); the row stays planned.
+  account); the row stays planned. Resolved by PR 07 (2026-10-12): the spike
+  ran on the owner's account, Garmin accepted the payload and kept the names,
+  the weight, the notes, a step without an exercise and a timed hold, and the
+  catalogue is the one in `garminconnect` (see the "Delivered" block of PR 07).
 - **The coach's backend tokens have full access.** Garmin part resolved by PR 12
   (2026-10-09): `coach-mcp` reads `garmin-mcp` with the read-only token
   `garmin_readonly_token`, and `garmin-mcp` refuses every tool not annotated
@@ -1920,6 +2006,25 @@ no `#id` line, `/done` or `/skip` ran on live data.
   run: `getUpdates` with a JSON POST body and the shape of a private text message are confirmed (a command
   and a note were answered, no `poll=rejected`, no `status=ignored`). Still not observed: no replay after a
   restart, messages kept while the service is stopped, 409, a photo, the `/command@botname` form.
+- **PR 07 strength workouts, open by decision (review 1 and 2, 2026-10-12).**
+  O6: a plain "Squat (Barbell)" ranks Barbell Back Squat fourth in
+  `find_strength_exercise` (design D9; the coach picks from the ranked list and
+  shows the mapping before the upload; whether it picked a sensible squat in the
+  live run was not observed). O8: a warm-up or cool-down step inside a workout
+  authored in the Garmin app is shown by `get_workout` without its type. O9: a
+  mixed `stepOrder` in such a workout raises a `TypeError` in `_ordered`. N1: no
+  test pins that a padded `title` reaches the step as given (a validator returning
+  the stripped title would survive; either behaviour is harmless). N2: a
+  zero-width space as the whole title passes the blank-title check, and a blank
+  `note` on an unmapped exercise gives the description `"t -    "` (cosmetic, the
+  athlete confirms the mapping before the upload). Unverified Garmin side, each
+  with a visible failure: U2 (a single set outside a repeat group, a set block
+  without a rest, a weight on a step without an exercise or on a timed step, a
+  note longer than 27 characters, more than 4 blocks, a fractional weight), U3
+  (supersets, pound units and lap-button ends of workouts authored in the Garmin
+  app) and U4 (Garmin's step limit; the limit of 50 is kept). The label of a step
+  without an exercise is known since the live run ("--" with the note below, U1)
+  but the READMEs and `docs/coach-instructions.md` name no label.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between

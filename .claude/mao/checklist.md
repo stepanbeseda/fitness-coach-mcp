@@ -54,6 +54,8 @@ repeated findings.
   guard, not only the removal of the guard: `<=` against `<`, `any` against
   `all` or `sum`, `upper()` dropped, a tie rule reversed, a type guard turned
   into `True`; each has a case that tells it apart, and the reviewer runs them.
+- [ ] Every mutant of a spec's mutation table was run on the prescribed tests, and the test named as its killer
+  turns red; a guard that answers first needs a variant where only the mutated half decides.
 - [ ] Every case that a criterion enumerates (for example "a missing, malformed
   or unreadable token") has its own test row; a case without a row is a
   finding, because its guard survives mutation. Expected values prescribed by a
@@ -82,6 +84,8 @@ repeated findings.
 - [ ] A date or timestamp that comes from a backend is bounded by year when
   parsed or parsed under `except (ValueError, OverflowError)`; a test feeds
   9999-12-31 and 0001-01-01 through the real path.
+- [ ] A claim about what a library logs, sends or re-sends (retry, token refresh) is shown through the library's real
+  inner client; a stub that replaces that client proves only what the server itself does.
 - [ ] A statement in the spec or code about what a library or backend
   returns (error text, status, output schema, nullability, a shared error
   code) was checked against the real image; HTTP tests of tool errors assert
