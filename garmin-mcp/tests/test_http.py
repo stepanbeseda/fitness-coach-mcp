@@ -278,6 +278,8 @@ async def test_find_strength_exercise_over_http(app, fake):
                           {"query": "p"}, {"query": "p" * 81}):
             assert (await _call(client, "find_strength_exercise", arguments))["isError"] is True, arguments
         assert (await _call(client, "find_strength_exercise", {"query": "p" * 80}))["isError"] is False
+        short = await _call(client, "find_strength_exercise", {"query": "ab"})  # the minimum length of 2
+        assert short["isError"] is False and json.loads(short["content"][0]["text"])["query"] == "ab"
     assert fake.calls == []  # a catalogue lookup makes no Garmin call
 
 

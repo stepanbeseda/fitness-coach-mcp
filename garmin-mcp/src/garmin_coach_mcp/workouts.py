@@ -27,7 +27,7 @@ from garminconnect.workout import (
     WorkoutSegment,
 )
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from . import exercises
 from .formatting import (
@@ -187,6 +187,13 @@ class Exercise(_Strict):
     )
     rest_seconds: int = Field(ge=0, le=900, description="Rest after each set in seconds (0-900; 0 = no rest step).")
     note: str | None = Field(default=None, max_length=100, description="Short cue shown with the exercise.")
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("title must not be blank")
+        return value
 
     @model_validator(mode="before")
     @classmethod

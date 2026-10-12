@@ -310,6 +310,16 @@ def test_strength_step_count():
     w.WorkoutSpec(**_strength(steps=[_exercise_item()] * 30))  # 30 single sets without rest
 
 
+def test_strength_step_count_two_sets_and_the_limit_itself():
+    two_sets = {**STRENGTH_SPEC["steps"][0], "sets": 2}  # a group, the exercise and a rest step: 3 Garmin steps
+    w.WorkoutSpec(**_strength(steps=[two_sets] * 16))  # 48
+    with pytest.raises(ValidationError, match=r"too many steps \(51\)"):
+        w.WorkoutSpec(**_strength(steps=[two_sets] * 17))  # a two-set block is a group, not a single set
+    three_sets_no_rest = {**STRENGTH_SPEC["steps"][0], "rest_seconds": 0}  # a group and the exercise: 2 steps
+    spec = w.WorkoutSpec(**_strength(steps=[*([STRENGTH_SPEC["steps"][0]] * 16), three_sets_no_rest]))  # exactly 50
+    assert len(_steps(w.build_garmin_workout(spec))) == 17
+
+
 def _append(item):
     return lambda s: s["steps"].append(item)
 
@@ -369,6 +379,8 @@ STRENGTH_ROWS = [
     ("category of 61", _set(0, category="C" * 61), "at most 60 characters"),
     ("name of 81", _set(0, name="N" * 81), "at most 80 characters"),
     ("empty title", _set(2, title=""), "at least 1 character"),
+    ("blank title", _set(2, title="   "), "title must not be blank"),
+    ("blank title of a mapped exercise", _set(0, title=" \t"), "title must not be blank"),
     ("sets 0", _set(0, sets=0), "greater than or equal to 1"),
     ("sets 21", _set(0, sets=21), "less than or equal to 20"),
     ("reps 0", _set(0, reps=0), "greater than or equal to 1"),
@@ -507,6 +519,7 @@ VARIANTS = [
                               {"exercise": "Plank", "category": "PLANK", "name": "PLANK", "seconds": 45}]}]),
     ("V19 empty group", lambda g: g[0].update(workoutSteps=[]), [{"repeat": 3, "steps": []}, PULL_UP]),
     ("V20 non-dict steps", _v20, [BENCH, PULL_UP]),
+    ("V21 weight in two decimals", _first(weightValue=2268.0), [{**BENCH, "weight_kg": 2.27}]),
 ]
 
 
@@ -530,9 +543,10 @@ def test_list_row_reads_update_date():
     assert w.summarize_workout(row, with_steps=False)["updated"] == "2026-10-11"  # ... over updateDate
 
 
-def test_strength_steps_under_another_sport_keep_the_old_summary():
+@pytest.mark.parametrize("sport", ["running", "cycling"])
+def test_strength_steps_under_another_sport_keep_the_old_summary(sport):
     detail = copy.deepcopy(fx.STRENGTH_WORKOUT_DETAIL)
-    detail["sportType"] = {"sportTypeId": 1, "sportTypeKey": "running"}
+    detail["sportType"] = {"sportTypeKey": sport}
     first = w.summarize_workout(detail, with_steps=True)["steps"][0]
     assert first == {"repeat": 3, "steps": [{"type": "interval", "end": "reps"}, {"type": "rest", "end": "time 1:30"}]}
 

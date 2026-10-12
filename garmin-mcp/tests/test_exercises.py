@@ -86,4 +86,6 @@ def test_e7_display_name():
     assert x.display_name(None, None) is None
     assert x.display_name("PLANK", 5) is None
     assert x.display_name(["PLANK"], {}) is None  # unhashable: a stored step with an odd value must not raise
+    assert x.display_name("PLANK", {}) is None  # each half of the type guard alone
+    assert x.display_name(["PLANK"], "PLANK") is None
     assert len(x._DISPLAY) == len(catalogue.EXERCISES)  # no (category, name) pair is lost to a duplicate
