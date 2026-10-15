@@ -23,7 +23,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from . import __version__, goals, strength, tools, trends
+from . import __version__, goals, plan, strength, tools, trends
 from . import correlations
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
@@ -304,16 +304,16 @@ def build_server(
         session_id: Annotated[int, Field(gt=0, description="Session id from get_coach_context or get_plan.")],
         status: Annotated[SessionStatus, Field(description="planned, done, skipped or moved.")],
         new_date: Annotated[str | None, Field(description="YYYY-MM-DD; required for moved, otherwise not allowed.")] = None,
-        note: Annotated[str | None, Field(max_length=2000, description="Optional note stored with the session.")] = None,
+        note: Annotated[str | None, Field(max_length=plan.NOTE_MAX, description="Optional note stored with the session.")] = None,
     ) -> Any:
         """Record what happened to a session after checking Garmin and Hevy: done, skipped, back to
-        planned, or moved (with new_date; creates a planned copy on that date). An optional note is stored
-        with the session. Only after the athlete confirmed."""
+        planned, or moved (with new_date; creates a planned copy on that date). A session dated after today
+        cannot be marked done. An optional note is stored with the session. Only after the athlete confirmed."""
         return tools.update_session(store, today(), session_id=session_id, status=status, new_date=new_date, note=note)
 
     @tool("add_note", _write("Add note"))
     async def add_note(
-        text: Annotated[str, Field(max_length=2000, description="The note.")],
+        text: Annotated[str, Field(max_length=plan.NOTE_MAX, description="The note.")],
         date: Annotated[str | None, Field(description="YYYY-MM-DD; default today.")] = None,
         session_id: Annotated[int | None, Field(gt=0, description="Optional session the note belongs to.")] = None,
     ) -> Any:
