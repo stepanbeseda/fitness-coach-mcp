@@ -49,7 +49,11 @@ ODD = {
     "bad_values": [{"secsInZone": "x", "zoneNumber": 1, "calendarDate": "not-a-date", "uuid": "u-1",
                     "generic": {"calendarDate": "not-a-date", "vo2MaxPreciseValue": 50}}],
 }
-CHANGED: dict[str, str] = {}
+# Spec D5: a shaper that raises now degrades its section instead of failing the whole tool.
+CHANGED = {
+    "get_activity get_activity_hr_in_timezones odd bad_values":
+        "test_activities.py::test_get_activity_odd_zones_payload_is_left_out",
+}
 
 
 def _scenarios() -> list[tuple[str, str, str, str]]:

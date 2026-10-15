@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 from garminconnect import GarminConnectNotFoundError
@@ -282,13 +283,14 @@ async def test_get_activity_weather_degrades(service, fake):
 
 
 @pytest.mark.anyio
-async def test_get_activity_odd_weather_payload_is_section_error(service, fake, monkeypatch):
-    def boom(raw):
-        raise KeyError("x")
-
-    monkeypatch.setattr(activities, "shape_activity_weather", boom)
+async def test_get_activity_odd_zones_payload_is_left_out(service, fake, caplog):
+    # a text where Garmin sends seconds makes shape_hr_zones raise; before PR 25 that failed the whole tool
+    fake.responses["get_activity_hr_in_timezones"] = [{"zoneNumber": 1, "secsInZone": "x"}]
+    caplog.set_level(logging.WARNING, logger="garmin_coach_mcp.sections")
     out = await activities.get_activity(service, 20001)
-    assert out["weather"] == {"error": "unexpected Garmin response for weather"} and out["name"]
+    assert "hr_zones" not in out
+    assert out["name"] == "Praha Běh" and len(out["laps"]) == 10 and out["weather"]["temp_c"] is not None
+    assert [r.getMessage() for r in caplog.records] == ["could not shape zones: ValueError"]
 
 
 @pytest.mark.anyio
