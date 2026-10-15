@@ -5,6 +5,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 from conftest import TODAY
+from coach_mcp import plan
 from coach_mcp import store as store_module
 from coach_mcp import tools
 from coach_mcp.tools import PlannedSession
@@ -540,6 +541,56 @@ def test_update_session_unknown_id(store):
     assert err(tools.update_session, store, TODAY, session_id=999, status="done") == "session 999 not found"
 
 
+def test_update_session_refuses_done_after_today(store):
+    tomorrow = seed(store, "2026-10-08")
+    before = (statuses(store), count(store, "notes"))
+    assert err(tools.update_session, store, TODAY, session_id=tomorrow, status="done", note="ran early") == (
+        f"session {tomorrow} is planned for 2026-10-08, after today, and cannot be marked done yet"
+    )
+    assert (statuses(store), count(store, "notes")) == before
+    assert tools.update_session(store, TODAY, session_id=tomorrow, status="skipped")["session"]["status"] == "skipped"
+    today_id = seed(store, "2026-10-07")
+    assert tools.update_session(store, TODAY, session_id=today_id, status="done")["session"]["status"] == "done"
+
+
+REFUSAL_ERRORS = [
+    (plan.Refusal(plan.Reason.NOT_FOUND, 5), "session 5 not found"),
+    (plan.Refusal(plan.Reason.SUPERSEDED, 5), "session 5 was superseded by a later plan and cannot be updated"),
+    (plan.Refusal(plan.Reason.MOVED, 5), "session 5 was already moved; update that one"),
+    (
+        plan.Refusal(plan.Reason.MOVED_TO, 5, copy_id=6, copy_day=date(2026, 10, 9)),
+        "session 5 was already moved to session 6 on 2026-10-09; update that one",
+    ),
+    (
+        plan.Refusal(plan.Reason.COPY_SUPERSEDED, 5, copy_id=6, copy_day=date(2026, 10, 9)),
+        "session 5 was moved to session 6 on 2026-10-09, which a later plan superseded; nothing left to update",
+    ),
+    (
+        plan.Refusal(plan.Reason.FUTURE, 5, day=date(2026, 10, 8)),
+        "session 5 is planned for 2026-10-08, after today, and cannot be marked done yet",
+    ),
+    (plan.Refusal(plan.Reason.NOT_PLANNED, 5), "only a planned session can be moved"),
+    (plan.Refusal(plan.Reason.SAME_DATE, 5), "new_date must differ from the session date"),
+    (plan.Refusal(plan.Reason.PAST_DATE, 5), "new_date must be today or later"),
+    (plan.Refusal(plan.Reason.TEXT_EMPTY), "note must not be empty"),
+    (plan.Refusal(plan.Reason.TEXT_NUL), "note must not contain NUL characters"),
+    (plan.Refusal(plan.Reason.TEXT_TOO_LONG, length=2001), "note must be at most 2000 characters"),
+]
+
+
+def test_every_refusal_reason_has_a_tool_error():
+    assert {refusal.reason for refusal, _text in REFUSAL_ERRORS} == set(plan.Reason)
+    for refusal, text in REFUSAL_ERRORS:
+        assert str(tools.refusal_error(refusal, "note")) == text
+    assert str(tools.refusal_error(plan.Refusal(plan.Reason.TEXT_EMPTY), "text")) == "text must not be empty"
+
+
+def test_add_note_names_a_bad_text_before_a_bad_date(store):
+    assert err(tools.add_note, store, TODAY, text="  ", date="yesterday") == "text must not be empty"
+    assert err(tools.add_note, store, TODAY, text="x" * 2001) == "text must be at most 2000 characters"
+    assert count(store, "notes") == 0
+
+
 def test_update_session_back_to_planned_and_same_status(store):
     sid = seed(store, "2026-10-06", status="done")
     assert tools.update_session(store, TODAY, session_id=sid, status="planned")["session"]["status"] == "planned"
@@ -770,7 +821,7 @@ def test_search_ignores_diacritics_and_case(store, query, expected):
 
 
 def test_new_note_is_found_at_once(store):
-    sid = seed(store, "2026-10-08")
+    sid = seed(store, "2026-10-06")
     added = tools.add_note(store, TODAY, text="Kotník oteklý")["note"]
     assert tools.search_notes(store, TODAY, query="kotnik")["notes"] == [added]
     result = tools.update_session(store, TODAY, session_id=sid, status="done", note="Lýtko tuhé")
@@ -879,7 +930,7 @@ def test_writes_never_reduce_row_counts(store):
     sid = store.sessions_between(date(2026, 10, 5), date(2026, 10, 11), include_superseded=True)[-1]["id"]
     seed_id = seed(store, "2026-10-09")
     step(tools.update_session, session_id=seed_id, status="moved", new_date="2026-10-10", note="n")
-    step(tools.update_session, session_id=seed_id + 1, status="done")
+    step(tools.update_session, session_id=seed_id + 1, status="skipped")
     step(tools.add_note, text="n2", session_id=sid)
     assert snapshot()["sessions"] >= 5
 

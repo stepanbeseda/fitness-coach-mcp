@@ -12,11 +12,12 @@ import datetime as dt
 import json
 import re
 import sqlite3
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, assert_never
 
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import plan
 from .goals import parse_target_value, target_value_out
 from .reconcile import RECONCILE_DAYS
 from .store import Store
@@ -434,43 +435,14 @@ def update_session(
     if status == "moved" and new_date is None:
         raise ToolError("new_date is required for status 'moved'")
     target = parse_date(new_date, "new_date") if new_date is not None else None
-    note_text = _required_text(note, "note") if note is not None else None
-
-    row = store.get_session(session_id)
-    if row is None:
-        raise ToolError(f"session {session_id} not found")
-    if row["status"] == "superseded":
-        raise ToolError(f"session {session_id} was superseded by a later plan and cannot be updated")
-    if row["status"] == "moved":
-        link = store.moved_to([session_id]).get(session_id)
-        if link is None:
-            raise ToolError(f"session {session_id} was already moved; update that one")
-        copy_id, copy_date = link
-        copy = store.get_session(copy_id)
-        if copy is not None and copy["status"] == "superseded":
-            raise ToolError(
-                f"session {session_id} was moved to session {copy_id} on {copy_date}, "
-                "which a later plan superseded; nothing left to update"
-            )
-        raise ToolError(f"session {session_id} was already moved to session {copy_id} on {copy_date}; update that one")
-    if status == "moved":
-        assert target is not None
-        if row["status"] != "planned":
-            raise ToolError("only a planned session can be moved")
-        if target.isoformat() == row["date"]:
-            raise ToolError("new_date must differ from the session date")
-        if target < today:
-            raise ToolError("new_date must be today or later")
-
-    # copy_id is first bound as an int in the branch above, which always raises
-    copy_id, note_id = store.update_session_status(  # type: ignore[assignment]
-        session_id, status, target, (today, note_text) if note_text is not None else None
-    )
-    result: dict[str, Any] = {"session": _session_out(store, _must_get(store.get_session(session_id), "session", session_id))}
-    if copy_id is not None:
-        result["moved_copy"] = _session_out(store, _must_get(store.get_session(copy_id), "session", copy_id))
-    if note_id is not None:
-        result["note"] = note_out(_must_get(store.get_note(note_id), "note", note_id))
+    outcome = plan.mark_session(store, today, session_id, status, new_date=target, note=note)
+    if isinstance(outcome, plan.Refusal):
+        raise refusal_error(outcome, "note")
+    result: dict[str, Any] = {"session": _session_out(store, outcome.session)}
+    if outcome.copy is not None:
+        result["moved_copy"] = _session_out(store, outcome.copy)
+    if outcome.note is not None:
+        result["note"] = note_out(outcome.note)
     return result
 
 
@@ -482,12 +454,53 @@ def add_note(
     date: str | None = None,
     session_id: int | None = None,
 ) -> dict[str, Any]:
-    body = _required_text(text, "text")
+    checked = plan.note_text(text)  # before the date, so a bad text is named first, as before
+    if isinstance(checked, plan.Refusal):
+        raise refusal_error(checked, "text")
     day = parse_date(date, "date") if date is not None else today
-    if session_id is not None and store.get_session(session_id) is None:
-        raise ToolError(f"session {session_id} not found")
-    note_id = store.insert_note(day, body, session_id)
-    return {"note": note_out(_must_get(store.get_note(note_id), "note", note_id))}
+    outcome = plan.add_note(store, day, checked, session_id=session_id)
+    if isinstance(outcome, plan.Refusal):
+        raise refusal_error(outcome, "text")
+    return {"note": note_out(outcome.note)}
+
+
+def refusal_error(refusal: plan.Refusal, field: str) -> ToolError:
+    """The English tool error of a Plan refusal; ``field`` names the note argument (``note`` or ``text``)."""
+    sid = refusal.session_id
+    match refusal.reason:
+        case plan.Reason.NOT_FOUND:
+            text = f"session {sid} not found"
+        case plan.Reason.SUPERSEDED:
+            text = f"session {sid} was superseded by a later plan and cannot be updated"
+        case plan.Reason.MOVED:
+            text = f"session {sid} was already moved; update that one"
+        case plan.Reason.MOVED_TO:
+            text = (
+                f"session {sid} was already moved to session {refusal.copy_id} on {refusal.copy_day}; "
+                "update that one"
+            )
+        case plan.Reason.COPY_SUPERSEDED:
+            text = (
+                f"session {sid} was moved to session {refusal.copy_id} on {refusal.copy_day}, "
+                "which a later plan superseded; nothing left to update"
+            )
+        case plan.Reason.FUTURE:
+            text = f"session {sid} is planned for {refusal.day}, after today, and cannot be marked done yet"
+        case plan.Reason.NOT_PLANNED:
+            text = "only a planned session can be moved"
+        case plan.Reason.SAME_DATE:
+            text = "new_date must differ from the session date"
+        case plan.Reason.PAST_DATE:
+            text = "new_date must be today or later"
+        case plan.Reason.TEXT_EMPTY:
+            text = f"{field} must not be empty"
+        case plan.Reason.TEXT_NUL:
+            text = f"{field} must not contain NUL characters"
+        case plan.Reason.TEXT_TOO_LONG:
+            text = f"{field} must be at most {plan.NOTE_MAX} characters"
+        case _:  # pragma: no cover - mypy proves every reason is handled
+            assert_never(refusal.reason)
+    return ToolError(text)
 
 
 def search_notes(
