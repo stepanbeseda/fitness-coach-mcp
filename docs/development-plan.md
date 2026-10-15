@@ -105,11 +105,25 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 20 | Operations alerts via Telegram | 08 | done |
 | 21 | Static checks in the test stage | — | done |
 | 22 | Two-way Telegram | 08 | done |
+| 23 | One Plan module for sessions and notes | 22 | planned |
+| 24 | History view | — | planned |
+| 25 | Garmin sections in one place | — | planned |
+| 26 | Daily delivery and a local clock | — | planned |
+| 27 | Nightly history run in parts | 24, 26 | planned |
+| 28 | Garmin tool definitions next to their code | 25 | planned |
+| 29 | Recovery snapshot parsed once | 24, 27 | planned |
 
 Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
 10, 11, 12, 13, 14, 09, 07, 15, 16, 17, 18, then 19, 20, 21 and last 22 (the
 only chapter that accepts inbound messages). PR 12 goes before PR 09, so
 `coach-mcp` does not collect a second full-access backend token.
+
+Chapters 23–29 come from the architecture review of 2026-10-15. They are
+refactors: behaviour stays the same, except for the two owner decisions
+recorded in PR 23 and PR 28. Suggested order: 23 and 25 first (different
+services, so they can run in parallel), then 24 and 28, then 26, 27 and
+last 29. PR 23 goes first because its two copies of the rules already
+disagree.
 
 ## 4. PR briefs
 
@@ -1764,6 +1778,339 @@ free-text note from the owner's phone (`inbound cmd=plan status=ok`,
 `cmd=note status=ok`), today's note count 0 to 1, the note returned by
 `get_coach_context` (gateway audit: outcome `ok`). The week held no session, so
 no `#id` line, `/done` or `/skip` ran on live data.
+
+### PR 23 — One Plan module for sessions and notes
+
+The rules for changing a planned session and for taking a note exist twice:
+on the MCP path in `tools.update_session` and `tools.add_note`
+(`coach-mcp/src/coach_mcp/tools.py`), and on the Telegram path in
+`InboundPoller._mark` and its note branch (`coach-mcp/src/coach_mcp/inbound.py`,
+PR 22). The two copies have drifted:
+- `/done` refuses a session dated after today; `update_session` accepts it.
+- The tool path reports a moved session whose copy a later plan superseded;
+  the Telegram path does not.
+
+The Telegram note limits (`NOTE_MAX`, the NUL check) are a copy of the
+`Field(max_length=2000)` and `_no_nul` of the tool path. `_mark` reads the
+session and checks it, then calls `update_session`, which reads it again.
+`_mark` catches the MCP `ToolError` to notice a session that changed in
+between, and `tests/test_inbound.py` reaches that window by patching
+`store.get_session`.
+
+Move these rules into one new Plan module in `coach_mcp` that both paths
+call. Marking a session and adding a note are each one call that checks and
+writes in one SQLite transaction:
+- Marking a session covers done, skipped, back to planned, and moved with a
+  new date, each with an optional note.
+- Adding a note checks its length, NUL characters and empty text. It takes an
+  optional session, and on the Telegram path it is written together with the
+  update offset, as today.
+
+Each call returns the result or a refusal reason from a closed set: not
+found, superseded, moved to another session, that copy superseded, future,
+not planned, same date, past date, text too long. The MCP tools turn a
+refusal into the English `ToolError` text they give today. Telegram turns it
+into the `ReplyTexts` catalogue. A reason with no reply yet gets one in both
+catalogues. Neither path keeps rules of its own.
+
+Owner decision (2026-10-15): a session dated after today cannot be marked
+`done` on either path. This is the only change in behaviour.
+
+Out of scope: new commands or tools, schema changes, other wording changes.
+
+**Done when:**
+1. The session and note rules are checked only in the Plan module. `tools.py`
+   and `inbound.py` keep no status checks and no note limits of their own,
+   and `inbound.py` no longer catches `ToolError`.
+2. Each refusal reason has a test against a temporary Store, through the Plan
+   module. Because the check and the write share one transaction, the test
+   that patched `store.get_session` to race is deleted, not ported.
+3. `update_session` refuses `done` for a session dated after today, with a
+   clear message (test). The tool description and `coach-mcp/README.md`
+   say so.
+4. Apart from criterion 3, the MCP tools return the same results and error
+   texts as before, and every existing Telegram reply is unchanged in both
+   catalogues. Existing tests are rewritten only where they reached past the
+   interface, and the PR lists them.
+5. Inbound tests cover the mapping from a refusal to a reply. No inbound test
+   patches `tools` or `store` internals.
+6. The four-command check is green.
+
+**Requested:** 2026-10-15, by the owner, from the architecture review of
+2026-10-15 (candidate 1); owner decision on a future `done` the same day.
+
+### PR 24 — History view
+
+Every reader of the stored history rebuilds the training day from the raw
+rows of `coach-mcp/src/coach_mcp/store.py` (`history_rows`,
+`strength_workout_rows`, `hevy_templates`, `hevy_sync_state`,
+`race_prediction_rows`). The same steps are copied across modules:
+- Range defaults and limits, in `trends.py`, `correlations.py` and
+  `strength.py`, with a variant in `tools.get_plan`.
+- Parsing the `activities` JSON column, in `history.day_activities` and
+  `trends._activities`, with different error handling.
+- Assembling Hevy coverage, templates and strength day totals, in
+  `history.py`, `strength.py` and twice in `trends.py`.
+- A finite-number guard, six times: `history`, `trends`, `briefing`,
+  `strength`, `reconcile` and `goals`.
+
+Read-side tests seed write-side storage shapes through
+`tests/history_helpers.py`.
+
+Add a History view over the Store. Given a date range, it returns finished
+day values:
+- the recovery values;
+- the parsed activities with their settled flag;
+- the strength day merged with Hevy coverage;
+- the race predictions.
+
+The view also owns range defaults and limits. JSON parsing and the coverage
+rules live only in the view. The finite-number guard becomes one shared
+helper, which modules that read fresh Garmin data (for example the briefing)
+also use. `trends`, `correlations`, `goals`, `strength` and the reconcile step of
+`history.py` read through the view, and `tools.get_plan` uses its range
+defaults. The write side (the
+nightly job, migrations, the writes in `store.py`) is unchanged.
+
+Out of scope: schema changes, the nightly job (PR 27), new metrics or tools.
+
+**Done when:**
+1. No module outside the view parses the `activities` column, assembles Hevy
+   coverage, templates or totals, or defines its own range defaults. One
+   finite-number guard remains. The PR states the searches used to check
+   this.
+2. The view has its own tests, against a temporary Store, for activities JSON
+   edge cases (missing, malformed, not a list), Hevy coverage boundaries, and
+   range defaults and limits.
+3. Tests of trends, correlations, goals and strength build their input from
+   view values. Tests that only re-checked parsing or coverage through those
+   modules are deleted in favour of the view's tests, and the PR lists them.
+4. `get_trends`, `get_weekly_report`, `get_correlations`, `get_goal_progress`,
+   `get_strength_progress` and `get_plan` return the same JSON for the same
+   stored data. Where the two old JSON parsers treated a malformed row
+   differently, the PR states which handling is kept.
+5. The four-command check is green.
+
+**Requested:** 2026-10-15, by the owner, from the architecture review of
+2026-10-15 (candidate 2).
+
+### PR 25 — Garmin sections in one place
+
+Section 1 says that a section Garmin cannot provide returns `"error"` or
+`"available": false` instead of failing the whole call. That rule has no
+module of its own; it is spread over the `garmin-mcp/src/garmin_coach_mcp/`
+modules:
+- `garmin_client.py` has `call_many` and `section_error`.
+- `health.py` has `UNAVAILABLE` and the private `_section`, which
+  `activities.py`, `body.py` and `performance.py` import.
+- `performance.py` copies the `_section` try/except twice (race predictions,
+  running tolerance).
+- `activities.none_if_missing` and `body._pair_section` are further variants,
+  `body.py` imports `performance._day`, and `get_activity` unwraps section
+  errors by hand.
+
+Tests re-check the degrade path in each module by monkeypatching a shaper to
+raise.
+
+Add one interface on `GarminService`, or in a module next to it, that takes
+a declaration of sections and returns the shaped dict. Each section declares
+its library call, its shaper, whether a 404 means empty, and whether the
+section is required. The interface:
+- runs the calls concurrently;
+- aborts on an authentication failure, as today;
+- turns a 404 into empty;
+- turns a failed or badly shaped section into the existing `"error"` or
+  `"available": false` value, with the same log lines;
+- fails the whole tool only when a required section fails.
+
+Every tool module uses the new interface, and no tool module imports a
+private name from another tool module.
+
+Out of scope: new tools, changes to response shapes, tool registration in
+`server.py` (PR 28).
+
+**Done when:**
+1. Every tool response is unchanged for the canned payloads, including
+   degraded sections. The existing tool tests pass, changed only where they
+   patched internals, and the PR lists them.
+2. The rules are tested once against the new interface with `FakeGarmin`: 404
+   as empty, a section in error, a shaper exception, the authentication
+   abort, and a required section. The per-module shaper monkeypatches are
+   deleted.
+3. A test fails when a tool module imports an `_`-prefixed name from another
+   tool module.
+4. Library log lines and their privacy are unchanged
+   (`tests/test_library_logs.py` passes unchanged).
+5. `garmin-mcp/README.md` describes how a new tool declares its sections.
+6. The four-command check is green.
+
+**Requested:** 2026-10-15, by the owner, from the architecture review of
+2026-10-15 (candidate 3).
+
+### PR 26 — Daily delivery and a local clock
+
+`coach-mcp/src/coach_mcp/scheduler.py` sends the morning briefing
+(`BriefingScheduler.tick`) and the Monday report (`_weekly_step`) with the
+same copied outcome logic: sent, permanent failure, final attempt, retry. The
+CLI commands `send_briefing_command` and `send_weekly_report_command` both
+repeat the `push_enabled` check, today's date and the exception wrapping.
+
+Local time has the same problem. `_at` and `_until` are copied verbatim
+between `scheduler.py` and `history.py`, DST comment included. "Today in the
+configured zone" is built in `server.py`, in both CLI commands and in
+`inbound.py`. Tests reach the retry rules by patching
+`scheduler_module.compose_weekly` and Store methods.
+
+Add two modules:
+- **A local clock:** zone, now, today, the instant of a local clock time on
+  a given day, and the seconds until an instant. Every module that needs
+  local time uses it.
+- **A daily delivery module:** owns sending once a day. Given compose,
+  already-sent and record functions, it decides whether to send, skip, retry
+  or give up. The morning briefing and the Monday report are its two
+  adapters, and the CLI commands use it too.
+
+Tests pass a fake clock through the interface instead of patching module
+time.
+
+Out of scope: send times, retry counts, message text, `PushSender`.
+
+**Done when:**
+1. `_at`, `_until` and "today in the zone" exist once. The DST transition days
+   (spring forward, fall back) are tested once, on the clock.
+2. The delivery rules are tested once, on the delivery module, with stub
+   compose and record functions. No test patches `compose_weekly` or a Store
+   method to reach them.
+3. Behaviour is unchanged: send times, retries, log lines, outcome words and
+   CLI exit codes stay the same. Existing scheduler tests are rewritten only
+   where they patched internals.
+4. The four-command check is green.
+
+**Requested:** 2026-10-15, by the owner, from the architecture review of
+2026-10-15 (candidate 4).
+
+### PR 27 — Nightly history run in parts
+
+`HistoryJob` in `coach-mcp/src/coach_mcp/history.py` is about 530 lines. It
+runs four pipelines and their scheduling in one class:
+- the Garmin day fetch, with its repairs (PR 18);
+- race predictions;
+- the Hevy strength sync;
+- the reconcile step.
+
+`run_once` orchestrates them by hand, with separate crash and timing
+variables per pipeline, and `_call` and `_strength_call` duplicate each
+other. The run's counters are visible only in log lines, so
+`tests/test_history.py` (2853 lines) checks log text about 170 times. The
+strength tests are appended to the same file with `# noqa: E402` imports.
+
+Split each pipeline into a part behind one interface that runs the pipeline
+and returns its outcome and counters. `HistoryJob` keeps the schedule, the
+backoff, the briefing window and how the part outcomes combine. The log lines
+are written from the returned counters and keep their text. Each part's tests
+check its returned result, and the job's tests use stub parts.
+
+Out of scope: what is fetched, limits, repair rules, the schedule, log text,
+and the read side (PR 24).
+
+**Done when:**
+1. Each part has tests that check its returned outcome and counters, not log
+   text. Log text is covered only by formatting tests, and the PR states how
+   many log-text checks remain.
+2. Job tests with stub parts cover how outcomes combine (one part crashes,
+   all succeed, an outage) and the scheduling and backoff.
+3. Behaviour is unchanged for the existing scenarios: the same Garmin and
+   Hevy calls in the same order, the same stored rows and the same log lines.
+   The outage scenario of the checklist still passes.
+4. `_call` and `_strength_call` are merged. The strength tests live in their
+   own file, without `# noqa: E402`.
+5. The four-command check is green.
+
+**Requested:** 2026-10-15, by the owner, from the architecture review of
+2026-10-15 (candidate 5).
+
+### PR 28 — Garmin tool definitions next to their code
+
+The interface of each `garmin-mcp` tool lives in two places. `build_server`
+in `garmin-mcp/src/garmin_coach_mcp/server.py` has 24 one-line wrappers, and
+they carry the `Field` limits and the descriptions. The tool modules hold the
+same limits again as constants and checks:
+- weeks 2–52 in `performance.py`;
+- weight 20–300 kg in `body.py`;
+- positive ids, `limit` and `days` in `activities.py` and `workouts.py`.
+
+The two places have drifted. `schedule_workout` documents "today up to one
+year ahead", but `workouts._check_schedule_date` accepts yesterday up to 366
+days ahead. `list_scheduled_workouts` re-implements `formatting.resolve_range`
+by hand.
+
+Each tool module exports its tool definitions: name, read or write
+annotation, a signature whose limits come from the module's own constants,
+the description, and the implementation. `server.py` registers them in a
+loop, with the read-only guard and logging as today. Checks that the
+signature already enforces are deleted from the modules.
+
+Owner decision (2026-10-15): `schedule_workout` keeps accepting yesterday up
+to one year ahead, and its description says so.
+
+Out of scope: new or renamed tools, response shapes, section handling
+(PR 25).
+
+**Done when:**
+1. `tools/list` is identical to the one before the change (names,
+   annotations, input schemas), except for the `schedule_workout`
+   description. A test compares it with a snapshot taken before the change.
+2. Every numeric limit in a description and in a schema comes from the
+   module's constant. A test fails when a description and its constant
+   disagree.
+3. Limit tests run against the published schema or over HTTP. The duplicate
+   checks in the modules are deleted.
+4. `list_scheduled_workouts` uses `resolve_range`, with unchanged behaviour
+   (test).
+5. The read-only guard still refuses every write tool for the read-only token
+   (`tests/test_read_only.py` passes unchanged).
+6. The tool table in `garmin-mcp/README.md` matches the new
+   `schedule_workout` description, and the four-command check is green.
+
+**Requested:** 2026-10-15, by the owner, from the architecture review of
+2026-10-15 (candidate 6); owner decision on the `schedule_workout` date range
+the same day.
+
+### PR 29 — Recovery snapshot parsed once
+
+`coach-mcp` reads the Garmin recovery snapshot from the raw `garmin-mcp`
+payload in three places, and each decides on its own whether a section is in
+error:
+- `briefing.criteria_from_snapshot`, with the rule that `morning_score` wins
+  over `score`;
+- `history.recovery_values`, with the same rule;
+- `scheduler.reusable`.
+
+The MCP client setup (token file, bearer client, timeout, streamable HTTP
+client) is copied three times in `coach-mcp/src/coach_mcp/garmin.py` and once
+in `hevy.py`. Both client test files patch `anyio.fail_after`. Fakes have to
+produce raw payloads (`tests/garmin_payloads.py`).
+
+Parse the snapshot once into a typed recovery day: its values plus the
+sections in error. The briefing, history and the scheduler all use it. The
+Garmin and Hevy sources return typed values for what `coach-mcp` reads, and
+one helper sets up every MCP call. Raw payloads appear only in the client
+contract tests.
+
+Out of scope: changes to `garmin-mcp`, new metrics.
+
+**Done when:**
+1. The snapshot rules (score preference, sections in error, missing values)
+   exist once and are tested once.
+2. Briefing, history and scheduler tests use typed fakes. Raw payload
+   fixtures are used only by the client contract tests.
+3. One helper sets up MCP calls, and its timeout is tested once.
+4. Briefing text, stored history rows and alerts are unchanged for the
+   existing scenarios.
+5. The four-command check is green.
+
+**Requested:** 2026-10-15, by the owner, from the architecture review of
+2026-10-15 (candidate 7).
 
 ## 5. Open items
 
