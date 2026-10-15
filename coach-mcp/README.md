@@ -597,6 +597,9 @@ docker build --target test coach-mcp
 The test stage runs `ruff check src tests`, `mypy` (strict mode, `src/`; both configured in `pyproject.toml`)
 and the tests on every build (no network, SQLite in a temporary directory, a fixed date 2026-10-07 and a fake clock
 instead of real time; fake backends stand in for Garmin, Telegram and Open-Meteo).
+Local time (the zone from `TZ`, today, a clock time on a given day) comes only from `src/coach_mcp/clock.py`, and the
+once-a-day rules of the briefing and the Monday report (window, retries, giving up) only from
+`src/coach_mcp/delivery.py`; `tests/test_clock.py` fails when another module builds local time itself.
 Dependency locks (`requirements.lock`, `requirements-dev.lock`) are regenerated only through
 `scripts/lock-deps.sh`.
 
