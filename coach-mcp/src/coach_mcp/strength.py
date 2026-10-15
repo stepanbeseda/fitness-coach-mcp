@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime, time as dt_time, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+from .clock import local_at, local_day
 from .history_view import OVERLAP, Coverage, DayStrength, HistoryReader, HistoryView, better, history_range, sync_dates
 from .store import Store
 from .values import finite_float, valid_id, whole
@@ -116,7 +117,7 @@ def workout_day(start_time: Any, zone: ZoneInfo) -> date | None:
     if instant is None:
         return None
     try:
-        return instant.astimezone(zone).date()
+        return local_day(instant, zone)
     except (OverflowError, ValueError):  # an offset at the edge of the calendar: one bad event is a skip
         return None
 
@@ -202,7 +203,7 @@ def listing_since(state: Mapping[str, Any] | None, first: date, zone: ZoneInfo) 
     stored ``synced_at`` minus ``OVERLAP``."""
     dates = sync_dates(state)
     if dates is None or first < dates[0]:
-        return datetime.combine(first, dt_time(0), tzinfo=zone).astimezone(UTC), True
+        return local_at(first, dt_time(0), zone).astimezone(UTC), True
     return dates[2].astimezone(UTC) - OVERLAP, False
 
 

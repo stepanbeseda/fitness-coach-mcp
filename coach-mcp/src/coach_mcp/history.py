@@ -27,11 +27,11 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from datetime import UTC, date, datetime, time as dt_time, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from . import strength
+from .clock import LocalClock
 from .config import Settings
 from .garmin import HistorySource, exception_kind
 from .hevy import StrengthSource
@@ -383,37 +383,18 @@ class HistoryJob:
         self._predictions = predictions
         self._now = now
         self._sleep = sleep
-        self._zone = ZoneInfo(settings.timezone)
+        self._clock = LocalClock(settings.timezone, now)
         self._due: datetime | None = None
         self._backoff = RATE_LIMIT_BACKOFF_SECONDS
 
     # ----------------------------------------------------------------- time
 
-    def _at(self, day: date, clock_time: dt_time) -> datetime:
-        """Local ``day`` at ``clock_time``; a time that does not exist resolves to the next valid instant."""
-        return datetime.combine(day, clock_time, tzinfo=self._zone)
-
-    @staticmethod
-    def _until(target: datetime, now: datetime) -> float:
-        # Both are converted to UTC: subtracting two datetimes that share a tzinfo is wall-clock
-        # arithmetic in Python, which is wrong across a DST change.
-        return (target.astimezone(UTC) - now.astimezone(UTC)).total_seconds()
-
-    def _today(self, now: datetime) -> date:
-        return now.astimezone(self._zone).date()
-
-    def _next_history_time(self, after: datetime) -> datetime:
-        day = self._today(after)
-        target = self._at(day, self._settings.history_time)
-        if self._until(target, after) > 0:
-            return target
-        return self._at(day + timedelta(days=1), self._settings.history_time)
-
     def _in_briefing_window(self, now: datetime) -> bool:
-        day = self._today(now)
-        start = self._at(day, self._settings.briefing_time)
-        end = self._at(day, self._settings.briefing_cutoff)
-        return self._until(start, now) <= 0 < self._until(end, now)
+        clock = self._clock
+        day = clock.day_of(now)
+        start = clock.at(day, self._settings.briefing_time)
+        end = clock.at(day, self._settings.briefing_cutoff)
+        return clock.until(start, now) <= 0 < clock.until(end, now)
 
     # ----------------------------------------------------------------- loop
 
@@ -434,22 +415,24 @@ class HistoryJob:
         now = self._now()
         if self._due is None:
             self._due = now + timedelta(seconds=STARTUP_DELAY_SECONDS)
-        wait = self._until(self._due, now)
+        wait = self._clock.until(self._due, now)
         if wait > 0:
             return wait
         outcome = await self.run_once()
         after = self._now()
         if outcome == "done":
-            self._due, self._backoff = self._next_history_time(after), RATE_LIMIT_BACKOFF_SECONDS
+            self._due = self._clock.next_at(self._settings.history_time, after)
+            self._backoff = RATE_LIMIT_BACKOFF_SECONDS
         elif outcome == "paused":
-            self._due = self._at(self._today(after), self._settings.briefing_cutoff)
+            self._due = self._clock.at(self._clock.day_of(after), self._settings.briefing_cutoff)
         elif outcome in ("rate_limited", "service_error"):  # one shared backoff
             self._due = after + timedelta(seconds=self._backoff)
             self._backoff = min(self._backoff * 2, MAX_BACKOFF_SECONDS)
         else:  # partial, auth, unreachable, no_credentials: try again in an hour, at the latest at history_time
-            self._due = min(after + timedelta(seconds=RETRY_SECONDS), self._next_history_time(after))
+            next_run = self._clock.next_at(self._settings.history_time, after)
+            self._due = min(after + timedelta(seconds=RETRY_SECONDS), next_run)
             self._backoff = RATE_LIMIT_BACKOFF_SECONDS
-        return self._until(self._due, after)
+        return self._clock.until(self._due, after)
 
     # ------------------------------------------------------------------ run
 
@@ -489,7 +472,7 @@ class HistoryJob:
             strength_seconds = time.monotonic() - strength_started
         # The step needs only the store, so it runs after every run, also after an early return or a stop.
         try:
-            matched, no_activity = self._reconcile(self._today(self._now()))
+            matched, no_activity = self._reconcile(self._clock.today())
             step = f"matched={matched} no_activity={no_activity}"
         except Exception as exc:  # the run's outcome and scheduling stand; BaseException propagates
             step = f"reconcile=error kind={exception_kind(exc)}"
@@ -538,7 +521,7 @@ class HistoryJob:
         return matched, len(found) - matched
 
     async def _collect(self, run: _Run) -> str:
-        today = self._today(self._now())
+        today = self._clock.today()
         first = today - timedelta(days=self._settings.history_backfill_days)
         last = today - timedelta(days=1)
         stored = {row["date"]: row for row in self._store.history_rows(first, last)}
@@ -736,7 +719,7 @@ class HistoryJob:
         """The race-prediction part: one call for the missing range; None when nothing was due (no line)."""
         assert self._predictions is not None
         started = time.monotonic()
-        today = self._today(self._now())
+        today = self._clock.today()
         first, last = today - timedelta(days=self._settings.history_backfill_days), today - timedelta(days=1)
         state = self._store.prediction_sync_state()
         asked = prediction_range(state, first, last, today)
@@ -805,7 +788,7 @@ class HistoryJob:
         return "error", None
 
     async def _collect_strength(self, srun: _StrengthRun, run: _Run) -> str:
-        today = self._today(self._now())
+        today = self._clock.today()
         first = today - timedelta(days=self._settings.history_backfill_days)
         state = self._store.hevy_sync_state()
         due = strength.listing_due(state, first, today)
@@ -815,13 +798,13 @@ class HistoryJob:
         if self._in_briefing_window(self._now()):
             return "paused"
         if due:
-            since, full = strength.listing_since(state, first, self._zone)
+            since, full = strength.listing_since(state, first, self._clock.zone)
             started = self._now()
             if not await self._list_events(strength.since_text(since), srun, run):
                 srun.failed += 1
                 return "service_error"  # the sync point is not advanced, nothing is given up
             covered_from = first if full or state is None else date.fromisoformat(state["covered_from"])
-            self._store.record_hevy_sync(covered_from, started, self._today(started))
+            self._store.record_hevy_sync(covered_from, started, self._clock.day_of(started))
             todo = self._templates_to_fetch(today)
         return await self._fetch_templates(todo, today, srun, run)
 
@@ -836,7 +819,7 @@ class HistoryJob:
             step = strength.page_step(payload, page)
             if step == "failed":
                 return False
-            batch = strength.parse_events(payload["events"], self._zone)
+            batch = strength.parse_events(payload["events"], self._clock.zone)
             self._store.apply_strength_events(batch.updates, batch.deletes)
             srun.workouts += len(batch.updates)
             srun.deleted += len(batch.deletes)
