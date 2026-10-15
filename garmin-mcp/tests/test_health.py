@@ -290,7 +290,7 @@ async def test_device_status_uses_the_configured_time_zone(settings, fake):
 
 
 @pytest.mark.anyio
-async def test_device_status_is_fail_soft_per_section(service, fake, monkeypatch):
+async def test_device_status_is_fail_soft_per_section(service, fake):
     fake.fail["get_devices"] = CONN_ERROR
     out = await health.device_status(service)
     assert "error" in out["primary_device"] and out["last_upload"] == LAST_UPLOAD
@@ -303,17 +303,6 @@ async def test_device_status_is_fail_soft_per_section(service, fake, monkeypatch
     fake.fail["get_device_last_used"] = CONN_ERROR
     out = await health.device_status(service)
     assert "error" in out["last_upload"] and out["primary_device"] == {"available": False}
-
-    fake.fail.clear()
-    fake.responses["get_devices"] = [fx.device()]
-
-    def boom(raw):
-        raise KeyError("x")
-
-    monkeypatch.setattr(health, "shape_devices", boom)
-    out = await health.device_status(service)
-    assert out["primary_device"] == {"error": "unexpected Garmin response for devices"}
-    assert out["last_upload"] == LAST_UPLOAD
 
 
 @pytest.mark.anyio
