@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any, Literal
 
-from garminconnect.exceptions import GarminConnectNotFoundError
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .formatting import (
@@ -21,8 +19,8 @@ from .formatting import (
     resolve_range,
     speed_kmh,
 )
-from .garmin_client import GarminService, is_section_error, section_error
-from .health import UNAVAILABLE, _section
+from .garmin_client import GarminService
+from .sections import UNAVAILABLE, Call, Section, fetch_sections
 
 ActivityType = Literal[
     "running", "cycling", "swimming", "walking", "hiking", "fitness_equipment", "multi_sport", "other"
@@ -78,10 +76,16 @@ def shape_activity_row(a: dict[str, Any]) -> dict[str, Any]:
     return clean(row)
 
 
+def activity_type_key(activity: Any) -> str:
+    """Garmin's sport key of an activity detail payload ("" when it has none)."""
+    act = as_dict(activity)
+    return str(as_dict(act.get("activityTypeDTO")).get("typeKey") or as_dict(act.get("activityType")).get("typeKey") or "")
+
+
 def shape_activity_detail(activity: Any) -> dict[str, Any]:
     act = as_dict(activity)
     s = as_dict(act.get("summaryDTO"))
-    type_key = str(as_dict(act.get("activityTypeDTO")).get("typeKey") or as_dict(act.get("activityType")).get("typeKey") or "")
+    type_key = activity_type_key(act)
     description = act.get("description")
     distance = num(s.get("distance"), 1)
     return clean(
@@ -265,18 +269,6 @@ def shape_activity_weather(raw: Any) -> dict[str, Any]:
     return out
 
 
-def none_if_missing(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
-    """Garmin answers 404 for data that does not exist (no weather, no sets, no tolerance): treat it as empty."""
-
-    def call(client: Any) -> Any:
-        try:
-            return fn(client)
-        except GarminConnectNotFoundError:
-            return None
-
-    return call
-
-
 async def list_activities(
     service: GarminService,
     days: int,
@@ -303,29 +295,35 @@ async def get_activity(service: GarminService, activity_id: int) -> dict[str, An
     if activity_id <= 0:
         raise ToolError("activity_id must be a positive integer")
     aid = str(activity_id)
-    results = await service.call_many(
+    sections = await fetch_sections(
+        service,
         {
-            "activity": lambda c: c.get_activity(aid),
-            "splits": lambda c: c.get_activity_splits(aid),
-            "zones": lambda c: c.get_activity_hr_in_timezones(aid),
-            "weather": none_if_missing(lambda c: c.get_activity_weather(aid)),
-            "exercise_sets": none_if_missing(lambda c: c.get_activity_exercise_sets(aid)),
-        }
+            "activity": Call(lambda c: c.get_activity(aid), required=True),
+            "splits": Call(lambda c: c.get_activity_splits(aid)),
+            "zones": Call(lambda c: c.get_activity_hr_in_timezones(aid)),
+            "weather": Call(lambda c: c.get_activity_weather(aid), missing_is_empty=True),
+            "exercise_sets": Call(lambda c: c.get_activity_exercise_sets(aid), missing_is_empty=True),
+        },
+        {
+            "detail": Section("activity", shape_activity_detail),
+            "laps": Section(
+                "splits",
+                lambda splits, act: shape_laps(splits, activity_type_key(act)),
+                uses=("activity",),
+                if_error=lambda message: {"laps_error": message},
+            ),
+            "hr_zones": Section("zones", shape_hr_zones, if_error=lambda message: []),
+            "weather": Section("weather", shape_activity_weather),
+            "exercise_sets": Section("exercise_sets", shape_exercise_sets),
+        },
     )
-    if is_section_error(results["activity"]):
-        raise ToolError(section_error(results["activity"])["error"])
-    detail = shape_activity_detail(results["activity"])
+    detail: dict[str, Any] = sections["detail"]
     type_key = str(detail.get("type") or "")
-    if is_section_error(results["splits"]):
-        detail["laps_error"] = section_error(results["splits"])["error"]
-    else:
-        detail.update(shape_laps(results["splits"], type_key))
-    if not is_section_error(results["zones"]):
-        zones = shape_hr_zones(results["zones"])
-        if zones:
-            detail["hr_zones"] = zones
-    detail["weather"] = _section(results, "weather", shape_activity_weather)
-    sets = _section(results, "exercise_sets", shape_exercise_sets)
+    detail.update(sections["laps"])
+    if sections["hr_zones"]:
+        detail["hr_zones"] = sections["hr_zones"]
+    detail["weather"] = sections["weather"]
+    sets = sections["exercise_sets"]
     if STRENGTH_MARKER in type_key or "sets" in sets:
         detail["exercise_sets"] = sets
     return detail

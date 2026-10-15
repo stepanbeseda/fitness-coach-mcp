@@ -14,6 +14,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def date_prefix(value: Any) -> str | None:
+    """The YYYY-MM-DD part of a Garmin date or timestamp string, or None."""
+    return value[:10] if isinstance(value, str) and len(value) >= 10 else None
+
+
 def to_json(value: Any) -> str:
     """Compact JSON for tool results."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)

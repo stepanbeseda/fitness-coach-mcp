@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from statistics import mean
@@ -26,11 +25,8 @@ from .formatting import (
     resolve_date,
     resolve_range,
 )
-from .garmin_client import GarminService, is_section_error, section_error
-
-log = logging.getLogger("garmin_coach_mcp.health")
-
-UNAVAILABLE = {"available": False}
+from .garmin_client import GarminService
+from .sections import UNAVAILABLE, Call, Section, fetch_sections
 
 
 # ---------------------------------------------------------------- readiness
@@ -124,6 +120,20 @@ def _hrv_day(summary: dict[str, Any]) -> dict[str, Any]:
             else None,
         }
     )
+
+
+def _hrv_day_call(day: str) -> Call:
+    return Call(lambda c: c.get_hrv_data(day))
+
+
+def _hrv_day_section(day: str) -> Section:
+    """One day of the per-day fallback: the summary with its date; a failed day or a night without one is None."""
+
+    def shape(raw: Any) -> dict[str, Any] | None:
+        summary = as_dict(as_dict(raw).get("hrvSummary"))
+        return {**summary, "calendarDate": day} if summary else None
+
+    return Section(day, shape, if_error=lambda message: None)
 
 
 def shape_hrv_trend(summaries: list[dict[str, Any]], start: str, end: str) -> dict[str, Any]:
@@ -369,52 +379,40 @@ def shape_training_status(raw: Any, *, brief: bool = False) -> dict[str, Any]:
 # --------------------------------------------------------------------- tools
 
 
-def _section(results: dict[str, Any], key: str, shaper: Callable[[Any], dict[str, Any]]) -> dict[str, Any]:
-    value = results.get(key)
-    if is_section_error(value):
-        return section_error(value)
-    try:
-        return shaper(value)
-    except Exception as exc:  # unexpected payload shape: degrade, don't fail the tool
-        log.warning("could not shape %s: %s", key, type(exc).__name__)
-        return {"error": f"unexpected Garmin response for {key}"}
-
-
 async def recovery_snapshot(service: GarminService, date: str | None) -> dict[str, Any]:
     d = resolve_date(date, service.settings.timezone).isoformat()
-    results = await service.call_many(
-        {
-            "readiness": lambda c: c.get_training_readiness(d),
-            "hrv": lambda c: c.get_hrv_data(d),
-            "sleep": lambda c: c.get_sleep_data(d),
-            "summary": lambda c: c.get_user_summary(d),
-            "status": lambda c: c.get_training_status(d),
-        }
-    )
 
     def summary_part(fn: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[Any], dict[str, Any]]:
         return lambda raw: fn(as_dict(raw)) if as_dict(raw) else dict(UNAVAILABLE)
 
-    return {
-        "date": d,
-        "readiness": _section(results, "readiness", lambda r: shape_readiness(r, brief=True)),
-        "hrv": _section(results, "hrv", shape_hrv),
-        "sleep": _section(results, "sleep", lambda r: shape_sleep(r, brief=True)),
-        "body_battery": _section(results, "summary", summary_part(shape_body_battery_from_summary)),
-        "resting_hr": _section(
-            results,
-            "summary",
-            summary_part(lambda s: clean({"today": s.get("restingHeartRate"), "avg_7d": s.get("lastSevenDaysAvgRestingHeartRate")})
-                         or dict(UNAVAILABLE)),
-        ),
-        "stress": _section(
-            results,
-            "summary",
-            summary_part(lambda s: clean({"avg": s.get("averageStressLevel"), "max": s.get("maxStressLevel")})
-                         or dict(UNAVAILABLE)),
-        ),
-        "training_status": _section(results, "status", lambda r: shape_training_status(r, brief=True)),
-    }
+    sections = await fetch_sections(
+        service,
+        {
+            "readiness": Call(lambda c: c.get_training_readiness(d)),
+            "hrv": Call(lambda c: c.get_hrv_data(d)),
+            "sleep": Call(lambda c: c.get_sleep_data(d)),
+            "summary": Call(lambda c: c.get_user_summary(d)),
+            "status": Call(lambda c: c.get_training_status(d)),
+        },
+        {
+            "readiness": Section("readiness", lambda r: shape_readiness(r, brief=True)),
+            "hrv": Section("hrv", shape_hrv),
+            "sleep": Section("sleep", lambda r: shape_sleep(r, brief=True)),
+            "body_battery": Section("summary", summary_part(shape_body_battery_from_summary)),
+            "resting_hr": Section(
+                "summary",
+                summary_part(lambda s: clean({"today": s.get("restingHeartRate"), "avg_7d": s.get("lastSevenDaysAvgRestingHeartRate")})
+                             or dict(UNAVAILABLE)),
+            ),
+            "stress": Section(
+                "summary",
+                summary_part(lambda s: clean({"avg": s.get("averageStressLevel"), "max": s.get("maxStressLevel")})
+                             or dict(UNAVAILABLE)),
+            ),
+            "training_status": Section("status", lambda r: shape_training_status(r, brief=True)),
+        },
+    )
+    return {"date": d, **sections}
 
 
 async def training_readiness(service: GarminService, date: str | None) -> dict[str, Any]:
@@ -463,14 +461,12 @@ async def hrv_trend(service: GarminService, days: int, end_date: str | None) -> 
     if summaries is None:  # unknown shape: fall back to one call per day
         dates = [(start + timedelta(days=i)).isoformat() for i in range(days)]
         # mypy cannot infer a lambda whose default binds the loop variable
-        per_day = await service.call_many(
-            {day: (lambda c, day=day: c.get_hrv_data(day)) for day in dates}  # type: ignore[misc]
+        per_day = await fetch_sections(
+            service,
+            {day: _hrv_day_call(day) for day in dates},
+            {day: _hrv_day_section(day) for day in dates},
         )
-        summaries = [
-            {**as_dict(as_dict(v).get("hrvSummary")), "calendarDate": day}
-            for day, v in per_day.items()
-            if not is_section_error(v) and as_dict(as_dict(v).get("hrvSummary"))
-        ]
+        summaries = [s for s in per_day.values() if s is not None]
     return shape_hrv_trend(summaries, s, e)
 
 
@@ -514,11 +510,12 @@ def shape_devices(raw: Any) -> dict[str, Any]:
 
 
 async def device_status(service: GarminService) -> dict[str, Any]:
-    results = await service.call_many(
-        {"last_upload": lambda c: c.get_device_last_used(), "devices": lambda c: c.get_devices()}
-    )
     tz = service.settings.timezone
-    return {
-        "last_upload": _section(results, "last_upload", lambda r: shape_last_upload(r, tz)),
-        "primary_device": _section(results, "devices", shape_devices),
-    }
+    return await fetch_sections(
+        service,
+        {"last_upload": Call(lambda c: c.get_device_last_used()), "devices": Call(lambda c: c.get_devices())},
+        {
+            "last_upload": Section("last_upload", lambda r: shape_last_upload(r, tz)),
+            "primary_device": Section("devices", lambda r: shape_devices(r)),
+        },
+    )

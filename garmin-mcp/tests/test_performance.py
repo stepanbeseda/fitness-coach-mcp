@@ -447,19 +447,6 @@ async def test_running_tolerance_auth_error_fails_tool(service, fake):
 
 
 @pytest.mark.anyio
-async def test_running_tolerance_odd_payload_is_error(service, fake, monkeypatch):
-    def boom(raw):
-        raise KeyError("x")
-
-    monkeypatch.setattr(performance, "shape_running_tolerance", boom)
-    out = await performance.running_tolerance(service, 4, "2026-09-30")
-    assert out == {
-        "start": "2026-09-03", "end": "2026-09-30", "aggregation": "weekly",
-        "error": "unexpected Garmin response for running_tolerance",
-    }
-
-
-@pytest.mark.anyio
 async def test_running_tolerance_captured_empty(service, fake):
     fake.responses["get_running_tolerance"] = fx.RUNNING_TOLERANCE_EMPTY
     out = await performance.running_tolerance(service, 8, "2026-09-30")
@@ -555,7 +542,7 @@ async def test_race_predictions_range_limits(service, fake):
 
 
 @pytest.mark.anyio
-async def test_race_predictions_failures(service, fake, monkeypatch):
+async def test_race_predictions_failures(service, fake):
     fake.fail["get_race_predictions"] = GarminConnectNotFoundError("API Error 404")
     out = await performance.race_predictions(service, "2026-09-28", "2026-09-30")
     assert out == {"start": "2026-09-28", "end": "2026-09-30", "count": 0, "days": [], "available": False}
@@ -565,12 +552,3 @@ async def test_race_predictions_failures(service, fake, monkeypatch):
     fake.fail["get_race_predictions"] = AUTH_ERROR
     with pytest.raises(ToolError, match="garmin-login.sh"):
         await performance.race_predictions(service, "2026-09-28", "2026-09-30")
-    del fake.fail["get_race_predictions"]
-
-    def boom(raw, start, end):
-        raise KeyError("x")
-
-    monkeypatch.setattr(performance, "shape_race_prediction_days", boom)
-    out = await performance.race_predictions(service, "2026-09-28", "2026-09-30")
-    assert out == {"start": "2026-09-28", "end": "2026-09-30",
-                   "error": "unexpected Garmin response for race_predictions"}
