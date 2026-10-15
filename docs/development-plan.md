@@ -4,6 +4,11 @@ Created: 2026-10-03. The plan is extended by `/mao`: every new task gets a
 chapter and a table row; existing chapters are never rewritten, only the
 "Delivered" blocks and the table status are added.
 
+> Historic chapters are kept as written. Until 2026-10-09 the documentation was in Czech, so older chapters
+> name Czech README sections (e.g. "Zálohy" = Backups) and, before the move to `docs/operations.md`, sections of
+> the README that are now in that file. A short overview of the process is in
+> [how-this-was-built.md](how-this-was-built.md).
+
 ## 1. Decisions and boundaries
 
 - **What it is.** A self-hosted, single-user stack that gives a Claude

@@ -470,18 +470,18 @@ run_hc
 check "r1 the full report says it is not checked" 'out_has "✔ backup: BACKUP_DIR not set, backup age not checked"'
 
 begin h19-r2; write_env BACKUP_DIR=backups; run_hc --quiet
-check "r2 relative BACKUP_DIR" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → README, Backups"'
+check "r2 relative BACKUP_DIR" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → docs/operations.md, Backups"'
 begin h19-r3; write_env "BACKUP_DIR=$WORK/no-such-dir"; run_hc --quiet
-check "r3 missing directory" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → README, Backups"'
+check "r3 missing directory" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → docs/operations.md, Backups"'
 begin h19-r3b; : > "$CASE/a-file"; write_env "BACKUP_DIR=$CASE/a-file"; run_hc --quiet
-check "r3b BACKUP_DIR is a file" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → README, Backups"'
+check "r3b BACKUP_DIR is a file" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → docs/operations.md, Backups"'
 
 # Each guard of the directory test decides alone: an existing relative directory (the script runs in the repo
 # root), an existing directory without read permission, and one without search permission.
 begin h19-r3c; mkdir -p "$REPO/backups"; : > "$REPO/backups/$(date -u +fitness-coach-backup-%Y%m%dT%H%M%SZ.tgz)"
 write_env BACKUP_DIR=backups; run_hc --quiet
 rm -rf "$REPO/backups"
-check "r3c an existing relative directory is refused" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → README, Backups"'
+check "r3c an existing relative directory is refused" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → docs/operations.md, Backups"'
 if [[ "$(id -u)" == 0 ]]; then
   echo "  skip r3d/r3e directory modes: running as root"
 else
@@ -490,9 +490,9 @@ else
     write_env "BACKUP_DIR=$BDIR"; run_hc --quiet
     chmod 700 "$BDIR"
     if [[ $mode == 300 ]]; then
-      check "r3d directory without read permission (mode 300) is refused" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → README, Backups"'
+      check "r3d directory without read permission (mode 300) is refused" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → docs/operations.md, Backups"'
     else
-      check "r3e directory without search permission (mode 400) is refused" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → README, Backups"'
+      check "r3e directory without search permission (mode 400) is refused" '[[ $RC == 1 ]] && out_has "✘ backup: BACKUP_DIR is not an absolute path to a readable directory → docs/operations.md, Backups"'
     fi
   done
 fi
@@ -504,22 +504,22 @@ begin h19-r5; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '-3 hours'; write_env "
 check "r5 archive 3 h old: exit 0, ok line" '[[ $RC == 0 ]] && out_has "✔ backup: newest archive 3 h old"'
 
 begin h19-r6; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '-27 hours'; write_env "BACKUP_DIR=$BDIR"; run_hc --quiet
-check "r6 27 h old" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 27 h old (limit 26 h) → scripts/backup.sh, README Troubleshooting"'
+check "r6 27 h old" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 27 h old (limit 26 h) → scripts/backup.sh, docs/operations.md Troubleshooting"'
 begin h19-r7; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '-25 hours -58 minutes'; write_env "BACKUP_DIR=$BDIR"; run_hc --quiet
 check "r7 25 h 58 min is inside the limit" '[[ $RC == 0 ]]'
 begin h19-r8; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '-26 hours -30 minutes'; write_env "BACKUP_DIR=$BDIR"; run_hc --quiet
-check "r8 26 h 30 min is over the limit (seconds, not whole hours)" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 26 h old (limit 26 h) → scripts/backup.sh, README Troubleshooting"'
+check "r8 26 h 30 min is over the limit (seconds, not whole hours)" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 26 h old (limit 26 h) → scripts/backup.sh, docs/operations.md Troubleshooting"'
 begin h19-r9; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '-3 hours'; write_env "BACKUP_DIR=$BDIR" BACKUP_MAX_AGE_HOURS=2; run_hc --quiet
-check "r9 BACKUP_MAX_AGE_HOURS=2" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 3 h old (limit 2 h) → scripts/backup.sh, README Troubleshooting"'
+check "r9 BACKUP_MAX_AGE_HOURS=2" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 3 h old (limit 2 h) → scripts/backup.sh, docs/operations.md Troubleshooting"'
 begin h19-r9b; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '-3 hours'; write_env "BACKUP_DIR=$BDIR" BACKUP_MAX_AGE_HOURS=1; run_hc --quiet
-check "r9b BACKUP_MAX_AGE_HOURS=1 is accepted" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 3 h old (limit 1 h) → scripts/backup.sh, README Troubleshooting"'
+check "r9b BACKUP_MAX_AGE_HOURS=1 is accepted" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 3 h old (limit 1 h) → scripts/backup.sh, docs/operations.md Troubleshooting"'
 begin h19-r10; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '-50 hours'; mk '-1 hour'; write_env "BACKUP_DIR=$BDIR"; run_hc --quiet
 check "r10 the newest of two archives counts" '[[ $RC == 0 ]]'
 begin h19-r11; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '-50 hours'
 : > "$BDIR/fitness-coach-backup-latest.tgz"; mkdir "$BDIR/.backup-tmp.x"; : > "$BDIR/notes.txt"
 mkdir "$BDIR/$(bname '-1 hour')"
 write_env "BACKUP_DIR=$BDIR"; run_hc --quiet
-check "r11 foreign names and a directory with an archive name are ignored" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 50 h old (limit 26 h) → scripts/backup.sh, README Troubleshooting"'
+check "r11 foreign names and a directory with an archive name are ignored" '[[ $RC == 1 ]] && out_has "✘ backup: newest archive is 50 h old (limit 26 h) → scripts/backup.sh, docs/operations.md Troubleshooting"'
 begin h19-r12; BDIR="$CASE/backups"; mkdir -p "$BDIR"; : > "$BDIR/fitness-coach-backup-20261399T000000Z.tgz"; write_env "BACKUP_DIR=$BDIR"; run_hc --quiet
 check "r12 impossible date in the name" '[[ $RC == 1 ]] && out_has "✘ backup: cannot read the time of the newest archive fitness-coach-backup-20261399T000000Z.tgz"'
 begin h19-r13; BDIR="$CASE/backups"; mkdir -p "$BDIR"; mk '+3 hours'; write_env "BACKUP_DIR=$BDIR"; run_hc --quiet

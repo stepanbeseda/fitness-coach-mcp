@@ -10,14 +10,14 @@ no pytest/ruff/uv/just/make — tests run inside Docker.
 
 ## Files
 
-- Plan: `mao-plan.md` (repo root; the only name that differs from the defaults)
+- Plan: `docs/development-plan.md` (the only name that differs from the defaults)
 - Checklist: `.claude/mao/checklist.md`
 - Lessons: `.claude/mao/lessons.md`
 - Host gate: none (details are in "Test host" below)
 
 ## Plan
 
-- File: `mao-plan.md`
+- File: `docs/development-plan.md`
 - Decisions and boundaries: `## 1.`
 - Common PR conditions: `## 2.`
 - PR table: `## 3.`; row `| NN | <name> | <depends on> | <status> |`,
@@ -112,8 +112,9 @@ Several PRs may be implemented at once in separate worktrees (background:
   `squash_merge_commit_title=PR_TITLE` and `squash_merge_commit_message=BLANK`:
   every PR lands on `main` with the PR title and an empty body.
 - Merge: `gh pr merge --squash --delete-branch`
-- CI checks: none (no `.github/`); the local check above is the only gate.
-  Do not add CI.
+- CI: `.github/workflows/ci.yml` runs per-service ruff, mypy and pytest, the offline script tests and
+  `scripts/check.sh --tag ci` on every PR. The local check above stays the gate for review evidence
+  (`tree=`); a red CI run on the PR is a finding. Do not change the workflow without a plan chapter.
 
 ## Test host
 
@@ -153,10 +154,9 @@ Always ask the user before:
 
 ## Role rules
 
-Rules live in the plan and docs, linked here, not copied: `mao-plan.md`
-sections 1 and 2; `README.md` (Czech, operations and architecture);
-`garmin-mcp/README.md` (tool table, env); `docs/coach-instructions.md`
-(Czech). The rule "Czech docs stay Czech" is superseded by plan section 1 (2026-10-09): all documentation, scripts and CLI output are English; athlete-facing text comes from the `messages.py` catalogues.
+Rules live in the plan and docs, linked here, not copied: `docs/development-plan.md`
+sections 1 and 2; `README.md` (architecture, security model, installation); `docs/operations.md` (operations);
+`garmin-mcp/README.md` (tool table, env); `docs/coach-instructions.md`. The rule "Czech docs stay Czech" is superseded by plan section 1 (2026-10-09): all documentation, scripts and CLI output are English; athlete-facing text comes from the `messages.py` catalogues.
 
 ### Designer (in addition to the skill's spec)
 - New Garmin tools follow the pattern in

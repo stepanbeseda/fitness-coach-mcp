@@ -382,8 +382,8 @@ with `no_activity` (alert above).
 
 The schema version is in `PRAGMA user_version`; migrations are forward-only (an ordered list of SQL scripts, each
 in one transaction). An older image refuses to open a newer database so that it does not damage it. Online backups
-(`python -m coach_mcp backup`, called by `scripts/backup.sh`) and restore (`python -m coach_mcp restore`): see the
-root `README.md` (section Backups); the `coach-data` volume is the only copy of this data.
+(`python -m coach_mcp backup`, called by `scripts/backup.sh`) and restore (`python -m coach_mcp restore`): see
+`docs/operations.md` (section Backups); the `coach-data` volume is the only copy of this data.
 
 Run `scripts/backup.sh` before moving to an older version.
 

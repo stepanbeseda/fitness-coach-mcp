@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The same static checks and tests as each service's Docker test stage, without Docker: fast feedback.
+  service:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [garmin-mcp, gateway, coach-mcp]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install hash-locked dependencies
+        run: |
+          python -m pip install --no-deps --require-hashes -r requirements.lock
+          python -m pip install --no-deps --require-hashes -r requirements-dev.lock
+      - name: Ruff
+        run: python -m ruff check src tests
+      - name: Mypy
+        run: python -m mypy
+      - name: Pytest
+        run: python -m pytest
+
+  # Offline tests of the operations scripts (no Docker, no network).
+  scripts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Bash syntax
+        run: for f in scripts/*.sh; do bash -n "$f"; done
+      - name: setup-secrets.sh tests
+        run: scripts/test-setup-secrets.sh
+      - name: healthcheck.sh tests
+        run: scripts/test-healthcheck.sh
+
+  # The project's full check: Docker test stages of all services, then the end-to-end OAuth + MCP flow in a
+  # throwaway Compose project (no real secrets, no Tailscale login).
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    needs: [service, scripts]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: scripts/check.sh
+        run: scripts/check.sh --tag ci
