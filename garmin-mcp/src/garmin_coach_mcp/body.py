@@ -11,10 +11,9 @@ from zoneinfo import ZoneInfo
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .formatting import as_dict, as_list, clean, num, resolve_date, resolve_range, today
-from .garmin_client import GarminService, is_section_error, section_error
-from .health import UNAVAILABLE, _section
-from .performance import _day
+from .formatting import as_dict, as_list, clean, date_prefix, num, resolve_date, resolve_range, today
+from .garmin_client import GarminService
+from .sections import UNAVAILABLE, Call, Section, fetch_sections
 
 log = logging.getLogger("garmin_coach_mcp.body")
 
@@ -85,7 +84,7 @@ def shape_weigh_in(entry: dict[str, Any]) -> dict[str, Any]:
     source = entry.get("sourceType")
     return clean(
         {
-            "date": _day(entry.get("calendarDate")),
+            "date": date_prefix(entry.get("calendarDate")),
             "weight_kg": _grams_to_kg(entry.get("weight")),
             "bmi": num(entry.get("bmi"), 1),
             "body_fat_pct": num(entry.get("bodyFat"), 1),
@@ -222,32 +221,34 @@ async def body_composition(service: GarminService, start_date: str | None, end_d
     return {"start": s, "end": e, **shape_body_composition(raw)}
 
 
-def _pair_section(results: dict[str, Any], primary: str, secondary: str, shaper: Any) -> dict[str, Any]:
-    """Shape a section built from two calls: an error in the primary call is the section's error; the
-    secondary call (goals) is passed through as is, and the shapers treat anything but a dict as
-    missing, so its error only drops the goal values (reported once as "goals_error")."""
-    return _section(results, primary, lambda raw: shaper(raw, results.get(secondary)))
+def _no_goals_error(settings: Any) -> None:
+    return None
 
 
 async def nutrition(service: GarminService, date_arg: str | None) -> dict[str, Any]:
     d = resolve_date(date_arg, service.settings.timezone).isoformat()
-    results = await service.call_many(
+    # calories and macros are built from two calls: an error in the food log is the section's error; the settings
+    # (goals) are passed through as is, and a failed settings call only drops the goal values ("goals_error")
+    sections = await fetch_sections(
+        service,
         {
-            "food_log": lambda c: c.get_nutrition_daily_food_log(d),
-            "meals": lambda c: c.get_nutrition_daily_meals(d),
-            "settings": lambda c: c.get_nutrition_daily_settings(d),
-            "hydration": lambda c: c.get_hydration_data(d),
-        }
+            "food_log": Call(lambda c: c.get_nutrition_daily_food_log(d)),
+            "meals": Call(lambda c: c.get_nutrition_daily_meals(d)),
+            "settings": Call(lambda c: c.get_nutrition_daily_settings(d)),
+            "hydration": Call(lambda c: c.get_hydration_data(d)),
+        },
+        {
+            "calories": Section("food_log", shape_calories, uses=("settings",)),
+            "macros": Section("food_log", shape_macros, uses=("settings",)),
+            "meals": Section("meals", shape_meals),
+            "hydration": Section("hydration", shape_hydration),
+            "goals_error": Section("settings", _no_goals_error, if_error=lambda message: message),
+        },
     )
-    out: dict[str, Any] = {
-        "date": d,
-        "calories": _pair_section(results, "food_log", "settings", shape_calories),
-        "macros": _pair_section(results, "food_log", "settings", shape_macros),
-        "meals": _section(results, "meals", shape_meals),
-        "hydration": _section(results, "hydration", shape_hydration),
-    }
-    if is_section_error(results.get("settings")):
-        out["goals_error"] = section_error(results["settings"])["error"]
+    goals_error = sections.pop("goals_error")
+    out: dict[str, Any] = {"date": d, **sections}
+    if goals_error is not None:
+        out["goals_error"] = goals_error
     return out
 
 

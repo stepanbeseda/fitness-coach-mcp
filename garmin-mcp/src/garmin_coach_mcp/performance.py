@@ -11,10 +11,9 @@ from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .activities import none_if_missing
-from .formatting import as_dict, as_list, clean, clock, km, num, pace_per_km, resolve_date, resolve_range, today
-from .garmin_client import GarminService, is_section_error, section_error
-from .health import UNAVAILABLE, _section
+from .formatting import as_dict, as_list, clean, clock, date_prefix, km, num, pace_per_km, resolve_date, resolve_range, today
+from .garmin_client import GarminService
+from .sections import UNAVAILABLE, Call, Section, fetch_sections
 
 log = logging.getLogger("garmin_coach_mcp.performance")
 
@@ -38,10 +37,6 @@ _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 # ------------------------------------------------------------------ helpers
-
-
-def _day(value: Any) -> str | None:
-    return value[:10] if isinstance(value, str) and len(value) >= 10 else None
 
 
 def _entries(raw: Any, marker: str) -> list[dict[str, Any]]:
@@ -74,7 +69,7 @@ def shape_race_predictions(raw: Any) -> dict[str, Any]:
     if not items:
         return dict(UNAVAILABLE)
     latest = max(items, key=lambda d: str(d.get("calendarDate") or ""))
-    out: dict[str, Any] = {"date": _day(latest.get("calendarDate"))}
+    out: dict[str, Any] = {"date": date_prefix(latest.get("calendarDate"))}
     found = False
     for name, key, meters in RACE_DISTANCES:
         value = num(latest.get(key), 3)
@@ -106,7 +101,7 @@ def shape_race_prediction_days(raw: Any, start: date, end: date) -> dict[str, An
     """
     by_day: dict[str, dict[str, Any]] = {}
     for entry in _entries(raw, "calendarDate"):
-        text = _day(entry.get("calendarDate"))
+        text = date_prefix(entry.get("calendarDate"))
         if text is None:
             continue
         try:
@@ -146,7 +141,7 @@ def shape_lactate_threshold(raw: Any) -> dict[str, Any]:
     pw = as_dict(root.get("power"))
     out = clean(
         {
-            "date": _day(shr.get("calendarDate")) or _day(pw.get("calendarDate")),
+            "date": date_prefix(shr.get("calendarDate")) or date_prefix(pw.get("calendarDate")),
             "heart_rate": num(shr.get("heartRate"), 0),
             "heart_rate_cycling": num(shr.get("heartRateCycling"), 0),
             "pace": pace_per_km(lt_speed_mps(shr.get("speed"))),
@@ -233,7 +228,7 @@ def shape_endurance_score(raw: Any) -> dict[str, Any]:
         latest = last_avg
     if latest is None:
         return dict(UNAVAILABLE)
-    day = _day(dto.get("calendarDate")) or (groups[-1][0] if groups else None)
+    day = date_prefix(dto.get("calendarDate")) or (groups[-1][0] if groups else None)
     first = num(as_dict(groups[0][1]).get("groupAverage"), 0) if len(groups) >= 2 else None
     return clean(
         {
@@ -258,7 +253,7 @@ def shape_hill_score(raw: Any) -> dict[str, Any]:
         change = num(last.get("overallScore"), 0) - num(scored[0].get("overallScore"), 0)  # type: ignore[operator]
     return clean(
         {
-            "date": _day(last.get("calendarDate")),
+            "date": date_prefix(last.get("calendarDate")),
             "score": num(last.get("overallScore"), 0),
             "strength": num(last.get("strengthScore"), 0),
             "endurance": num(last.get("enduranceScore"), 0),
@@ -274,7 +269,7 @@ def shape_vo2max_trend(raw: Any) -> dict[str, Any]:
         for sport_key, out_key in (("generic", "running"), ("cycling", "cycling")):
             part = as_dict(entry.get(sport_key))
             value = num(part.get("vo2MaxPreciseValue") or part.get("vo2MaxValue"), 1)
-            day = _day(part.get("calendarDate")) or _day(entry.get("calendarDate"))
+            day = date_prefix(part.get("calendarDate")) or date_prefix(entry.get("calendarDate"))
             if value is None or day is None:
                 continue
             points[out_key].append((day, value))
@@ -327,7 +322,7 @@ def _tolerance_scalar(value: Any) -> Any:
 
 
 def _tolerance_week(entry: dict[str, Any]) -> dict[str, Any] | None:
-    day = next((d for d in (_day(entry.get(k)) for k in TOLERANCE_DATE_KEYS) if d), None)
+    day = next((d for d in (date_prefix(entry.get(k)) for k in TOLERANCE_DATE_KEYS) if d), None)
     fields: dict[str, Any] = {}
     for key, value in entry.items():
         if not isinstance(key, str) or key in TOLERANCE_DATE_KEYS or _ID_KEY.search(key):
@@ -365,7 +360,7 @@ def shape_personal_records(raw: Any) -> dict[str, Any]:
     for r in _entries(raw, "typeId"):
         tid = r.get("typeId")
         atype = r.get("activityType")
-        day = _day(r.get("prStartTimeLocalFormatted")) or _day(r.get("activityStartDateTimeLocal"))
+        day = date_prefix(r.get("prStartTimeLocalFormatted")) or date_prefix(r.get("activityStartDateTimeLocal"))
         aid = r.get("activityId")
         sort_id = tid if isinstance(tid, int) and not isinstance(tid, bool) else 9999
         running = atype in (None, "running")
@@ -388,24 +383,24 @@ def shape_personal_records(raw: Any) -> dict[str, Any]:
 # -------------------------------------------------------------------- gear
 
 
-def shape_gear_item(item: dict[str, Any], stats: Any) -> dict[str, Any]:
+def shape_gear_item(item: dict[str, Any], stats: Any, stats_error: str | None = None) -> dict[str, Any]:
     make_model = " ".join(str(p) for p in (item.get("gearMakeName"), item.get("gearModelName")) if p)
     name = item.get("displayName") or item.get("customMakeModel") or make_model or "unnamed"
     retired = str(item.get("gearStatusName") or "").lower() == "retired"
     limit = num(item.get("maximumMeters"), 3)
-    s = {} if is_section_error(stats) else as_dict(stats)
+    s = as_dict(stats)
     gear_type = item.get("gearTypeName")
     return clean(
         {
             "name": name,
             "type": str(gear_type).lower() if gear_type else None,
             "retired": retired,
-            "since": _day(item.get("dateBegin")),
-            "until": _day(item.get("dateEnd")) if retired else None,
+            "since": date_prefix(item.get("dateBegin")),
+            "until": date_prefix(item.get("dateEnd")) if retired else None,
             "distance_km": km(s.get("totalDistance")),
             "activities": num(s.get("totalActivities"), 0),
             "max_km": km(limit) if limit and limit > 0 else None,
-            "stats_error": section_error(stats)["error"] if is_section_error(stats) else None,
+            "stats_error": stats_error,
         }
     )
 
@@ -427,27 +422,26 @@ async def performance_metrics(service: GarminService, weeks: int, end: date | No
     end = end or today(service.settings.timezone)
     start = end - timedelta(days=weeks * 7 - 1)
     s, e = start.isoformat(), end.isoformat()
-    results = await service.call_many(
-        {
-            "race_predictions": lambda c: c.get_race_predictions(),
-            "lactate_threshold": _latest_lactate,
-            "heart_rate_zones": lambda c: c.get_heart_rate_zones(),
-            "power_zones": lambda c: c.get_power_zones(),
-            "endurance_score": lambda c: c.get_endurance_score(s, e),
-            "hill_score": lambda c: c.get_hill_score(s, e),
-            "vo2max": lambda c: c.get_max_metrics_range(s, e),
-        }
-    )
-    return {
-        "window": {"start": s, "end": e, "weeks": weeks},
-        "race_predictions": _section(results, "race_predictions", shape_race_predictions),
-        "lactate_threshold": _section(results, "lactate_threshold", shape_lactate_threshold),
-        "heart_rate_zones": _section(results, "heart_rate_zones", shape_heart_rate_zones),
-        "power_zones": _section(results, "power_zones", shape_power_zones),
-        "endurance_score": _section(results, "endurance_score", shape_endurance_score),
-        "hill_score": _section(results, "hill_score", shape_hill_score),
-        "vo2max": _section(results, "vo2max", shape_vo2max_trend),
+    calls = {
+        "race_predictions": Call(lambda c: c.get_race_predictions()),
+        "lactate_threshold": Call(_latest_lactate),
+        "heart_rate_zones": Call(lambda c: c.get_heart_rate_zones()),
+        "power_zones": Call(lambda c: c.get_power_zones()),
+        "endurance_score": Call(lambda c: c.get_endurance_score(s, e)),
+        "hill_score": Call(lambda c: c.get_hill_score(s, e)),
+        "vo2max": Call(lambda c: c.get_max_metrics_range(s, e)),
     }
+    shapers = {
+        "race_predictions": shape_race_predictions,
+        "lactate_threshold": shape_lactate_threshold,
+        "heart_rate_zones": shape_heart_rate_zones,
+        "power_zones": shape_power_zones,
+        "endurance_score": shape_endurance_score,
+        "hill_score": shape_hill_score,
+        "vo2max": shape_vo2max_trend,
+    }
+    sections = await fetch_sections(service, calls, {name: Section(name, shape) for name, shape in shapers.items()})
+    return {"window": {"start": s, "end": e, "weeks": weeks}, **sections}
 
 
 async def race_predictions(service: GarminService, start_date: str | None, end_date: str | None) -> dict[str, Any]:
@@ -457,13 +451,12 @@ async def race_predictions(service: GarminService, start_date: str | None, end_d
         raise ToolError("start_date or end_date is out of range") from exc
     s, e = start.isoformat(), end.isoformat()
     # positional arguments: the library signature is (startdate, enddate, _type)
-    raw = await service.call(none_if_missing(lambda c: c.get_race_predictions(s, e, "daily")))
-    try:
-        shaped = shape_race_prediction_days(raw, start, end)
-    except Exception as exc:  # unexpected payload shape: degrade, don't fail the tool
-        log.warning("could not shape %s: %s", "race_predictions", type(exc).__name__)
-        shaped = {"error": "unexpected Garmin response for race_predictions"}
-    return {"start": s, "end": e, **shaped}
+    sections = await fetch_sections(
+        service,
+        {"race_predictions": Call(lambda c: c.get_race_predictions(s, e, "daily"), missing_is_empty=True, required=True)},
+        {"days": Section("race_predictions", lambda raw: shape_race_prediction_days(raw, start, end))},
+    )
+    return {"start": s, "end": e, **sections["days"]}
 
 
 async def running_tolerance(service: GarminService, weeks: int, end_date: str | None) -> dict[str, Any]:
@@ -475,13 +468,12 @@ async def running_tolerance(service: GarminService, weeks: int, end_date: str | 
     except OverflowError as exc:
         raise ToolError("end_date is out of range") from exc
     s, e = start.isoformat(), end.isoformat()
-    raw = await service.call(none_if_missing(lambda c: c.get_running_tolerance(s, e, "weekly")))
-    try:
-        shaped = shape_running_tolerance(raw)
-    except Exception as exc:  # unexpected payload shape: degrade, don't fail the tool
-        log.warning("could not shape %s: %s", "running_tolerance", type(exc).__name__)
-        shaped = {"error": "unexpected Garmin response for running_tolerance"}
-    return {"start": s, "end": e, "aggregation": "weekly", **shaped}
+    sections = await fetch_sections(
+        service,
+        {"running_tolerance": Call(lambda c: c.get_running_tolerance(s, e, "weekly"), missing_is_empty=True, required=True)},
+        {"weeks": Section("running_tolerance", lambda raw: shape_running_tolerance(raw))},
+    )
+    return {"start": s, "end": e, "aggregation": "weekly", **sections["weeks"]}
 
 
 async def personal_records(service: GarminService) -> dict[str, Any]:
@@ -496,16 +488,33 @@ def _gear_list(client: Any) -> Any:
     return client.get_gear(str(pid))
 
 
+def _gear_uuid(item: dict[str, Any]) -> str | None:
+    uuid = item.get("uuid")
+    return uuid if isinstance(uuid, str) and uuid else None
+
+
+def _gear_stats_call(uuid: str) -> Call:
+    return Call(lambda c: c.get_gear_stats(uuid))
+
+
+def _gear_section(call: str, item: dict[str, Any]) -> Section:
+    """A gear item with its stats; a failed stats call keeps the item and reports "stats_error"."""
+    return Section(
+        call,
+        lambda raw: shape_gear_item(item, raw),
+        if_error=lambda message: shape_gear_item(item, None, stats_error=message),
+    )
+
+
 async def gear(service: GarminService) -> dict[str, Any]:
     items = _entries(await service.call(_gear_list), "uuid")
-    uuids = [i["uuid"] for i in items if isinstance(i.get("uuid"), str) and i["uuid"]]
-    stats: dict[str, Any] = {}
-    if uuids:
-        # mypy cannot infer a lambda whose default binds the loop variable
-        stats = await service.call_many(
-            {u: (lambda c, u=u: c.get_gear_stats(u)) for u in uuids}  # type: ignore[misc]
-        )
-    # an item without a string uuid has no stats: the lookup then finds nothing
-    shaped = [shape_gear_item(i, stats.get(i.get("uuid"))) for i in items]  # type: ignore[arg-type]
+    # one call per distinct uuid, named by position: a uuid never appears in a log line or an error text
+    uuids = list(dict.fromkeys(u for u in map(_gear_uuid, items) if u))
+    call_of = {u: f"gear_stats_{n}" for n, u in enumerate(uuids)}
+    calls = {call_of[u]: _gear_stats_call(u) for u in uuids}
+    sections = {f"gear_{n}": _gear_section(call_of[u], i) for n, i in enumerate(items) if (u := _gear_uuid(i))}
+    stats = await fetch_sections(service, calls, sections) if calls else {}
+    # an item without a string uuid has no stats call
+    shaped = [stats[f"gear_{n}"] if f"gear_{n}" in stats else shape_gear_item(i, None) for n, i in enumerate(items)]
     shaped.sort(key=lambda g: (g["retired"], -(g.get("distance_km") or 0)))
     return {"count": len(shaped), "gear": shaped}
