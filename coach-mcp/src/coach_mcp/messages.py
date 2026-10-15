@@ -417,7 +417,10 @@ def weekly_texts(language: str) -> WeeklyTexts:
 
 @dataclass(frozen=True)
 class ReplyTexts:
-    """Words of the replies to the athlete's Telegram messages (``inbound.py``); the rules stay there."""
+    """Words of the replies to the athlete's Telegram messages (``inbound.py``).
+
+    The rules are in ``plan.py`` and ``inbound.py``.
+    """
 
     weekdays: tuple[str, ...]  # Monday first
     help: str
@@ -436,6 +439,7 @@ class ReplyTexts:
     session_superseded: str  # {id}
     session_moved: str  # {id}
     session_moved_to: str  # {id} {copy} {day}
+    session_moved_superseded: str  # {id} {copy} {day}
     session_future: str  # {id} {day}
     cannot_change: str  # {id}
     note_saved: str  # {day}
@@ -470,6 +474,9 @@ REPLY_EN = ReplyTexts(
     session_superseded="Session #{id} was replaced by a later plan and cannot be changed.",
     session_moved="Session #{id} was moved and cannot be changed.",
     session_moved_to="Session #{id} was moved to #{copy} ({day}); change that one.",
+    session_moved_superseded=(
+        "Session #{id} was moved to #{copy} ({day}), which a later plan replaced; nothing is left to change."
+    ),
     session_future="Session #{id} is planned for {day} and cannot be done yet.",
     cannot_change="Session #{id} cannot be changed.",
     note_saved="Note saved ({day}).",
@@ -504,6 +511,9 @@ REPLY_CS = ReplyTexts(
     session_superseded="Trénink #{id} nahradil pozdější plán a nejde změnit.",
     session_moved="Trénink #{id} byl přesunut a nejde změnit.",
     session_moved_to="Trénink #{id} byl přesunut na #{copy} ({day}); změň ten.",
+    session_moved_superseded=(
+        "Trénink #{id} byl přesunut na #{copy} ({day}) a ten nahradil pozdější plán; není co měnit."
+    ),
     session_future="Trénink #{id} je v plánu až {day} a ještě nemůže být splněný.",
     cannot_change="Trénink #{id} nejde změnit.",
     note_saved="Poznámka uložena ({day}).",
