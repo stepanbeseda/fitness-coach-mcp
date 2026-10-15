@@ -56,7 +56,7 @@ call; `error` = Garmin rejected the last session → log in again).
 On a Mac (home network). The library needs Python ≥ 3.12, hence `uv`; paste the commands one at a time:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+brew install uv                      # or see docs.astral.sh/uv for other installers
 scp <vps>:dev/fitness-coach-mcp/garmin-mcp/src/garmin_coach_mcp/login.py /tmp/garmin_login.py
 uv run --python 3.13 --with garminconnect==0.3.17 python /tmp/garmin_login.py --tokens-dir ~/garmin-tokens
 scp ~/garmin-tokens/garmin_tokens.json <vps>:/tmp/garmin_tokens.json

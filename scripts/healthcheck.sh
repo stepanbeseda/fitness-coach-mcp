@@ -216,7 +216,7 @@ if [[ -z "$backup_dir" ]]; then
 elif [[ ! "$backup_max" =~ ^[1-9][0-9]{0,2}$ ]]; then
   report_fail backup "backup: BACKUP_MAX_AGE_HOURS must be a whole number of hours from 1 to 999"
 elif [[ "$backup_dir" != /* || ! -d "$backup_dir" || ! -r "$backup_dir" || ! -x "$backup_dir" ]]; then
-  report_fail backup "backup: BACKUP_DIR is not an absolute path to a readable directory → README, Backups"
+  report_fail backup "backup: BACKUP_DIR is not an absolute path to a readable directory → docs/operations.md, Backups"
 else
   # `|| true`: under pipefail a grep without a match would end the script.
   newest="$(find "$backup_dir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' 2>/dev/null \
@@ -235,7 +235,7 @@ else
       if (( age < -3600 )); then
         report_fail backup "backup: newest archive $newest lies in the future → check the clock and BACKUP_DIR"
       elif (( age > backup_max * 3600 )); then
-        report_fail backup "backup: newest archive is $(( age / 3600 )) h old (limit $backup_max h) → scripts/backup.sh, README Troubleshooting"
+        report_fail backup "backup: newest archive is $(( age / 3600 )) h old (limit $backup_max h) → scripts/backup.sh, docs/operations.md Troubleshooting"
       else
         report_ok "backup: newest archive $(( age / 3600 )) h old"
       fi

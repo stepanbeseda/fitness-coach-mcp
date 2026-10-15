@@ -42,4 +42,4 @@ for lock in gateway/requirements.lock garmin-mcp/requirements.lock coach-mcp/req
 done
 echo
 echo "The Python packages listed above have a newer version; the rest are current."
-echo "How to update: README.md → Updates."
+echo "How to update: docs/operations.md → Updates."
