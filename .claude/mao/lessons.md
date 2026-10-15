@@ -429,3 +429,45 @@ follow-up commit), no rebase.
   recommended default), the answer reworded criterion 2 in the chapter ("plain text in the configured language,
   tested in both catalogues"), and the spec, the tests (both catalogues) and the PR body followed the reworded
   item; the deviation is listed in the PR body and the "Delivered" block. (PR 22 questions 1, Q1; journal)
+
+## Batch of 2026-10-12 (PR 07)
+
+One PR (#40), design in one attempt after one clarification round (three questions, all answered with the
+recommended default; the owner ran the real-Garmin spike once), spec check with 2 blocking findings fixed in place,
+review in two rounds (round 1 APPROVED with 0 blocking and 12 non-blocking, round 2 a delta review of two fix
+commits), no rebase.
+
+- **A mutation-table row that names a killer was not run against that test.** Four rows of the spec's "mutations the
+  implementer must turn red" survived all 400 prescribed tests: M15 (a second child that is not a rest; V2 and V16
+  have three children, so the `len(children) > 2` guard answers first), M18 (V5 had `endConditionValue = None`, so
+  the wrong end key drops the same field), M12 (no row broke both rule 1 and the step limit) and the order of
+  `Exercise` rules 2 and 3 (no row broke both). Same family as the PR 17 and PR 22 entries on the mutation table,
+  one level up: the table claims a named test kills the mutant. A guard that answers first hides the guard behind
+  it; each row needs a variant where only the mutated half decides. The designer runs the table's mutants on the
+  prescribed tests before the spec check; the spec check re-runs them. (PR 07 spec check B1; fixed by rows V18, a
+  kept value in V5, O1 and O2)
+- **Third-party behaviour proven only against a stub proves nothing about the real inner client.** The spec's "one
+  DEBUG record, no retry, also on 500" and test L1 stood on a stub whose `post` replaces `garmin.client`, so
+  `garminconnect.client.Client._run_request` never ran. Through the real inner client (fake HTTP session, offline) an
+  error answer writes a second DEBUG record on `garminconnect.client` carrying Garmin's response text, and a 401
+  makes the library refresh the token and send the same POST once more. Nothing reaches WARNING or above, so the
+  privacy result held, but the claims were false, and a re-sent POST could create a second workout.
+  For every new library call the test drives the real inner client and the spec states its log records and its
+  re-send rules; a stub is allowed for "what the server logs" only. (PR 07 spec check B2; `test_library_logs.py`)
+- **A command the owner typed with `!` can arrive as plain chat text; check read-only that it did not already run
+  before running a write once.** The spike upload (`!docker compose exec ... SPIKE_CONFIRM=upload ... spike.py`)
+  arrived as text. Before the orchestrator ran exactly that command once, it read the Garmin
+  workout list (4 entries, none named like the spike workout), because a second run would create a duplicate that
+  the server cannot delete. The agents never write to the owner's accounts on their own; a typed command is the
+  owner's consent only for that command, once. (PR 07 questions 1, "Spike result")
+- **After the owner's merge the live checkout can lag; check it before the live verification.** The live checkout had
+  to be fast-forwarded to the merge commit before the rebuild, and the audit window of the verification starts at the
+  container's creation time, not at the merge. Before reading evidence: `git -C <live checkout> status -sb` against
+  `origin/main`, and the `Created` time of the rebuilt container (`docker inspect`) against the merge time; count
+  audit lines only after that time. (PR 07 journal, 2026-10-12 11:31; questions 1, "Live verification")
+- **A squash merge concatenated the trailers of every commit.** With the earlier squash setting the commit body
+  repeated each commit's `Co-Authored-By` trailer. The repo now uses `squash_merge_commit_title=PR_TITLE` and
+  `squash_merge_commit_message=BLANK`: every PR lands on `main` with the PR title and an empty body, so per-commit
+  trailers no longer reach `main` and the PR title is the only commit text; `project.md` (Git) says so. At step 0,
+  read the setting with `gh api repos/<o>/<r> --jq '.squash_merge_commit_title, .squash_merge_commit_message'`
+  again in every run, because the owner can change it. (PR 07 journal, 2026-10-12 07:07)

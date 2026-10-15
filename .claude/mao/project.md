@@ -109,8 +109,8 @@ Several PRs may be implemented at once in separate worktrees (background:
   prefix (e.g. "Add Garmin Connect MCP server"); trailer
   `Co-Authored-By: <model name> <noreply@anthropic.com>`
 - PR title: `PR NN — <name from the table>`. The repo squash setting is
-  `COMMIT_OR_PR_TITLE`: a single-commit PR lands on `main` with the commit
-  title, a multi-commit PR with the PR title.
+  `squash_merge_commit_title=PR_TITLE` and `squash_merge_commit_message=BLANK`:
+  every PR lands on `main` with the PR title and an empty body.
 - Merge: `gh pr merge --squash --delete-branch`
 - CI checks: none (no `.github/`); the local check above is the only gate.
   Do not add CI.
