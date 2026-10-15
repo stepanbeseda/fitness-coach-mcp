@@ -132,3 +132,45 @@ workouts of the same name in the library, delete the extra one in Garmin Connect
 Known uncertainty: a custom cycling power range is sent as `power.zone` + `targetValueOne/Two`
 (the convention of python-garminconnect's typed models); after creating the first such workout, check in Garmin
 Connect that the range is displayed correctly.
+
+### A tool built from sections
+
+A tool that combines several Garmin calls into one answer (`get_recovery_snapshot`, `get_activity`,
+`get_performance_metrics`, `get_nutrition`, `get_device_status`, `get_gear`), or that must degrade an odd payload
+(`get_race_predictions`, `get_running_tolerance`), declares its calls and sections and leaves the error handling to
+`fetch_sections` in `src/garmin_coach_mcp/sections.py`:
+
+```python
+sections = await fetch_sections(
+    service,
+    {
+        "activity": Call(lambda c: c.get_activity(aid), required=True),
+        "weather": Call(lambda c: c.get_activity_weather(aid), missing_is_empty=True),
+    },
+    {
+        "detail": Section("activity", shape_activity_detail),
+        "weather": Section("weather", shape_activity_weather),
+    },
+)
+```
+
+- A `Call` is one library call; the calls of a tool run concurrently.
+- A missing or expired Garmin login fails the whole tool, because every call would fail the same way.
+- `missing_is_empty=True`: Garmin's 404 for data that does not exist gives the shaper `None`, so the section
+  says `available: false` instead of an error.
+- A failed call gives its sections `{"error": "<message>"}`. A shaper that raises on an unexpected payload gives
+  `{"error": "unexpected Garmin response for <call>"}` and one log line `could not shape <call>: <exception type>`,
+  without data.
+- `required=True`: a failure of that call fails the whole tool with its message (the activity itself in
+  `get_activity`).
+- A `Section` shapes one key of the answer from one call's payload. Several sections can share a call
+  (`get_recovery_snapshot` builds Body Battery, resting HR and stress from one daily summary); `uses` passes the
+  payloads of further calls (a failed one as `None`); `if_error` replaces the error value (`get_activity` reports
+  `laps_error` and leaves out heart-rate zones). Per-item calls are built with a small factory function, not with
+  a `lambda` that binds a loop variable as a default.
+
+A tool with one call and nothing to degrade (for example `get_sleep`) calls `GarminService.call`; a library error
+then fails the tool. Tool modules share helpers only through `formatting.py` and `sections.py`:
+`tests/test_module_boundaries.py` fails when a tool module imports a private (`_`) name of another. The rules are
+tested once in `tests/test_sections.py`, and `tests/test_section_answers.py` compares the answers of the section
+tools for canned, failing and odd payloads with a recording made before the rules moved into `sections.py`.

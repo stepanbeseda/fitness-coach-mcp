@@ -162,7 +162,7 @@ sections 1 and 2; `README.md` (architecture, security model, installation); `doc
 - New Garmin tools follow the pattern in
   `garmin-mcp/src/garmin_coach_mcp/server.py` (`tool(name, _read|_write(...))`,
   English docstring = description, fail-soft sections, library calls through
-  `GarminService.call` / `call_many`).
+  `GarminService.call` for one strict call, `sections.fetch_sections` for a tool with sections).
 - A tool-list change touches `garmin-mcp/tests/test_http.py` (`EXPECTED_TOOLS`,
   `WRITE_TOOLS`), `garmin-mcp/README.md` tool table, `README.md`,
   `docs/coach-instructions.md` and the `INSTRUCTIONS` string in `server.py`;
