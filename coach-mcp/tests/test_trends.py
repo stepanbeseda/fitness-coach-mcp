@@ -5,30 +5,22 @@ from datetime import date, timedelta
 from typing import Any
 
 import pytest
-from fakes import FakeHistorySource, FakeStrengthSource
-from hevy_payloads import day_workout, events_page, hevy_template, updated
-from history_helpers import (
-    exercise,
-    local,
-    make_job,
-    run_first,
-    seed_activities,
-    seed_day,
-    seed_strength,
-    seed_sync,
-    seed_template,
-)
 from mcp.server.mcpserver.exceptions import ToolError
-from view_values import sport
+from view_values import FakeHistory, best, sport
 
 from conftest import TODAY
 from coach_mcp import trends
 from coach_mcp.trends import DAILY_METRICS, METRIC_NAMES, TOTAL_METRICS
 
 
-def get_trends(store, today=TODAY, *, metrics, start_date=None, end_date=None, period="week"):
+@pytest.fixture
+def history() -> FakeHistory:
+    return FakeHistory()
+
+
+def get_trends(store, history, today=TODAY, *, metrics, start_date=None, end_date=None, period="week"):
     return trends.get_trends(
-        store, today, metrics=metrics, start_date=start_date, end_date=end_date, period=period
+        store, today, metrics=metrics, start_date=start_date, end_date=end_date, period=period, history=history
     )
 
 
@@ -50,11 +42,11 @@ def test_metric_catalogue():
 # ------------------------------------------------------------ get_trends
 
 
-def test_trends_day_aggregates(store):
+def test_trends_day_aggregates(store, history):
     for day, value in zip(span("2026-10-01", "2026-10-05"), [50, 52, None, 54, 60], strict=True):
-        seed_day(store, day, hrv_last_night_ms=value, readiness=70)
+        history.recovery(day, hrv_last_night_ms=value, readiness=70)
     out = get_trends(
-        store, metrics=["hrv_last_night_ms"], start_date="2026-10-01", end_date="2026-10-05", period="day"
+        store, history, metrics=["hrv_last_night_ms"], start_date="2026-10-01", end_date="2026-10-05", period="day"
     )
     assert out["start"] == "2026-10-01" and out["end"] == "2026-10-05" and out["period"] == "day"
     assert out["days_with_data"] == 5  # the day without an HRV value still has a stored row
@@ -73,11 +65,11 @@ def test_trends_day_aggregates(store):
     }
 
 
-def test_trends_week_aggregates_with_partial_edge_weeks(store):
+def test_trends_week_aggregates_with_partial_edge_weeks(store, history):
     today = date(2026, 10, 15)
     for n, day in enumerate(span("2026-09-30", "2026-10-14")):
-        seed_day(store, day, resting_hr=40 + n)
-    out = get_trends(store, today, metrics=["resting_hr"], start_date="2026-09-30", end_date="2026-10-14")
+        history.recovery(day, resting_hr=40 + n)
+    out = get_trends(store, history, today, metrics=["resting_hr"], start_date="2026-09-30", end_date="2026-10-14")
     assert out["period"] == "week" and out["days_with_data"] == 15
     metric = out["metrics"]["resting_hr"]
     assert metric["unit"] == "bpm" and metric["kind"] == "daily"
@@ -92,14 +84,14 @@ def test_trends_week_aggregates_with_partial_edge_weeks(store):
     }
 
 
-def test_trends_month_aggregates_over_120_days(store):
+def test_trends_month_aggregates_over_120_days(store, history):
     days = span("2026-06-09", "2026-10-06")
     assert len(days) == 120
     for day in days:
-        seed_day(store, day, stress_avg=day.day)
-        seed_activities(store, day, {"running": sport(1, 30, 5.0, 40)})
+        history.recovery(day, stress_avg=day.day)
+        history.activities(day, {"running": sport(1, 30, 5.0, 40)})
     out = get_trends(
-        store,
+        store, history,
         metrics=["stress_avg", "running_duration_min", "running_count"],
         start_date="2026-06-09",
         end_date="2026-10-06",
@@ -127,13 +119,13 @@ def test_trends_month_aggregates_over_120_days(store):
     assert out["metrics"]["running_count"]["buckets"][1]["total"] == 31  # a count is an integer
 
 
-def test_trends_total_metrics_sum_activities_and_zero_on_fetched_empty_days(store):
-    seed_activities(store, d("2026-10-01"), {"running": sport(1, 40, 8.0, 50), "cycling": sport(1, 60, 20.0, 70)})
-    seed_activities(store, d("2026-10-02"), {})  # fetched, nothing happened: a real zero
-    seed_day(store, d("2026-10-03"), readiness=60)  # a row whose activities were never fetched
-    seed_activities(store, d("2026-10-04"), {"strength": sport(1, 45, 0, 30), "running": sport(1, 20, 3.0, 15)})
+def test_trends_total_metrics_sum_activities_and_zero_on_fetched_empty_days(store, history):
+    history.activities(d("2026-10-01"), {"running": sport(1, 40, 8.0, 50), "cycling": sport(1, 60, 20.0, 70)})
+    history.activities(d("2026-10-02"), {})  # fetched, nothing happened: a real zero
+    history.recovery(d("2026-10-03"), readiness=60)  # a row whose activities were never fetched
+    history.activities(d("2026-10-04"), {"strength": sport(1, 45, 0, 30), "running": sport(1, 20, 3.0, 15)})
     out = get_trends(
-        store,
+        store, history,
         metrics=["endurance_duration_min", "strength_count", "endurance_count", "cycling_distance_km", "walking_count"],
         start_date="2026-10-01",
         end_date="2026-10-04",
@@ -150,12 +142,12 @@ def test_trends_total_metrics_sum_activities_and_zero_on_fetched_empty_days(stor
     assert out["metrics"]["endurance_duration_min"]["summary"]["mean"] == pytest.approx(40.0)
 
 
-def test_trends_skip_days_without_value_and_omit_empty_buckets(store):
+def test_trends_skip_days_without_value_and_omit_empty_buckets(store, history):
     for day in span("2026-09-14", "2026-09-20"):  # W38
-        seed_day(store, day, readiness=60)
+        history.recovery(day, readiness=60)
     for day in span("2026-09-28", "2026-10-04"):  # W40; W39 has no value at all
-        seed_day(store, day, readiness=70)
-    out = get_trends(store, metrics=["readiness", "stress_avg"], start_date="2026-09-14", end_date="2026-10-04")
+        history.recovery(day, readiness=70)
+    out = get_trends(store, history, metrics=["readiness", "stress_avg"], start_date="2026-09-14", end_date="2026-10-04")
     readiness = out["metrics"]["readiness"]
     assert [b["period"] for b in readiness["buckets"]] == ["2026-W38", "2026-W40"]
     assert readiness["summary"]["first"] == 60.0 and readiness["summary"]["last"] == 70.0
@@ -163,33 +155,33 @@ def test_trends_skip_days_without_value_and_omit_empty_buckets(store):
     assert out["metrics"]["stress_avg"] == {"unit": "level", "kind": "daily", "summary": {"n": 0}, "buckets": []}
 
 
-def test_trends_change_and_change_pct(store):
+def test_trends_change_and_change_pct(store, history):
     # a total metric: week 1 is a real zero, week 2 has 3 km; week 3 has 1.5 km
     for day in span("2026-09-14", "2026-09-20"):
-        seed_activities(store, day, {})
-    seed_activities(store, d("2026-09-21"), {"running": sport(1, 20, 3.0, 20)})
+        history.activities(day, {})
+    history.activities(d("2026-09-21"), {"running": sport(1, 20, 3.0, 20)})
     for day in span("2026-09-22", "2026-09-27"):
-        seed_activities(store, day, {})
-    seed_activities(store, d("2026-09-28"), {"running": sport(1, 10, 1.5, 10)})
-    out = get_trends(store, metrics=["running_distance_km"], start_date="2026-09-14", end_date="2026-09-28")
+        history.activities(day, {})
+    history.activities(d("2026-09-28"), {"running": sport(1, 10, 1.5, 10)})
+    out = get_trends(store, history, metrics=["running_distance_km"], start_date="2026-09-14", end_date="2026-09-28")
     summary = out["metrics"]["running_distance_km"]["summary"]
     assert [b["total"] for b in out["metrics"]["running_distance_km"]["buckets"]] == [0.0, 3.0, 1.5]
     assert summary["first"] == 0.0 and summary["last"] == 1.5
     assert summary["change"] == 1.5 and summary["change_pct"] is None  # first bucket 0: no percentage
     # a falling series
     for day, value in zip(span("2026-10-01", "2026-10-02"), [80, 60], strict=True):
-        seed_day(store, day, hrv_last_night_ms=value)
+        history.recovery(day, hrv_last_night_ms=value)
     out = get_trends(
-        store, metrics=["hrv_last_night_ms"], start_date="2026-10-01", end_date="2026-10-02", period="day"
+        store, history, metrics=["hrv_last_night_ms"], start_date="2026-10-01", end_date="2026-10-02", period="day"
     )
     summary = out["metrics"]["hrv_last_night_ms"]["summary"]
     assert (summary["change"], summary["change_pct"]) == (-20, -25.0)
 
 
-def test_trends_single_bucket_has_no_change(store):
+def test_trends_single_bucket_has_no_change(store, history):
     for n, day in enumerate(span("2026-10-05", "2026-10-11")):
-        seed_day(store, day, resting_hr=50 + n)
-    out = get_trends(store, date(2026, 10, 15), metrics=["resting_hr"], start_date="2026-10-05", end_date="2026-10-11")
+        history.recovery(day, resting_hr=50 + n)
+    out = get_trends(store, history, date(2026, 10, 15), metrics=["resting_hr"], start_date="2026-10-05", end_date="2026-10-11")
     summary = out["metrics"]["resting_hr"]["summary"]
     assert len(out["metrics"]["resting_hr"]["buckets"]) == 1
     assert summary == {
@@ -197,13 +189,13 @@ def test_trends_single_bucket_has_no_change(store):
     }
 
 
-def test_trends_defaults_last_90_days_ending_yesterday(store):
-    out = get_trends(store, metrics=["readiness"])
+def test_trends_defaults_last_90_days_ending_yesterday(store, history):
+    out = get_trends(store, history, metrics=["readiness"])
     assert (out["start"], out["end"], out["period"]) == ("2026-07-09", "2026-10-06", "week")
     assert (d(out["end"]) - d(out["start"])).days + 1 == 90
-    out = get_trends(store, metrics=["readiness"], end_date="2026-09-30")
+    out = get_trends(store, history, metrics=["readiness"], end_date="2026-09-30")
     assert (out["start"], out["end"]) == ("2026-07-03", "2026-09-30")
-    out = get_trends(store, metrics=["readiness"], end_date="2026-10-07")  # today itself is allowed
+    out = get_trends(store, history, metrics=["readiness"], end_date="2026-10-07")  # today itself is allowed
     assert out["end"] == "2026-10-07"
 
 
@@ -219,40 +211,38 @@ def test_trends_defaults_last_90_days_ending_yesterday(store):
         ({"start_date": "yesterday"}, "start_date must be YYYY-MM-DD"),
     ],
 )
-def test_trends_argument_errors(store, arguments, message):
+def test_trends_argument_errors(store, history, arguments, message):
     with pytest.raises(ToolError, match=re.escape(message)):
-        get_trends(store, metrics=["readiness"], **arguments)
+        get_trends(store, history, metrics=["readiness"], **arguments)
 
 
-def test_trends_range_limits_accept_the_boundary(store):
-    day = get_trends(store, metrics=["readiness"], start_date="2026-07-07", end_date="2026-10-06", period="day")
+def test_trends_range_limits_accept_the_boundary(store, history):
+    day = get_trends(store, history, metrics=["readiness"], start_date="2026-07-07", end_date="2026-10-06", period="day")
     assert (d(day["end"]) - d(day["start"])).days + 1 == 92
     for period in ("week", "month"):
-        out = get_trends(store, metrics=["readiness"], start_date="2024-10-06", end_date="2026-10-06", period=period)
+        out = get_trends(store, history, metrics=["readiness"], start_date="2024-10-06", end_date="2026-10-06", period=period)
         assert (d(out["end"]) - d(out["start"])).days + 1 == 731
 
 
-def test_trends_empty_store_returns_n_zero(store):
-    out = get_trends(store, metrics=["hrv_last_night_ms", "running_distance_km"])
+def test_trends_empty_store_returns_n_zero(store, history):
+    out = get_trends(store, history, metrics=["hrv_last_night_ms", "running_distance_km"])
     assert out["days_with_data"] == 0
     for name, kind in (("hrv_last_night_ms", "daily"), ("running_distance_km", "total")):
         assert out["metrics"][name]["kind"] == kind
         assert out["metrics"][name]["summary"] == {"n": 0} and out["metrics"][name]["buckets"] == []
 
 
-def test_trends_dedupes_metrics(store):
-    out = get_trends(store, metrics=["readiness", "hrv_last_night_ms", "readiness"])
+def test_trends_dedupes_metrics(store, history):
+    out = get_trends(store, history, metrics=["readiness", "hrv_last_night_ms", "readiness"])
     assert list(out["metrics"]) == ["readiness", "hrv_last_night_ms"]
 
 
-def test_trends_invalid_activities_json_is_skipped(store):
-    seed_activities(store, d("2026-10-01"), {"running": sport(1, 30, 5.0, 40)})
-    for day, text in ((d("2026-10-02"), "not json"), (d("2026-10-03"), "[1, 2]"), (d("2026-10-04"), '"x"')):
-        store.upsert_history_activities({day: text}, TODAY)
-    store.upsert_history_activities({d("2026-10-05"): '{"running": 7}'}, TODAY)  # a sport entry of the wrong type
-    store.upsert_history_activities({d("2026-10-06"): '{"running": {"duration_min": true}}'}, TODAY)  # not a number
+def test_trends_sport_entries_of_the_wrong_type_count_as_zero(store, history):
+    history.activities(d("2026-10-01"), {"running": sport(1, 30, 5.0, 40)})
+    history.activities(d("2026-10-05"), {"running": 7})  # the view passes a sport entry on as stored
+    history.activities(d("2026-10-06"), {"running": {"duration_min": True}})  # not a number
     out = get_trends(
-        store, metrics=["running_duration_min"], start_date="2026-10-01", end_date="2026-10-06", period="day"
+        store, history, metrics=["running_duration_min"], start_date="2026-10-01", end_date="2026-10-06", period="day"
     )
     assert [(b["period"][-2:], b["value"]) for b in out["metrics"]["running_duration_min"]["buckets"]] == [
         ("01", 30.0),
@@ -261,11 +251,11 @@ def test_trends_invalid_activities_json_is_skipped(store):
     ]
 
 
-def test_trends_only_include_rows_inside_the_range(store):
-    seed_day(store, d("2026-09-30"), readiness=10)
-    seed_day(store, d("2026-10-01"), readiness=60)
-    seed_day(store, d("2026-10-03"), readiness=90)
-    out = get_trends(store, metrics=["readiness"], start_date="2026-10-01", end_date="2026-10-02", period="day")
+def test_trends_only_include_rows_inside_the_range(store, history):
+    history.recovery(d("2026-09-30"), readiness=10)
+    history.recovery(d("2026-10-01"), readiness=60)
+    history.recovery(d("2026-10-03"), readiness=90)
+    out = get_trends(store, history, metrics=["readiness"], start_date="2026-10-01", end_date="2026-10-02", period="day")
     assert out["days_with_data"] == 1
     assert [b["value"] for b in out["metrics"]["readiness"]["buckets"]] == [60]
 
@@ -280,11 +270,11 @@ BASELINE_LABELS = ["2026-W36", "2026-W37", "2026-W38", "2026-W39"]
 STRENGTH_NONE = {"available": False, "reason": "no strength history from Hevy covers this week"}
 
 
-def report(store, today=TODAY, week=None):
-    return trends.get_weekly_report(store, today, week=week)
+def report(store, history, today=TODAY, week=None):
+    return trends.get_weekly_report(store, today, week=week, history=history)
 
 
-def seed_week(store, monday, *, run=None, ride=None, strength=None, walk=None, days=7):
+def seed_week(history, monday, *, run=None, ride=None, strength=None, walk=None, days=7):
     """Activities of the first ``days`` days of a week are fetched ('{}' when nothing was recorded).
 
     run / ride / strength / walk are (duration_min, distance_km, training_load) on Tue / Thu / Fri / Sat.
@@ -292,34 +282,34 @@ def seed_week(store, monday, *, run=None, ride=None, strength=None, walk=None, d
     placed = {1: ("running", run), 3: ("cycling", ride), 4: ("strength", strength), 5: ("walking", walk)}
     for n in range(days):
         name, values = placed.get(n, (None, None))
-        seed_activities(store, monday + timedelta(days=n), {name: sport(1, *values)} if values else {})
+        history.activities(monday + timedelta(days=n), {name: sport(1, *values)} if values else {})
 
 
-def seed_daily(store, monday, *, days=7, **columns):
+def seed_daily(history, monday, *, days=7, **columns):
     for n in range(days):
-        seed_day(store, monday + timedelta(days=n), **columns)
+        history.recovery(monday + timedelta(days=n), **columns)
 
 
 def flags_of(out):
     return [f["flag"] for f in out["flags"]]
 
 
-def test_weekly_report_every_section_from_seeded_db(store):
+def test_weekly_report_every_section_from_seeded_db(store, history):
     runs = {W36: (50, 10.0, 60), W37: (60, 12.0, 70), W38: (70, 14.0, 80), W39: (70, 14.0, 80)}
     rides = {W36: (50, 20.0, 40), W37: (60, 24.0, 50), W38: (70, 28.0, 60), W39: (70, 28.0, 60)}
     for monday in BASELINES:
-        seed_week(store, monday, run=runs[monday], ride=rides[monday])
-    seed_week(store, W40, run=(80, 16.0, 100), ride=(80, 32.0, 80), strength=(45, 0, 30), walk=(30, 2.5, 5))
+        seed_week(history, monday, run=runs[monday], ride=rides[monday])
+    seed_week(history, W40, run=(80, 16.0, 100), ride=(80, 32.0, 80), strength=(45, 0, 30), walk=(30, 2.5, 5))
     # sleep: weekly means 7.0 / 7.5 / 8.0 / 7.5 (baseline 7.5), score 80 every day
     for monday, hours in zip(BASELINES, (7.0, 7.5, 8.0, 7.5), strict=True):
-        seed_daily(store, monday, sleep_duration_h=hours, sleep_score=80, hrv_last_night_ms=60, resting_hr=48)
-    seed_daily(store, W40, days=5, sleep_duration_h=6.5, sleep_score=70)  # the last two nights are missing
+        seed_daily(history, monday, sleep_duration_h=hours, sleep_score=80, hrv_last_night_ms=60, resting_hr=48)
+    seed_daily(history, W40, days=5, sleep_duration_h=6.5, sleep_score=70)  # the last two nights are missing
     for n in range(7):
         day = W40 + timedelta(days=n)
-        seed_day(store, day, hrv_last_night_ms=48 if n == 6 else 57, hrv_status="LOW" if n == 6 else "BALANCED")
-    seed_daily(store, W40, days=4, resting_hr=52)
-    seed_day(store, d("2026-10-02"), acute_load=410, chronic_load=375, acwr_ratio=1.09)
-    seed_day(store, d("2026-10-03"), acute_load=420, chronic_load=380, acwr_ratio=1.11)  # the latest with a load
+        history.recovery(day, hrv_last_night_ms=48 if n == 6 else 57, hrv_status="LOW" if n == 6 else "BALANCED")
+    seed_daily(history, W40, days=4, resting_hr=52)
+    history.recovery(d("2026-10-02"), acute_load=410, chronic_load=375, acwr_ratio=1.09)
+    history.recovery(d("2026-10-03"), acute_load=420, chronic_load=380, acwr_ratio=1.11)  # the latest with a load
     # sessions: W40 two done, one skipped, one planned (overdue); W39 two done; W38 one done, one skipped
     ids = store.replace_planned(
         W40, W40 + timedelta(days=6), W40,
@@ -335,7 +325,7 @@ def test_weekly_report_every_section_from_seeded_db(store):
         for session_id, status in zip(week_ids, statuses, strict=True):
             store.update_session_status(session_id, status, None, None)
 
-    out = report(store)
+    out = report(store, history)
     assert out["week"] == {"start": "2026-09-28", "end": "2026-10-04", "iso_week": "2026-W40", "partial": False}
     assert out["baseline_weeks"] == BASELINE_LABELS
     assert out["strength"] == STRENGTH_NONE
@@ -391,12 +381,12 @@ def test_weekly_report_every_section_from_seeded_db(store):
     ]  # resting HR is +4 bpm: below its threshold of 5
 
 
-def test_weekly_report_lists_a_sport_that_only_the_baseline_has(store):
+def test_weekly_report_lists_a_sport_that_only_the_baseline_has(store, history):
     for monday in BASELINES:
         for n in range(7):
-            seed_activities(store, monday + timedelta(days=n), {"swimming": sport(1, 40, 1.5, 20)} if n == 2 else {})
-    seed_week(store, W40, run=(50, 8.0, 60))
-    by_sport = report(store)["endurance"]["by_sport"]
+            history.activities(monday + timedelta(days=n), {"swimming": sport(1, 40, 1.5, 20)} if n == 2 else {})
+    seed_week(history, W40, run=(50, 8.0, 60))
+    by_sport = report(store, history)["endurance"]["by_sport"]
     assert set(by_sport) == {"running", "swimming"}  # hiking, walking, cycling and other have neither
     assert by_sport["swimming"] == {
         "count": 0, "duration_min": 0.0, "distance_km": 0.0, "training_load": 0.0,
@@ -405,11 +395,11 @@ def test_weekly_report_lists_a_sport_that_only_the_baseline_has(store):
     assert by_sport["running"]["baseline_duration_min"] == 0.0 and by_sport["running"]["count"] == 1
 
 
-def test_weekly_baseline_of_zero_gives_no_percentage_and_no_flag(store):
+def test_weekly_baseline_of_zero_gives_no_percentage_and_no_flag(store, history):
     for monday in BASELINES:
-        seed_week(store, monday)  # complete weeks with nothing recorded
-    seed_week(store, W40, run=(60, 10.0, 100))
-    out = report(store)
+        seed_week(history, monday)  # complete weeks with nothing recorded
+    seed_week(history, W40, run=(60, 10.0, 100))
+    out = report(store, history)
     assert out["endurance"]["total"]["training_load"] == {
         "week": 100.0, "baseline": 0.0, "baseline_weeks": 4, "change": 100.0, "change_pct": None,
     }
@@ -419,49 +409,49 @@ def test_weekly_baseline_of_zero_gives_no_percentage_and_no_flag(store):
     ]
 
 
-def test_sleep_days_count_the_nights_with_a_duration(store):
-    seed_daily(store, W40, days=7, sleep_score=75)
-    seed_daily(store, W40, days=4, sleep_duration_h=7.0)
-    out = report(store)["sleep"]
+def test_sleep_days_count_the_nights_with_a_duration(store, history):
+    seed_daily(history, W40, days=7, sleep_score=75)
+    seed_daily(history, W40, days=4, sleep_duration_h=7.0)
+    out = report(store, history)["sleep"]
     assert out["days"] == 4
     assert out["duration_h"]["week"] == 7.0 and out["score"]["week"] == 75.0
-    seed_day(store, W36, sleep_score=70)  # a baseline week with a score only
-    assert report(store)["sleep"]["score"]["baseline_weeks"] == 1
-    assert report(store)["sleep"]["duration_h"]["baseline_weeks"] == 0
+    history.recovery(W36, sleep_score=70)  # a baseline week with a score only
+    assert report(store, history)["sleep"]["score"]["baseline_weeks"] == 1
+    assert report(store, history)["sleep"]["duration_h"]["baseline_weeks"] == 0
 
 
-def test_a_week_with_only_a_score_has_no_duration_stat(store):
-    seed_daily(store, W40, days=3, sleep_score=75)
-    out = report(store)["sleep"]
+def test_a_week_with_only_a_score_has_no_duration_stat(store, history):
+    seed_daily(history, W40, days=3, sleep_score=75)
+    out = report(store, history)["sleep"]
     assert out["days"] == 0 and out["duration_h"] is None
     assert out["score"]["week"] == 75.0
 
 
-def test_new_bests_weeks_compared_counts_the_earlier_complete_weeks(store):
+def test_new_bests_weeks_compared_counts_the_earlier_complete_weeks(store, history):
     first = W36 - timedelta(days=14)  # two more weeks before W36
     for monday in (first, first + timedelta(days=7), *BASELINES):
-        seed_week(store, monday, run=(60, 10.0, 100), days=6 if monday == W38 else 7)
-    seed_week(store, W40, run=(70, 12.0, 120))
-    bests = {b["metric"]: b for b in report(store)["new_bests"]}
+        seed_week(history, monday, run=(60, 10.0, 100), days=6 if monday == W38 else 7)
+    seed_week(history, W40, run=(70, 12.0, 120))
+    bests = {b["metric"]: b for b in report(store, history)["new_bests"]}
     assert bests["running_distance_km"]["weeks_compared"] == 5  # six earlier weeks, W38 is incomplete
     assert bests["running_distance_km"]["previous_best"] == 10.0
 
 
-def test_garmin_strength_and_other_sports_are_kept_apart(store):
+def test_garmin_strength_and_other_sports_are_kept_apart(store, history):
     for n in range(7):
         totals = {"other": sport(1, 30, 0, 10)} if n == 1 else {}
-        seed_activities(store, W40 + timedelta(days=n), totals)
-    out = report(store)["endurance"]
+        history.activities(W40 + timedelta(days=n), totals)
+    out = report(store, history)["endurance"]
     assert "garmin_strength" not in out  # "other" is endurance, only strength_training is Garmin strength
     assert out["total"]["count"] == 1 and set(out["by_sport"]) == {"other"}
-    seed_activities(store, W40 + timedelta(days=2), {"strength": sport(1, 45, 0, 30)})
-    out = report(store)["endurance"]
+    history.activities(W40 + timedelta(days=2), {"strength": sport(1, 45, 0, 30)})
+    out = report(store, history)["endurance"]
     assert out["garmin_strength"] == {"count": 1, "duration_min": 45.0, "training_load": 30.0}
     assert out["total"]["count"] == 1  # strength is not endurance
 
 
-def test_weekly_report_marks_sections_without_data(store):
-    assert report(store) == {
+def test_weekly_report_marks_sections_without_data(store, history):
+    assert report(store, history) == {
         "week": {"start": "2026-09-28", "end": "2026-10-04", "iso_week": "2026-W40", "partial": False},
         "baseline_weeks": BASELINE_LABELS,
         "endurance": {"available": False},
@@ -475,9 +465,9 @@ def test_weekly_report_marks_sections_without_data(store):
     }
 
 
-def test_weekly_report_sections_are_independent(store):
-    seed_week(store, W40, run=(40, 7.0, 50))  # activities only
-    out = report(store)
+def test_weekly_report_sections_are_independent(store, history):
+    seed_week(history, W40, run=(40, 7.0, 50))  # activities only
+    out = report(store, history)
     assert out["endurance"]["activity_days"] == 7 and out["endurance"]["total"]["count"] == 1
     assert out["endurance"]["total"]["duration_min"] == {
         "week": 40.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None,
@@ -497,8 +487,8 @@ def test_weekly_report_sections_are_independent(store):
         (d("2026-10-11"), "2026-W40", "2026-09-28"),  # Sunday: the current week is not complete yet
     ],
 )
-def test_weekly_report_default_is_last_complete_week(store, today, iso_week, start):
-    out = report(store, today)
+def test_weekly_report_default_is_last_complete_week(store, history, today, iso_week, start):
+    out = report(store, history, today)
     assert out["week"]["iso_week"] == iso_week and out["week"]["start"] == start
     assert out["week"]["partial"] is False
     assert out["baseline_weeks"] == [
@@ -506,32 +496,32 @@ def test_weekly_report_default_is_last_complete_week(store, today, iso_week, sta
     ]
 
 
-def test_weekly_report_explicit_week_and_future_week(store):
-    out = report(store, week="2026-09-16")  # any date in the week
+def test_weekly_report_explicit_week_and_future_week(store, history):
+    out = report(store, history, week="2026-09-16")  # any date in the week
     assert (out["week"]["iso_week"], out["week"]["start"], out["week"]["end"]) == ("2026-W38", "2026-09-14", "2026-09-20")
-    out = report(store, week="2026-10-11")  # Sunday of the running week
+    out = report(store, history, week="2026-10-11")  # Sunday of the running week
     assert out["week"]["iso_week"] == "2026-W41" and out["week"]["partial"] is True
-    assert report(store, week="2026-10-05")["week"]["partial"] is True
+    assert report(store, history, week="2026-10-05")["week"]["partial"] is True
     with pytest.raises(ToolError, match="week must not be in the future"):
-        report(store, week="2026-10-12")
+        report(store, history, week="2026-10-12")
     with pytest.raises(ToolError, match="week is not a valid date"):
-        report(store, week="2026-02-30")
+        report(store, history, week="2026-02-30")
 
 
-def test_weekly_report_future_week_is_an_error(store):
+def test_weekly_report_future_week_is_an_error(store, history):
     with pytest.raises(ToolError, match="week must not be in the future"):
-        report(store, week="2026-10-19")
+        report(store, history, week="2026-10-19")
 
 
-def test_weekly_report_partial_current_week_has_no_load_flags(store):
+def test_weekly_report_partial_current_week_has_no_load_flags(store, history):
     for monday in (W37, W38, W39, W40):
-        seed_week(store, monday, run=(60, 10.0, 100))
-    seed_week(store, W41, run=(60, 10.0, 200))  # every day fetched, load +100 %
-    running = report(store, today=d("2026-10-08"), week="2026-10-08")  # Thursday: the week is not over
+        seed_week(history, monday, run=(60, 10.0, 100))
+    seed_week(history, W41, run=(60, 10.0, 200))  # every day fetched, load +100 %
+    running = report(store, history, today=d("2026-10-08"), week="2026-10-08")  # Thursday: the week is not over
     assert running["week"]["partial"] is True
     assert running["endurance"]["total"]["training_load"]["change_pct"] == 100.0  # still reported ...
     assert running["flags"] == [] and running["new_bests"] == []  # ... but no flag and no record yet
-    over = report(store, today=d("2026-10-12"), week="2026-10-08")
+    over = report(store, history, today=d("2026-10-12"), week="2026-10-08")
     assert over["week"]["partial"] is False
     assert flags_of(over) == ["endurance_load_up"]
     assert over["new_bests"] == [
@@ -539,28 +529,28 @@ def test_weekly_report_partial_current_week_has_no_load_flags(store):
     ]
 
 
-def test_weekly_baseline_uses_available_weeks_and_counts_them(store):
-    seed_daily(store, W38, days=3, resting_hr=50)  # a week with a few values still counts
-    seed_daily(store, W39, resting_hr=46)
-    seed_daily(store, W40, resting_hr=48)
-    out = report(store)["resting_hr"]
+def test_weekly_baseline_uses_available_weeks_and_counts_them(store, history):
+    seed_daily(history, W38, days=3, resting_hr=50)  # a week with a few values still counts
+    seed_daily(history, W39, resting_hr=46)
+    seed_daily(history, W40, resting_hr=48)
+    out = report(store, history)["resting_hr"]
     assert out == {
         "days": 7,
         "bpm": {"week": 48.0, "baseline": 48.0, "baseline_weeks": 2, "change": 0.0, "change_pct": 0.0},
     }
-    seed_daily(store, W36, resting_hr=44)
-    seed_daily(store, W37, resting_hr=44)
-    out = report(store)["resting_hr"]["bpm"]
+    seed_daily(history, W36, resting_hr=44)
+    seed_daily(history, W37, resting_hr=44)
+    out = report(store, history)["resting_hr"]["bpm"]
     assert (out["baseline"], out["baseline_weeks"]) == (46.0, 4)
 
 
-def test_activity_baseline_uses_only_complete_weeks(store):
-    seed_week(store, W36, run=(60, 10.0, 60))
-    seed_week(store, W37, run=(60, 10.0, 100))
-    seed_week(store, W38, run=(60, 10.0, 500), days=6)  # one day was never fetched: not a weekly total
-    seed_week(store, W39, run=(60, 10.0, 140))
-    seed_week(store, W40, run=(60, 10.0, 120))
-    out = report(store)["endurance"]
+def test_activity_baseline_uses_only_complete_weeks(store, history):
+    seed_week(history, W36, run=(60, 10.0, 60))
+    seed_week(history, W37, run=(60, 10.0, 100))
+    seed_week(history, W38, run=(60, 10.0, 500), days=6)  # one day was never fetched: not a weekly total
+    seed_week(history, W39, run=(60, 10.0, 140))
+    seed_week(history, W40, run=(60, 10.0, 120))
+    out = report(store, history)["endurance"]
     assert out["total"]["training_load"] == {
         "week": 120.0, "baseline": 100.0, "baseline_weeks": 3, "change": 20.0, "change_pct": 20.0,
     }
@@ -568,20 +558,20 @@ def test_activity_baseline_uses_only_complete_weeks(store):
     assert out["by_sport"]["running"]["baseline_duration_min"] == 60.0
 
 
-def test_activity_baseline_is_none_without_a_complete_baseline_week(store):
+def test_activity_baseline_is_none_without_a_complete_baseline_week(store, history):
     for monday in BASELINES:
-        seed_week(store, monday, run=(60, 10.0, 100), days=6)
-    seed_week(store, W40, run=(60, 10.0, 120))
-    out = report(store)["endurance"]
+        seed_week(history, monday, run=(60, 10.0, 100), days=6)
+    seed_week(history, W40, run=(60, 10.0, 120))
+    out = report(store, history)["endurance"]
     assert out["total"]["training_load"]["baseline"] is None and out["total"]["training_load"]["baseline_weeks"] == 0
     assert out["by_sport"]["running"]["baseline_training_load"] is None
 
 
-def test_incomplete_report_week_is_reported_but_never_flagged_or_a_record(store):
+def test_incomplete_report_week_is_reported_but_never_flagged_or_a_record(store, history):
     for monday in BASELINES:
-        seed_week(store, monday, run=(60, 10.0, 100))
-    seed_week(store, W40, run=(120, 20.0, 300), days=6)
-    out = report(store)
+        seed_week(history, monday, run=(60, 10.0, 100))
+    seed_week(history, W40, run=(120, 20.0, 300), days=6)
+    out = report(store, history)
     assert out["endurance"]["activity_days"] == 6
     assert out["endurance"]["total"]["training_load"]["change_pct"] == 200.0
     assert out["flags"] == [] and out["new_bests"] == []
@@ -591,31 +581,31 @@ def test_incomplete_report_week_is_reported_but_never_flagged_or_a_record(store)
     ("load", "expected"),
     [(130, []), (131, ["endurance_load_up"]), (70, []), (69, ["endurance_load_down"]), (100, [])],
 )
-def test_weekly_flags_thresholds_load(store, load, expected):
+def test_weekly_flags_thresholds_load(store, history, load, expected):
     for monday in BASELINES:
-        seed_week(store, monday, run=(60, 10.0, 100))
-    seed_week(store, W40, run=(60, 10.0, load))
-    assert flags_of(report(store)) == expected
+        seed_week(history, monday, run=(60, 10.0, 100))
+    seed_week(history, W40, run=(60, 10.0, load))
+    assert flags_of(report(store, history)) == expected
 
 
 @pytest.mark.parametrize(("duration", "expected"), [(78, []), (79, ["endurance_time_up"]), (30, [])])
-def test_weekly_flags_thresholds_time(store, duration, expected):
+def test_weekly_flags_thresholds_time(store, history, duration, expected):
     for monday in BASELINES:
-        seed_week(store, monday, run=(60, 10.0, 100))
-    seed_week(store, W40, run=(duration, 10.0, 100))
-    assert flags_of(report(store)) == expected
+        seed_week(history, monday, run=(60, 10.0, 100))
+    seed_week(history, W40, run=(duration, 10.0, 100))
+    assert flags_of(report(store, history)) == expected
 
 
-def test_weekly_load_flags_need_two_complete_baseline_weeks(store):
+def test_weekly_load_flags_need_two_complete_baseline_weeks(store, history):
     for monday in (W36, W37, W38):
-        seed_week(store, monday, run=(60, 10.0, 100), days=6)  # incomplete: not counted
-    seed_week(store, W39, run=(60, 10.0, 100))
-    seed_week(store, W40, run=(120, 20.0, 300))
-    out = report(store)
+        seed_week(history, monday, run=(60, 10.0, 100), days=6)  # incomplete: not counted
+    seed_week(history, W39, run=(60, 10.0, 100))
+    seed_week(history, W40, run=(120, 20.0, 300))
+    out = report(store, history)
     assert out["endurance"]["total"]["training_load"]["baseline_weeks"] == 1
     assert out["flags"] == []
-    seed_week(store, W38, run=(60, 10.0, 100))  # a second complete baseline week
-    assert flags_of(report(store)) == ["endurance_load_up", "endurance_time_up"]
+    seed_week(history, W38, run=(60, 10.0, 100))  # a second complete baseline week
+    assert flags_of(report(store, history)) == ["endurance_load_up", "endurance_time_up"]
 
 
 @pytest.mark.parametrize(
@@ -637,24 +627,24 @@ def test_weekly_load_flags_need_two_complete_baseline_weeks(store):
         ("resting_hr", "resting_hr_up", 48.0, 40.0, 7, 4, False),  # down is not a flag
     ],
 )
-def test_weekly_flags_thresholds(store, column, flag, baseline, week_value, week_days, baseline_weeks, expected):
+def test_weekly_flags_thresholds(store, history, column, flag, baseline, week_value, week_days, baseline_weeks, expected):
     for monday in BASELINES[4 - baseline_weeks :]:
-        seed_daily(store, monday, **{column: baseline})
-    seed_daily(store, W40, days=week_days, **{column: week_value})
-    out = report(store)
+        seed_daily(history, monday, **{column: baseline})
+    seed_daily(history, W40, days=week_days, **{column: week_value})
+    out = report(store, history)
     assert (flag in flags_of(out)) is expected
     assert len(out["flags"]) == int(expected)
 
 
-def test_new_bests_vo2max_and_weekly_totals(store):
+def test_new_bests_vo2max_and_weekly_totals(store, history):
     runs = {W36: (50, 10.0, 60), W37: (60, 12.0, 70), W38: (70, 14.0, 80), W39: (70, 14.0, 80)}
     for monday in BASELINES:
-        seed_week(store, monday, run=runs[monday])
-        seed_daily(store, monday, vo2max_running=50.0, vo2max_cycling=50.0)  # 28 earlier days with a value
-    seed_week(store, W40, run=(80, 16.0, 100), ride=(30, 5.0, 10))
-    seed_daily(store, W40, vo2max_running=51.0, vo2max_cycling=49.0)
-    seed_day(store, d("2026-10-02"), vo2max_running=51.5)
-    assert report(store)["new_bests"] == [
+        seed_week(history, monday, run=runs[monday])
+        seed_daily(history, monday, vo2max_running=50.0, vo2max_cycling=50.0)  # 28 earlier days with a value
+    seed_week(history, W40, run=(80, 16.0, 100), ride=(30, 5.0, 10))
+    seed_daily(history, W40, vo2max_running=51.0, vo2max_cycling=49.0)
+    history.recovery(d("2026-10-02"), vo2max_running=51.5)
+    assert report(store, history)["new_bests"] == [
         {"metric": "vo2max_running", "value": 51.5, "previous_best": 50.0},
         {"metric": "running_distance_km", "value": 16.0, "previous_best": 14.0, "weeks_compared": 4},
         {"metric": "cycling_distance_km", "value": 5.0, "previous_best": 0.0, "weeks_compared": 4},
@@ -663,35 +653,35 @@ def test_new_bests_vo2max_and_weekly_totals(store):
     ]
 
 
-def test_new_bests_must_exceed_the_earlier_best(store):
+def test_new_bests_must_exceed_the_earlier_best(store, history):
     for monday in BASELINES:
-        seed_week(store, monday, run=(70, 14.0, 80))
-        seed_daily(store, monday, vo2max_running=50.0)
-    seed_week(store, W40, run=(70, 14.0, 80))  # equal: not a record
-    seed_daily(store, W40, vo2max_running=50.0)
-    assert report(store)["new_bests"] == []
-    seed_week(store, W40, run=(70, 14.0, 0))  # the same distance with no load: still none
-    seed_week(store, W40, run=(0, 0.0, 0))  # a week without any distance never sets a record
-    assert report(store)["new_bests"] == []
+        seed_week(history, monday, run=(70, 14.0, 80))
+        seed_daily(history, monday, vo2max_running=50.0)
+    seed_week(history, W40, run=(70, 14.0, 80))  # equal: not a record
+    seed_daily(history, W40, vo2max_running=50.0)
+    assert report(store, history)["new_bests"] == []
+    seed_week(history, W40, run=(70, 14.0, 0))  # the same distance with no load: still none
+    seed_week(history, W40, run=(0, 0.0, 0))  # a week without any distance never sets a record
+    assert report(store, history)["new_bests"] == []
 
 
-def test_new_bests_need_enough_history(store):
+def test_new_bests_need_enough_history(store, history):
     for monday in (W37, W38, W39):  # only three earlier complete weeks
-        seed_week(store, monday, run=(50, 10.0, 60))
-    seed_week(store, W40, run=(90, 18.0, 120))
+        seed_week(history, monday, run=(50, 10.0, 60))
+    seed_week(history, W40, run=(90, 18.0, 120))
     for n in range(27):  # only 27 earlier days with a VO2max value
-        seed_day(store, d("2026-09-01") + timedelta(days=n), vo2max_running=50.0)
-    seed_day(store, d("2026-10-01"), vo2max_running=55.0)
-    assert report(store)["new_bests"] == []
-    seed_week(store, W36, run=(50, 10.0, 60))  # the fourth earlier complete week
-    assert [b["metric"] for b in report(store)["new_bests"]] == [
+        history.recovery(d("2026-09-01") + timedelta(days=n), vo2max_running=50.0)
+    history.recovery(d("2026-10-01"), vo2max_running=55.0)
+    assert report(store, history)["new_bests"] == []
+    seed_week(history, W36, run=(50, 10.0, 60))  # the fourth earlier complete week
+    assert [b["metric"] for b in report(store, history)["new_bests"]] == [
         "running_distance_km", "endurance_duration_min", "endurance_training_load",
     ]
-    seed_day(store, d("2026-09-28") - timedelta(days=28), vo2max_running=50.0)  # the 28th earlier day
-    assert report(store)["new_bests"][0] == {"metric": "vo2max_running", "value": 55.0, "previous_best": 50.0}
+    history.recovery(d("2026-09-28") - timedelta(days=28), vo2max_running=50.0)  # the 28th earlier day
+    assert report(store, history)["new_bests"][0] == {"metric": "vo2max_running", "value": 55.0, "previous_best": 50.0}
 
 
-def test_weekly_adherence_from_sessions(store):
+def test_weekly_adherence_from_sessions(store, history):
     def session(day: date) -> dict[str, Any]:
         return {"date": day, "type": "running", "description": "x"}
 
@@ -711,34 +701,34 @@ def test_weekly_adherence_from_sessions(store):
         for session_id, status in zip(week_ids, statuses, strict=True):
             if status != "planned":
                 store.update_session_status(session_id, status, None, None)
-    assert report(store)["adherence"] == {
+    assert report(store, history)["adherence"] == {
         "planned": 1, "done": 2, "skipped": 1, "moved": 1, "overdue_planned": 1, "completion_rate": 0.67,
         "baseline_completion_rate": 0.75, "baseline_weeks": 2,  # W36 has no finished session: not counted
     }
 
 
-def test_weekly_adherence_unavailable_when_every_session_is_superseded(store):
+def test_weekly_adherence_unavailable_when_every_session_is_superseded(store, history):
     store.replace_planned(W40, W40 + timedelta(days=6), W40, [{"date": W40, "type": "running", "description": "x"}])
     store.replace_planned(W40, W40 + timedelta(days=6), W40, [])
-    assert report(store)["adherence"] == {"available": False}
+    assert report(store, history)["adherence"] == {"available": False}
 
 
-def test_weekly_adherence_without_finished_baseline_sessions(store):
+def test_weekly_adherence_without_finished_baseline_sessions(store, history):
     store.replace_planned(
         W40, W40 + timedelta(days=6), W40, [{"date": W40, "type": "running", "description": "x"}]
     )
-    out = report(store)["adherence"]
+    out = report(store, history)["adherence"]
     assert out["planned"] == 1 and out["completion_rate"] is None
     assert out["baseline_completion_rate"] is None and out["baseline_weeks"] == 0
 
 
-def test_trends_count_metric_mean_has_two_decimals(store):
+def test_trends_count_metric_mean_has_two_decimals(store, history):
     # W39 = 2026-09-21..09-27, W40 = 2026-09-28..10-04; every day has its activities fetched
     runs = {d("2026-09-23"), d("2026-09-29"), d("2026-09-30"), d("2026-10-02")}  # 1 run in W39, 3 in W40
     for day in span("2026-09-21", "2026-10-04"):
-        seed_activities(store, day, {"running": sport(1, 30, 5.0, 40)} if day in runs else {})
+        history.activities(day, {"running": sport(1, 30, 5.0, 40)} if day in runs else {})
     out = get_trends(
-        store, metrics=["running_count"], start_date="2026-09-21", end_date="2026-10-04", period="week"
+        store, history, metrics=["running_count"], start_date="2026-09-21", end_date="2026-10-04", period="week"
     )
     metric = out["metrics"]["running_count"]
     w39, w40 = metric["buckets"]
@@ -755,19 +745,19 @@ def test_trends_count_metric_mean_has_two_decimals(store):
     assert all(isinstance(metric["summary"][k], float) for k in ("mean", "first", "last", "change"))
 
     daily = get_trends(
-        store, metrics=["running_count"], start_date="2026-09-21", end_date="2026-10-04", period="day"
+        store, history, metrics=["running_count"], start_date="2026-09-21", end_date="2026-10-04", period="day"
     )["metrics"]["running_count"]
     assert len(daily["buckets"]) == 14
     assert all(isinstance(b["value"], int) for b in daily["buckets"])
     assert [b["value"] for b in daily["buckets"] if b["period"] in ("2026-09-23", "2026-09-24")] == [1, 0]
 
 
-def test_trends_days_with_data_excludes_failure_only_rows(store):
+def test_trends_days_with_data_excludes_failure_only_rows(store, history):
     for day in span("2026-10-01", "2026-10-03"):
-        seed_day(store, day, readiness=70)
-    store.record_history_failure([d("2026-10-04")], "recovery")  # a row that only counts failures
-    store.record_history_failure([d("2026-10-05")], "activities")
-    out = get_trends(store, metrics=["readiness"], start_date="2026-10-01", end_date="2026-10-06", period="day")
+        history.recovery(day, readiness=70)
+    history.failures_only(d("2026-10-04"))  # a row that only counts failures
+    history.failures_only(d("2026-10-05"))
+    out = get_trends(store, history, metrics=["readiness"], start_date="2026-10-01", end_date="2026-10-06", period="day")
     assert out["days_with_data"] == 3
     assert [b["period"] for b in out["metrics"]["readiness"]["buckets"]] == ["2026-10-01", "2026-10-02", "2026-10-03"]
 
@@ -777,42 +767,50 @@ def test_trends_days_with_data_excludes_failure_only_rows(store):
 W41_END = d("2026-10-11")
 
 
-def lift(store, day: str, tid: str, sets: int, volume: float, best: tuple[float, int, float] | None = None) -> None:
-    seed_strength(store, f"{tid}-{day}", d(day), [exercise(tid, sets, volume, best)])
+GROUPS = {
+    "T1": ("chest", "Bench"),
+    "T2": ("quadriceps", "Squat"),
+    "T3": ("lats", "Assisted pull-up"),  # an assisted template: the view gives volume 0.0 and no best
+    "T4": ("chest", "Fly"),
+    "T5": ("shoulders", "Arnold Press"),
+    "T6": ("lats", "Row"),
+    "T7": ("calves", "Calf raise"),
+}
 
 
-def covered(store, first: str = "2026-08-31", synced_on: date = TODAY) -> None:
+def lift(history, day: str, tid: str, sets: int, volume: float, b: tuple[float, int, float] | None = None) -> None:
+    group, title = GROUPS[tid]
+    history.lift(d(day), tid, sets, volume, None if b is None else best(*b), group=group, title=title)
+
+
+def covered(history, first: str = "2026-08-31", synced_on: date = TODAY) -> None:
     """The Hevy history covers ``first`` .. the day before ``synced_on`` (default: W36 up to yesterday)."""
-    seed_sync(store, d(first), synced_on)
+    history.cover(d(first), synced_on - timedelta(days=1))
 
 
-def test_weekly_strength_unavailable_without_a_hevy_sync(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    lift(store, "2026-09-29", "T1", 3, 1500.0, (100, 5, 116.7))  # workouts stored, but nothing says they are complete
-    out = report(store)
+def test_weekly_strength_unavailable_without_a_hevy_sync(store, history):
+    lift(history, "2026-09-29", "T1", 3, 1500.0, (100, 5, 116.7))  # workouts stored, but nothing says they are complete
+    out = report(store, history)
     assert out["strength"] == STRENGTH_NONE
     assert not [b for b in out["new_bests"] if b["metric"] == "e1rm_kg"] and "strength_volume_up" not in flags_of(out)
 
 
-def test_week_outside_the_coverage_is_unavailable(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    lift(store, "2026-09-29", "T1", 3, 1500.0)
-    covered(store, first="2026-10-05")  # the history starts in W41
-    assert report(store)["strength"] == STRENGTH_NONE  # W40 is before it
-    assert report(store, week="2026-10-07")["strength"]["days"] == 2  # W41: Monday and Tuesday are covered
+def test_week_outside_the_coverage_is_unavailable(store, history):
+    lift(history, "2026-09-29", "T1", 3, 1500.0)
+    covered(history, first="2026-10-05")  # the history starts in W41
+    assert report(store, history)["strength"] == STRENGTH_NONE  # W40 is before it
+    assert report(store, history, week="2026-10-07")["strength"]["days"] == 2  # W41: Monday and Tuesday are covered
 
 
-def test_weekly_strength_section_against_four_weeks(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    seed_template(store, "T2", "quadriceps", title="Squat")
-    covered(store)
+def test_weekly_strength_section_against_four_weeks(store, history):
+    covered(history)
     # chest: sets 3, 4, 3, 2 and volume 1500, 2000, 1500, 1000 (means 3.0 and 1500.0); squat 4 sets, 3200 kg each week
     for monday, sets, volume in ((W36, 3, 1500.0), (W37, 4, 2000.0), (W38, 3, 1500.0), (W39, 2, 1000.0)):
-        lift(store, (monday + timedelta(days=1)).isoformat(), "T1", sets, volume)
-        lift(store, (monday + timedelta(days=3)).isoformat(), "T2", 4, 3200.0)
-    lift(store, "2026-09-29", "T1", 3, 1800.0)
-    lift(store, "2026-10-01", "T2", 5, 4000.0)
-    assert report(store)["strength"] == {
+        lift(history, (monday + timedelta(days=1)).isoformat(), "T1", sets, volume)
+        lift(history, (monday + timedelta(days=3)).isoformat(), "T2", 4, 3200.0)
+    lift(history, "2026-09-29", "T1", 3, 1800.0)
+    lift(history, "2026-10-01", "T2", 5, 4000.0)
+    assert report(store, history)["strength"] == {
         "days": 7,
         "workouts": 2,
         "volume_kg": {"week": 5800.0, "baseline": 4700.0, "baseline_weeks": 4, "change": 1100.0, "change_pct": 23.4},
@@ -824,47 +822,22 @@ def test_weekly_strength_section_against_four_weeks(store):
     }
 
 
-def test_group_trained_only_in_the_baseline_is_listed_and_an_idle_one_is_not(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    seed_template(store, "T2", "lats", title="Row")
-    seed_template(store, "T3", "calves", title="Calf raise")
-    covered(store)
-    lift(store, "2026-09-01", "T2", 4, 200.0)  # W36 only: baseline mean of sets 1.0
-    lift(store, "2026-09-29", "T1", 3, 900.0)
-    lift(store, "2026-09-29", "T3", 0, 0.0)  # zero sets everywhere: not listed
-    assert report(store)["strength"]["by_muscle_group"] == {
+def test_group_trained_only_in_the_baseline_is_listed_and_an_idle_one_is_not(store, history):
+    covered(history)
+    lift(history, "2026-09-01", "T6", 4, 200.0)  # W36 only: baseline mean of sets 1.0
+    lift(history, "2026-09-29", "T1", 3, 900.0)
+    lift(history, "2026-09-29", "T7", 0, 0.0)  # zero sets everywhere: not listed
+    assert report(store, history)["strength"]["by_muscle_group"] == {
         "chest": {"sets": 3, "baseline_sets": 0.0, "volume_kg": 900.0, "baseline_volume_kg": 0.0},
         "lats": {"sets": 0, "baseline_sets": 1.0, "volume_kg": 0.0, "baseline_volume_kg": 50.0},
     }
 
 
-@pytest.mark.anyio
-async def test_weekly_strength_counts_sets_for_the_primary_muscle_group(store):
-    """Through the job: a template's secondary groups are read, but only the primary one is stored and counted."""
-    template = hevy_template("T1", "Bench Press (Barbell)", "chest")
-    template["secondary_muscle_groups"] = ["triceps", "shoulders"]
-    source = FakeStrengthSource(
-        events=lambda page, since, index: ("ok", events_page([updated(day_workout("W1", "2026-10-05"))], page, 1)),
-        template=lambda tid, index: ("ok", {"exercise_template": template}),
-    )
-    job, clock = make_job(store, FakeHistorySource(), local(TODAY, 10, 0), strength=source, history_backfill_days=5)
-    await run_first(job, clock)
-    assert store.hevy_templates()["T1"]["primary_muscle_group"] == "chest"
-    assert report(store, week="2026-10-05")["strength"] == {
-        "days": 2,
-        "workouts": 1,
-        "volume_kg": {"week": 1500.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
-        "sets": {"week": 3.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
-        "by_muscle_group": {"chest": {"sets": 3, "baseline_sets": None, "volume_kg": 1500.0, "baseline_volume_kg": None}},
-    }
-
-
-def test_partly_covered_week_reports_its_covered_days(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    covered(store, first="2026-09-30")  # Wednesday of W40
-    lift(store, "2026-09-29", "T1", 9, 9000.0)  # before the coverage: not part of the section
-    lift(store, "2026-10-01", "T1", 3, 1500.0)
-    out = report(store)
+def test_partly_covered_week_reports_its_covered_days(store, history):
+    covered(history, first="2026-09-30")  # Wednesday of W40
+    lift(history, "2026-09-29", "T1", 9, 9000.0)  # before the coverage: not part of the section
+    lift(history, "2026-10-01", "T1", 3, 1500.0)
+    out = report(store, history)
     assert out["strength"] == {
         "days": 5,
         "workouts": 1,
@@ -875,62 +848,57 @@ def test_partly_covered_week_reports_its_covered_days(store):
     assert "strength_volume_up" not in flags_of(out)
 
 
-def seed_volumes(store, week_volumes: dict[date, float]) -> None:
+def seed_volumes(history, week_volumes: dict[date, float]) -> None:
     """One chest workout on the Tuesday of every week with the given volume (10 sets)."""
     for monday, volume in week_volumes.items():
-        lift(store, (monday + timedelta(days=1)).isoformat(), "T1", 10, volume)
+        lift(history, (monday + timedelta(days=1)).isoformat(), "T1", 10, volume)
 
 
 def volume_flag(out) -> list[dict[str, Any]]:
     return [f for f in out["flags"] if f["flag"] == "strength_volume_up"]
 
 
-def test_strength_volume_up_flag(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    covered(store)
-    seed_volumes(store, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1310.0})
-    assert volume_flag(report(store)) == [
+def test_strength_volume_up_flag(store, history):
+    covered(history)
+    seed_volumes(history, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1310.0})
+    assert volume_flag(report(store, history)) == [
         {"flag": "strength_volume_up", "week": 1310.0, "baseline": 1000.0, "change": 310.0, "change_pct": 31.0}
     ]
 
 
-def test_strength_volume_flag_needs_more_than_30_percent(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    covered(store)
-    seed_volumes(store, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1300.0})
-    out = report(store)
+def test_strength_volume_flag_needs_more_than_30_percent(store, history):
+    covered(history)
+    seed_volumes(history, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1300.0})
+    out = report(store, history)
     assert out["strength"]["volume_kg"]["change_pct"] == 30.0 and volume_flag(out) == []
 
 
-def test_strength_volume_flag_needs_two_complete_baseline_weeks(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    covered(store, first="2026-09-21")  # only W39 is fully covered before W40
-    seed_volumes(store, {W38: 1000.0, W39: 1000.0, W40: 2000.0})
-    out = report(store)
+def test_strength_volume_flag_needs_two_complete_baseline_weeks(store, history):
+    covered(history, first="2026-09-21")  # only W39 is fully covered before W40
+    seed_volumes(history, {W38: 1000.0, W39: 1000.0, W40: 2000.0})
+    out = report(store, history)
     assert out["strength"]["volume_kg"]["baseline_weeks"] == 1 and volume_flag(out) == []
     # a baseline week that is only partly covered does not count either
-    covered(store, first="2026-09-17")  # Thursday of W38
-    out = report(store)
+    covered(history, first="2026-09-17")  # Thursday of W38
+    out = report(store, history)
     assert out["strength"]["volume_kg"]["baseline_weeks"] == 1 and volume_flag(out) == []
 
 
-def test_strength_volume_flag_needs_a_complete_week(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    covered(store, synced_on=d("2026-10-03"))  # covered through Friday 10-02: five days of W40
-    seed_volumes(store, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 2000.0})
-    out = report(store)
+def test_strength_volume_flag_needs_a_complete_week(store, history):
+    covered(history, synced_on=d("2026-10-03"))  # covered through Friday 10-02: five days of W40
+    seed_volumes(history, {W36: 1000.0, W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 2000.0})
+    out = report(store, history)
     assert out["strength"]["days"] == 5 and out["strength"]["volume_kg"]["change_pct"] == 100.0
     assert volume_flag(out) == []
 
 
-def test_strength_volume_flag_needs_a_final_week(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    covered(store, synced_on=d("2026-10-20"))  # (artificial) the history claims to cover all of the current week
-    seed_volumes(store, {W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1000.0, W41: 2000.0})
-    out = report(store, week="2026-10-07")
+def test_strength_volume_flag_needs_a_final_week(store, history):
+    covered(history, synced_on=d("2026-10-20"))  # (artificial) the history claims to cover all of the current week
+    seed_volumes(history, {W37: 1000.0, W38: 1000.0, W39: 1000.0, W40: 1000.0, W41: 2000.0})
+    out = report(store, history, week="2026-10-07")
     assert out["week"]["partial"] is True and out["strength"]["days"] == 7
     assert out["strength"]["volume_kg"]["change_pct"] == 100.0 and volume_flag(out) == []
-    done = report(store, today=d("2026-10-12"), week="2026-10-07")  # the same week once it is over
+    done = report(store, history, today=d("2026-10-12"), week="2026-10-07")  # the same week once it is over
     assert done["week"]["partial"] is False and len(volume_flag(done)) == 1
 
 
@@ -938,36 +906,31 @@ def e1rm_bests(out) -> list[dict[str, Any]]:
     return [b for b in out["new_bests"] if b["metric"] == "e1rm_kg"]
 
 
-def test_new_e1rm_best(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    seed_template(store, "T2", "lats", title="Row")
-    seed_template(store, "T3", "lats", title="Assisted pull-up", type_="bodyweight_assisted_reps")
-    seed_template(store, "T4", "chest", title="Fly")
-    seed_template(store, "T5", "shoulders", title="Arnold Press")
-    covered(store)
-    lift(store, "2026-09-15", "T1", 3, 1500.0, (100, 5, 100.0))
-    lift(store, "2026-09-22", "T1", 3, 1500.0, (90, 5, 90.0))
-    lift(store, "2026-09-15", "T2", 3, 900.0, (80, 5, 80.0))
-    lift(store, "2026-09-15", "T3", 3, 0.0, (30, 5, 85.0))
-    lift(store, "2026-09-15", "T5", 3, 900.0, (50, 5, 60.0))
-    lift(store, "2026-09-29", "T1", 3, 1500.0, (105, 5, 105.0))  # above the previous best 100
-    lift(store, "2026-10-01", "T1", 3, 1500.0, (102, 5, 102.0))  # the week's best counts, not the last session
-    lift(store, "2026-09-30", "T2", 3, 900.0, (80, 5, 80.0))  # equal: not a new best
-    lift(store, "2026-09-30", "T3", 3, 0.0, (40, 5, 95.0))  # assisted: no e1RM at all
-    lift(store, "2026-09-30", "T4", 3, 600.0, (60, 5, 70.0))  # first trained this week
-    lift(store, "2026-10-02", "T5", 3, 900.0, (60, 5, 70.0))
-    assert e1rm_bests(report(store)) == [
+def test_new_e1rm_best(store, history):
+    covered(history)
+    lift(history, "2026-09-15", "T1", 3, 1500.0, (100, 5, 100.0))
+    lift(history, "2026-09-22", "T1", 3, 1500.0, (90, 5, 90.0))
+    lift(history, "2026-09-15", "T2", 3, 900.0, (80, 5, 80.0))
+    lift(history, "2026-09-15", "T3", 3, 0.0)
+    lift(history, "2026-09-15", "T5", 3, 900.0, (50, 5, 60.0))
+    lift(history, "2026-09-29", "T1", 3, 1500.0, (105, 5, 105.0))  # above the previous best 100
+    lift(history, "2026-10-01", "T1", 3, 1500.0, (102, 5, 102.0))  # the week's best counts, not the last session
+    lift(history, "2026-09-30", "T2", 3, 900.0, (80, 5, 80.0))  # equal: not a new best
+    lift(history, "2026-09-30", "T3", 3, 0.0)  # assisted: the view gives no best, so no e1RM at all
+    lift(history, "2026-09-30", "T4", 3, 600.0, (60, 5, 70.0))  # first trained this week
+    lift(history, "2026-10-02", "T5", 3, 900.0, (60, 5, 70.0))
+    assert e1rm_bests(report(store, history)) == [
         {"metric": "e1rm_kg", "exercise": "Arnold Press", "template_id": "T5", "value": 70.0, "previous_best": 60.0, "date": "2026-10-02"},
         {"metric": "e1rm_kg", "exercise": "Bench", "template_id": "T1", "value": 105.0, "previous_best": 100.0, "date": "2026-09-29"},
     ]
+    assert ("strength", None, d("2026-09-27")) in history.calls  # the previous best comes from every earlier day
 
 
-def test_new_e1rm_best_is_reported_for_a_partial_week_and_after_the_other_bests(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    covered(store)
-    lift(store, "2026-09-29", "T1", 3, 1500.0, (105, 5, 105.0))
-    lift(store, "2026-10-06", "T1", 3, 1500.0, (110, 5, 110.0))
-    out = report(store, week="2026-10-07")
+def test_new_e1rm_best_is_reported_for_a_partial_week_and_after_the_other_bests(store, history):
+    covered(history)
+    lift(history, "2026-09-29", "T1", 3, 1500.0, (105, 5, 105.0))
+    lift(history, "2026-10-06", "T1", 3, 1500.0, (110, 5, 110.0))
+    out = report(store, history, week="2026-10-07")
     assert out["week"]["partial"] is True
     assert e1rm_bests(out) == [
         {"metric": "e1rm_kg", "exercise": "Bench", "template_id": "T1", "value": 110.0, "previous_best": 105.0, "date": "2026-10-06"}

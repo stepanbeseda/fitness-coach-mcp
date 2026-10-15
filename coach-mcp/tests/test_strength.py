@@ -13,11 +13,11 @@ from hevy_payloads import (
     hevy_workout,
     updated,
 )
-from history_helpers import exercise, seed_strength, seed_sync, seed_template
 from mcp.server.mcpserver.exceptions import ToolError
+from view_values import FakeHistory, best
 
 from coach_mcp import strength
-from coach_mcp.history_view import Coverage, Templates, day_totals
+from coach_mcp.history_view import Coverage
 from coach_mcp.strength import (
     e1rm,
     exercises_json,
@@ -325,28 +325,26 @@ def test_since_text_has_no_offset_or_fraction():
 # --------------------------------------------------------------- read side
 
 
-def row(day: str, *entries: dict[str, Any], workout_id: str = "W") -> dict[str, Any]:
-    return {"workout_id": workout_id, "date": day, "exercises": exercises_json(entries)}
-
-
-def found(group: str | None, type_: str = "weight_reps", title: str | None = None) -> dict[str, Any]:
-    return {"found": 1, "primary_muscle_group": group, "type": type_, "title": title}
+@pytest.fixture
+def history() -> FakeHistory:
+    return FakeHistory()
 
 
 def test_week_sums_only_covered_days_and_keeps_the_best_per_template():
-    templates = Templates({"A": found("chest", title="Bench")})
-    rows = [
-        row("2026-10-05", exercise("A", 3, 1000.0, (100, 5, 116.7)), workout_id="W1"),
-        row("2026-10-07", exercise("A", 3, 1100.0, (105, 5, 122.5)), workout_id="W2"),
-        row("2026-10-09", exercise("A", 3, 1200.0, (105, 5, 122.5)), workout_id="W3"),
-        row("2026-10-12", exercise("A", 9, 9999.0, (200, 1, 200.0)), workout_id="W4"),  # next week
-    ]
-    totals = day_totals(rows, templates)
+    history = FakeHistory()
+    for day, sets, volume, b in (
+        ("2026-10-05", 3, 1000.0, best(100, 5, 116.7)),
+        ("2026-10-07", 3, 1100.0, best(105, 5, 122.5)),
+        ("2026-10-09", 3, 1200.0, best(105, 5, 122.5)),
+        ("2026-10-12", 9, 9999.0, best(200, 1, 200.0)),  # next week
+    ):
+        history.lift(date.fromisoformat(day), "A", sets, volume, b, group="chest", title="Bench")
+    totals = history.strength(None, date(2026, 10, 31)).days
     week = strength.StrengthWeek(date(2026, 10, 5), totals, Coverage(date(2026, 10, 6), date(2026, 10, 20)))
     assert week.days == 6 and week.complete is False  # Monday is not covered
     assert (week.workouts, week.sets, week.volume_kg) == (2, 6, 2300.0)  # Monday's workout is left out
-    best, day, title = week.best["A"]
-    assert (best["e1rm_kg"], day, title) == (122.5, date(2026, 10, 7), "Bench")  # a tie keeps the earlier day
+    top, day, title = week.best["A"]
+    assert (top["e1rm_kg"], day, title) == (122.5, date(2026, 10, 7), "Bench")  # a tie keeps the earlier day
     full = strength.StrengthWeek(date(2026, 10, 5), totals, Coverage(date(2026, 9, 1), date(2026, 10, 11)))
     assert full.days == 7 and full.complete is True and full.sets == 9
 
@@ -354,29 +352,32 @@ def test_week_sums_only_covered_days_and_keeps_the_best_per_template():
 # --------------------------------------------------------- get_strength_progress
 
 
-def seed_series(store, tid: str, points: list[tuple[str, float]], *, prefix: str = "") -> None:
-    for n, (day, estimate) in enumerate(points):
-        seed_strength(store, f"{prefix}{tid}-{n}", date.fromisoformat(day), [exercise(tid, 3, 1500.0, (100, 5, estimate), title="Stored")])
+def seed_series(history, tid: str, group: str, title: str, points: list[tuple[str, float]]) -> None:
+    """One workout per point: three sets of 1500 kg whose best set has the given e1RM."""
+    for day, estimate in points:
+        history.lift(date.fromisoformat(day), tid, 3, 1500.0, best(100.0, 5, estimate), group=group, title=title)
 
 
-def progress(store, **kwargs: Any) -> dict[str, Any]:
+def progress(store, history, **kwargs: Any) -> dict[str, Any]:
     args: dict[str, Any] = {"exercise": None, "start_date": None, "end_date": None, "plateau_weeks": 4, "limit": 10}
-    return get_strength_progress(store, TODAY, **{**args, **kwargs})
+    return get_strength_progress(store, TODAY, history=history, **{**args, **kwargs})
 
 
-def synced(store) -> None:
-    seed_sync(store, date(2026, 7, 1), TODAY)
+def synced(history) -> None:
+    """The Hevy history covers 2026-07-01 up to yesterday (a listing that ran today)."""
+    history.cover(date(2026, 7, 1), TODAY - timedelta(days=1))
 
 
-def test_strength_progress_series_and_summary(store):
-    seed_template(store, "T1", "chest", title="Bench Press (Barbell)")
+def test_strength_progress_series_and_summary(store, history):
     seed_series(
-        store,
+        history,
         "T1",
+        "chest",
+        "Bench Press (Barbell)",
         [("2026-09-14", 100.0), ("2026-09-21", 105.0), ("2026-09-28", 110.0), ("2026-10-02", 108.0), ("2026-10-05", 112.0)],
     )
-    synced(store)
-    got = progress(store)
+    synced(history)
+    got = progress(store, history)
     assert (got["start"], got["end"], got["plateau_weeks"], got["available"]) == ("2026-07-09", "2026-10-06", 4, True)
     assert got["coverage"] == {"from": "2026-07-01", "through": "2026-10-06"} and got["matched"] == 1
     (ex,) = got["exercises"]
@@ -388,50 +389,42 @@ def test_strength_progress_series_and_summary(store):
     assert ex["best"] == {"date": "2026-10-05", "e1rm_kg": 112.0, "weight_kg": 100.0, "reps": 5}
     assert (ex["first_e1rm_kg"], ex["last_e1rm_kg"], ex["change_kg"], ex["change_pct"]) == (100.0, 112.0, 12.0, 12.0)
     assert ex["weeks_since_best"] == 0 and ex["plateau"] is False
+    assert ("strength", date(2026, 7, 9), date(2026, 10, 6)) in history.calls  # the default range reaches the view
 
 
-def test_strength_progress_best_on_a_tie_is_the_earliest_and_weeks_since_best(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    seed_series(store, "T1", [("2026-08-03", 110.0), ("2026-09-01", 110.0), ("2026-09-29", 100.0)])
-    synced(store)
-    (ex,) = progress(store)["exercises"]
+def test_strength_progress_best_on_a_tie_is_the_earliest_and_weeks_since_best(store, history):
+    seed_series(history, "T1", "chest", "Bench", [("2026-08-03", 110.0), ("2026-09-01", 110.0), ("2026-09-29", 100.0)])
+    synced(history)
+    (ex,) = progress(store, history)["exercises"]
     assert ex["best"]["date"] == "2026-08-03"
     assert ex["weeks_since_best"] == (date(2026, 10, 6) - date(2026, 8, 3)).days // 7 == 9
     assert ex["change_kg"] == -10.0 and ex["change_pct"] == -9.1
 
 
-def test_strength_progress_single_session_has_no_change_pct(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    seed_series(store, "T1", [("2026-10-05", 100.0)])
-    synced(store)
-    (ex,) = progress(store)["exercises"]
+def test_strength_progress_single_session_has_no_change_pct(store, history):
+    seed_series(history, "T1", "chest", "Bench", [("2026-10-05", 100.0)])
+    synced(history)
+    (ex,) = progress(store, history)["exercises"]
     assert (ex["sessions"], ex["change_kg"], ex["change_pct"], ex["plateau"]) == (1, 0.0, None, False)
 
 
-def test_strength_progress_range_arguments_and_exercises_without_points(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    seed_series(store, "T1", [("2026-09-14", 100.0), ("2026-10-05", 112.0)])
-    seed_strength(store, "assist", date(2026, 10, 5), [exercise("T9", 3, 0.0, None, title="No best")])  # no point
-    synced(store)
-    got = progress(store, start_date="2026-09-20", end_date="2026-10-05")
+def test_strength_progress_range_arguments_and_exercises_without_points(store, history):
+    seed_series(history, "T1", "chest", "Bench", [("2026-09-14", 100.0), ("2026-10-05", 112.0)])
+    history.lift(date(2026, 10, 5), "T9", 3, 0.0, None, title="No best")  # no point
+    synced(history)
+    got = progress(store, history, start_date="2026-09-20", end_date="2026-10-05")
     assert (got["start"], got["end"]) == ("2026-09-20", "2026-10-05")
     assert [e["template_id"] for e in got["exercises"]] == ["T1"]
     assert [p["date"] for p in got["exercises"][0]["e1rm_kg"]] == ["2026-10-05"]
+    assert ("strength", date(2026, 9, 20), date(2026, 10, 5)) in history.calls
 
 
 def test_plateau_flag_branches(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    synced(store)
-
-    case = {"n": 0}
-
     def plateau(points: list[tuple[str, float]], weeks: int = 4) -> bool:
-        case["n"] += 1
-        ids = [f"c{case['n']}-{n}" for n in range(len(points))]
-        for workout_id, (day, estimate) in zip(ids, points, strict=True):
-            seed_strength(store, workout_id, date.fromisoformat(day), [exercise("T1", 3, 1500.0, (100, 5, estimate))])
-        (ex,) = progress(store, plateau_weeks=weeks)["exercises"]
-        store.apply_strength_events({}, ids)  # a tombstone takes the case out of the next one
+        history = FakeHistory()  # one history per case
+        synced(history)
+        seed_series(history, "T1", "chest", "Bench", points)
+        (ex,) = progress(store, history, plateau_weeks=weeks)["exercises"]
         return ex["plateau"]
 
     # the window of 4 weeks ending 2026-10-06 starts 2026-09-09
@@ -448,43 +441,37 @@ def test_plateau_flag_branches(store):
     assert plateau(series, weeks=6) is False
 
 
-def test_strength_progress_filters_orders_and_limits(store):
-    seed_template(store, "A1", "chest", title="Bench Press")
-    seed_template(store, "B2", "quadriceps", title="Squat")
-    seed_template(store, "C3", "triceps", title="Bench Dip")
-    seed_series(store, "A1", [("2026-09-14", 100.0), ("2026-09-21", 105.0), ("2026-09-28", 110.0)])
-    seed_series(store, "B2", [("2026-09-14", 150.0), ("2026-09-21", 155.0)])
-    seed_series(store, "C3", [("2026-09-14", 60.0)])
-    synced(store)
+def test_strength_progress_filters_orders_and_limits(store, history):
+    seed_series(history, "A1", "chest", "Bench Press", [("2026-09-14", 100.0), ("2026-09-21", 105.0), ("2026-09-28", 110.0)])
+    seed_series(history, "B2", "quadriceps", "Squat", [("2026-09-14", 150.0), ("2026-09-21", 155.0)])
+    seed_series(history, "C3", "triceps", "Bench Dip", [("2026-09-14", 60.0)])
+    synced(history)
 
     def ids(**kwargs: Any) -> list[str]:
-        return [e["template_id"] for e in progress(store, **kwargs)["exercises"]]
+        return [e["template_id"] for e in progress(store, history, **kwargs)["exercises"]]
 
     assert ids() == ["A1", "B2", "C3"]  # most trained first
-    assert ids(limit=2) == ["A1", "B2"] and progress(store, limit=2)["matched"] == 3
+    assert ids(limit=2) == ["A1", "B2"] and progress(store, history, limit=2)["matched"] == 3
     assert ids(exercise="B2") == ["B2"]
     assert ids(exercise="b2") == []  # an id matches exactly; "b2" is not part of a title either
     assert ids(exercise="bench") == ["A1", "C3"] and ids(exercise="BENCH") == ["A1", "C3"]
     assert ids(exercise="  squat ") == ["B2"]
     assert ids(exercise="   ") == ["A1", "B2", "C3"]
-    got = progress(store, exercise="deadlift")
+    got = progress(store, history, exercise="deadlift")
     assert got["available"] is True and got["exercises"] == [] and got["matched"] == 0
 
 
-def test_strength_progress_orders_equal_sessions_by_title_then_id(store):
-    seed_template(store, "Z1", "chest", title="Apple")
-    seed_template(store, "A9", "chest", title="Banana")
-    seed_template(store, "A1", "chest", title="Banana")
-    for tid in ("Z1", "A9", "A1"):
-        seed_series(store, tid, [("2026-09-14", 100.0)])
-    synced(store)
-    assert [e["template_id"] for e in progress(store)["exercises"]] == ["Z1", "A1", "A9"]
+def test_strength_progress_orders_equal_sessions_by_title_then_id(store, history):
+    seed_series(history, "Z1", "chest", "Apple", [("2026-09-14", 100.0)])
+    seed_series(history, "A9", "chest", "Banana", [("2026-09-14", 100.0)])
+    seed_series(history, "A1", "chest", "Banana", [("2026-09-14", 100.0)])
+    synced(history)
+    assert [e["template_id"] for e in progress(store, history)["exercises"]] == ["Z1", "A1", "A9"]
 
 
-def test_strength_progress_without_sync_is_unavailable(store):
-    seed_template(store, "T1", "chest", title="Bench")
-    seed_series(store, "T1", [("2026-09-14", 100.0)])
-    assert progress(store) == {
+def test_strength_progress_without_sync_is_unavailable(store, history):
+    seed_series(history, "T1", "chest", "Bench", [("2026-09-14", 100.0)])  # workouts, but no complete listing yet
+    assert progress(store, history) == {
         "start": "2026-07-09",
         "end": "2026-10-06",
         "plateau_weeks": 4,
@@ -495,14 +482,14 @@ def test_strength_progress_without_sync_is_unavailable(store):
     }
 
 
-def test_strength_progress_date_errors(store):
-    synced(store)
+def test_strength_progress_date_errors(store, history):
+    synced(history)
     with pytest.raises(ToolError, match="end_date must not be after today"):
-        progress(store, end_date="2026-10-08")
+        progress(store, history, end_date="2026-10-08")
     with pytest.raises(ToolError, match="start_date must be on or before end_date"):
-        progress(store, start_date="2026-10-06", end_date="2026-10-05")
+        progress(store, history, start_date="2026-10-06", end_date="2026-10-05")
     with pytest.raises(ToolError, match=r"date range too long \(max 731 days\)"):
-        progress(store, start_date="2024-10-05", end_date="2026-10-06")  # 732 days
-    assert progress(store, start_date="2024-10-06", end_date="2026-10-06")["available"] is True  # 731 days
+        progress(store, history, start_date="2024-10-05", end_date="2026-10-06")  # 732 days
+    assert progress(store, history, start_date="2024-10-06", end_date="2026-10-06")["available"] is True  # 731 days
     with pytest.raises(ToolError, match="start_date"):
-        progress(store, start_date="yesterday")
+        progress(store, history, start_date="yesterday")
