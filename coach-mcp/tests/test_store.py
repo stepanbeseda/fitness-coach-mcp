@@ -1346,6 +1346,32 @@ def test_advance_inbound_keeps_one_row(store):
     }
 
 
+def test_a_transaction_holds_the_write_lock_from_its_first_read(store):
+    sid = store.replace_planned(date(2026, 10, 5), date(2026, 10, 11), date(2026, 10, 12),
+                                [{"date": date(2026, 10, 7), "type": "running", "description": "Run"}])[1][0]
+    with store.transaction() as tx:
+        assert tx.get_session(sid)["status"] == "planned"
+        other = sqlite3.connect(store.path, timeout=0)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):  # no writer between the check and the write
+                other.execute("UPDATE sessions SET status = 'superseded' WHERE id = ?", (sid,))
+            assert other.execute("SELECT status FROM sessions").fetchone() == ("planned",)  # readers still read
+        finally:
+            other.close()
+        tx.update_session_status(sid, "done", None, None)
+    assert store.get_session(sid)["status"] == "done"  # committed at the end of the block
+
+
+def test_a_transaction_rolls_back_when_its_block_raises(store):
+    sid = store.replace_planned(date(2026, 10, 5), date(2026, 10, 11), date(2026, 10, 12),
+                                [{"date": date(2026, 10, 7), "type": "running", "description": "Run"}])[1][0]
+    with pytest.raises(RuntimeError), store.transaction() as tx:
+        tx.update_session_status(sid, "moved", date(2026, 10, 9), (date(2026, 10, 7), "n"))
+        raise RuntimeError("after the writes")
+    assert store.get_session(sid)["status"] == "planned" and store.moved_to([sid]) == {}
+    assert store.latest_notes(5) == []
+
+
 def test_a_note_and_its_offset_are_one_transaction(store):
     store.advance_inbound("111111111", 10, AT)
     before = store.inbound_state()

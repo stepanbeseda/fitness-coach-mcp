@@ -23,13 +23,12 @@ import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, assert_never
 from zoneinfo import ZoneInfo
 
 import httpx2
-from mcp.server.mcpserver.exceptions import ToolError
 
-from . import tools
+from . import plan, tools
 from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _session_line
 from .config import Settings, read_bot_id, read_bot_token
 from .garmin import GarminSource, exception_kind
@@ -46,7 +45,6 @@ MAX_ANSWER_BYTES = 1024 * 1024
 # A stored offset is sent only while it is fresh: Telegram keeps an update for at most 24 hours and may restart the
 # update ids after a week without updates, so an old offset proves nothing and could skip a new, lower id.
 OFFSET_MAX_AGE = timedelta(days=2)
-NOTE_MAX = 2000
 NOTE_DATE_WINDOW = timedelta(hours=48)
 DRAIN_MAX_BATCHES = 50
 BACKOFF_FIRST, BACKOFF_MAX = 5.0, 300.0
@@ -273,13 +271,11 @@ class InboundPoller:
         command, argument = parse_command(text)
 
         if command is None:
-            if len(argument) > NOTE_MAX or "\x00" in argument:
-                self._store.advance_inbound(bot_id, next_id, now)
-                if "\x00" in argument:
-                    return "note", "refused", r.note_refused
-                return "note", "refused", r.note_too_long.format(length=len(argument), limit=NOTE_MAX)
             day = self._sent_day(message, now)
-            self._store.insert_note(day, argument, inbound=(bot_id, next_id, now))
+            noted = plan.add_note(self._store, day, argument, inbound=(bot_id, next_id, now))
+            if isinstance(noted, plan.Refusal):
+                self._store.advance_inbound(bot_id, next_id, now)
+                return "note", "refused", refusal_reply(t, r, noted)
             return "note", "ok", r.note_saved.format(day=t.day_title(day))
 
         if command in ("dnes", "today"):
@@ -344,25 +340,41 @@ class InboundPoller:
         session_id = int(match.group(1)) if match else 0
         if session_id < 1:
             return "bad_argument", self._usage(t, r, today, command)
-        row = self._store.get_session(session_id)
-        if row is None:
-            return "bad_argument", f"{r.unknown_session.format(id=session_id)}\n{self._usage(t, r, today, command)}"
-        if row["status"] == "superseded":
-            return "refused", r.session_superseded.format(id=session_id)
-        if row["status"] == "moved":
-            link = self._store.moved_to([session_id]).get(session_id)
-            if link is None:
-                return "refused", r.session_moved.format(id=session_id)
-            copy_day = t.day_title(date.fromisoformat(link[1]))
-            return "refused", r.session_moved_to.format(id=session_id, copy=link[0], day=copy_day)
-        day = date.fromisoformat(row["date"])
-        if command == "done" and day > today:
-            return "refused", r.session_future.format(id=session_id, day=t.day_title(day))
-        try:
-            result = tools.update_session(self._store, today, session_id=session_id, status=_STATUS[command])
-        except ToolError:  # the session changed between the read and the write
-            return "refused", r.cannot_change.format(id=session_id)
-        return "ok", r.recorded.format(line=self._line(t, r, result["session"]))
+        outcome = plan.mark_session(self._store, today, session_id, _STATUS[command])
+        if isinstance(outcome, plan.Refusal):
+            reply = refusal_reply(t, r, outcome)
+            if outcome.reason is plan.Reason.NOT_FOUND:
+                return "bad_argument", f"{reply}\n{self._usage(t, r, today, command)}"
+            return "refused", reply
+        session = tools.sessions_out(self._store, [outcome.session])[0]
+        return "ok", r.recorded.format(line=self._line(t, r, session))
+
+
+def refusal_reply(t: Texts, r: ReplyTexts, refusal: plan.Refusal) -> str:
+    """The athlete's words for a Plan refusal; a reason no command of the bot can reach gets a generic reply."""
+    sid = refusal.session_id
+    match refusal.reason:
+        case plan.Reason.NOT_FOUND:
+            return r.unknown_session.format(id=sid)
+        case plan.Reason.SUPERSEDED:
+            return r.session_superseded.format(id=sid)
+        case plan.Reason.MOVED:
+            return r.session_moved.format(id=sid)
+        case plan.Reason.MOVED_TO | plan.Reason.COPY_SUPERSEDED:
+            assert refusal.copy_day is not None
+            text = r.session_moved_to if refusal.reason is plan.Reason.MOVED_TO else r.session_moved_superseded
+            return text.format(id=sid, copy=refusal.copy_id, day=t.day_title(refusal.copy_day))
+        case plan.Reason.FUTURE:
+            assert refusal.day is not None
+            return r.session_future.format(id=sid, day=t.day_title(refusal.day))
+        case plan.Reason.NOT_PLANNED | plan.Reason.SAME_DATE | plan.Reason.PAST_DATE:  # moves: no bot command
+            return r.cannot_change.format(id=sid)
+        case plan.Reason.TEXT_EMPTY | plan.Reason.TEXT_NUL:
+            return r.note_refused
+        case plan.Reason.TEXT_TOO_LONG:
+            return r.note_too_long.format(length=refusal.length, limit=plan.NOTE_MAX)
+        case _:  # pragma: no cover - mypy proves every reason is handled
+            assert_never(refusal.reason)
 
 
 def _updates(raw: bytes) -> list[dict[str, Any]] | None:

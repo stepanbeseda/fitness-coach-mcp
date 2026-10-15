@@ -17,14 +17,14 @@ from fakes import FakeGarmin, FakeTelegram, StopLoop
 from garmin_payloads import garmin_data
 
 from coach_mcp import inbound as inbound_module
+from coach_mcp import plan
 from coach_mcp.__main__ import configure_logging
 from coach_mcp.config import Settings
 from coach_mcp.inbound import (
-    NOTE_MAX,
     InboundPoller,
     parse_command,
 )
-from coach_mcp.messages import REPLY_CS, REPLY_EN
+from coach_mcp.messages import REPLY_CS, REPLY_EN, reply_texts, texts
 from coach_mcp.push import TelegramPush
 from coach_mcp.scheduler import compose_briefing
 from coach_mcp.store import Store
@@ -514,46 +514,42 @@ async def test_an_empty_answer_that_came_at_once_waits_a_moment(tmp_path):
     assert await bench.poller.step() == 1.0
 
 
-async def test_a_database_error_keeps_the_update_for_the_next_round(tmp_path, monkeypatch):
+async def test_a_database_error_keeps_the_update_for_the_next_round(tmp_path):
     bench = Bench(tmp_path, FakeTelegram([message(1, "jednou"), message(2, "/plan")]))
-    real, calls = bench.store.insert_note, []
-
-    def flaky(*args: Any, **kwargs: Any) -> int:
-        calls.append(1)
-        if len(calls) == 1:
-            raise sqlite3.OperationalError("database is locked")
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(bench.store, "insert_note", flaky)
-    with pytest.raises(sqlite3.OperationalError):
+    with sqlite3.connect(bench.settings.db_path) as conn:  # the database refuses every note until the trigger goes
+        conn.execute("CREATE TRIGGER notes_fail BEFORE INSERT ON notes BEGIN SELECT RAISE(ABORT, 'test'); END")
+    with pytest.raises(sqlite3.IntegrityError):
         await bench.poller.step()
+    with sqlite3.connect(bench.settings.db_path) as conn:
+        conn.execute("DROP TRIGGER notes_fail")
     assert bench.notes() == [] and bench.telegram.sent == [] and bench.offset() is None
     assert await bench.poller.step() == 0.0
     assert bench.notes() == [("2026-10-07", "jednou")] and len(bench.telegram.sent) == 2 and bench.offset() == 3
 
 
-async def test_one_broken_message_does_not_block_the_next(tmp_path, monkeypatch, caplog):
+def broken_week(bench: Bench) -> None:
+    """A session row whose date cannot be read: handling ``/plan`` raises ValueError (with SECRET in its text)."""
+    with sqlite3.connect(bench.settings.db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (date, type, description, created_at, updated_at) VALUES (?, 'running', 'x', ?, ?)",
+            (f"2026-10-07{SECRET}", "2026-10-01T00:00:00+00:00", "2026-10-01T00:00:00+00:00"),
+        )
+
+
+async def test_one_broken_message_does_not_block_the_next(tmp_path, caplog):
     caplog.set_level(logging.DEBUG, logger="coach_mcp.inbound")
     bench = Bench(tmp_path, FakeTelegram([message(1, "/plan"), message(2, "druha")]))
-
-    def broken(*_args: Any, **_kwargs: Any) -> Any:
-        raise RuntimeError(SECRET)
-
-    monkeypatch.setattr(inbound_module.tools, "sessions_out", broken)
+    broken_week(bench)
     assert await bench.poller.step() == 0.0
     assert bench.telegram.texts == [REPLY_EN.failed, "Note saved (7 Oct)."]
     assert bench.offset() == 3 and bench.notes() == [("2026-10-07", "druha")]
-    assert "inbound status=failed kind=RuntimeError" in caplog.text and SECRET not in caplog.text
+    assert "inbound status=failed kind=ValueError" in caplog.text and SECRET not in caplog.text
     assert "inbound cmd=- status=failed reply=sent" in caplog.text
 
 
-async def test_a_broken_message_is_answered_once_and_confirmed(tmp_path, monkeypatch):
+async def test_a_broken_message_is_answered_once_and_confirmed(tmp_path):
     bench = Bench(tmp_path, FakeTelegram([message(1, "/plan")]))
-
-    def broken(*_args: Any, **_kwargs: Any) -> Any:
-        raise RuntimeError(SECRET)
-
-    monkeypatch.setattr(inbound_module.tools, "sessions_out", broken)
+    broken_week(bench)
     assert await bench.poller.step() == 0.0
     assert bench.offset() == 2 and bench.telegram.texts == [REPLY_EN.failed]
     assert await bench.poller.step() == 1.0  # the broken message is not asked for again
@@ -847,23 +843,78 @@ async def test_a_moved_session_without_a_copy_is_refused(tmp_path):
     assert await bench.say("/done 1") == "Session #1 was moved and cannot be changed."
 
 
-async def test_a_session_that_changes_under_the_command_is_refused(tmp_path, monkeypatch):
-    bench = Bench(tmp_path, language="cs")
-    bench.seed({"date": D, "type": "running", "description": "Race"})
-    real = bench.store.get_session
-    seen: list[int] = []
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        ("en", "Session #1 was moved to #2 (9 Oct), which a later plan replaced; nothing is left to change."),
+        ("cs", "Trénink #1 byl přesunut na #2 (9. 10.) a ten nahradil pozdější plán; není co měnit."),
+    ],
+)
+async def test_a_moved_session_whose_copy_a_later_plan_replaced_is_refused(tmp_path, language, expected):
+    bench = Bench(tmp_path, language=language)
+    bench.seed({"date": D, "type": "running", "description": "Moved"})
+    bench.store.update_session_status(1, "moved", date(2026, 10, 9), None)  # the copy gets id 2
+    with sqlite3.connect(bench.settings.db_path) as conn:
+        conn.execute("UPDATE sessions SET status = 'superseded' WHERE id = 2")
+    assert await bench.say("/skip 1") == expected
+    assert [bench.store.get_session(i)["status"] for i in (1, 2)] == ["moved", "superseded"] and bench.offset() == 101
 
-    def racing(session_id: int) -> Any:
-        row = real(session_id)
-        seen.append(session_id)
-        if len(seen) == 1:  # after the poller's own look, before the write: a later plan supersedes the session
-            with sqlite3.connect(bench.settings.db_path) as conn:
-                conn.execute("UPDATE sessions SET status = 'superseded' WHERE id = 1")
-        return row
 
-    monkeypatch.setattr(bench.store, "get_session", racing)
-    assert await bench.say("/done 1") == "Trénink #1 nejde změnit."
-    assert real(1)["status"] == "superseded" and bench.offset() == 101
+def every_refusal() -> list[plan.Refusal]:
+    return [
+        plan.Refusal(plan.Reason.NOT_FOUND, 5),
+        plan.Refusal(plan.Reason.SUPERSEDED, 5),
+        plan.Refusal(plan.Reason.MOVED, 5),
+        plan.Refusal(plan.Reason.MOVED_TO, 5, copy_id=6, copy_day=date(2026, 10, 9)),
+        plan.Refusal(plan.Reason.COPY_SUPERSEDED, 5, copy_id=6, copy_day=date(2026, 10, 9)),
+        plan.Refusal(plan.Reason.FUTURE, 5, day=date(2026, 10, 8)),
+        plan.Refusal(plan.Reason.NOT_PLANNED, 5),
+        plan.Refusal(plan.Reason.SAME_DATE, 5),
+        plan.Refusal(plan.Reason.PAST_DATE, 5),
+        plan.Refusal(plan.Reason.TEXT_EMPTY),
+        plan.Refusal(plan.Reason.TEXT_NUL),
+        plan.Refusal(plan.Reason.TEXT_TOO_LONG, length=2001),
+    ]
+
+
+REFUSAL_REPLIES = {
+    "en": [
+        "Session #5 does not exist.",
+        "Session #5 was replaced by a later plan and cannot be changed.",
+        "Session #5 was moved and cannot be changed.",
+        "Session #5 was moved to #6 (9 Oct); change that one.",
+        "Session #5 was moved to #6 (9 Oct), which a later plan replaced; nothing is left to change.",
+        "Session #5 is planned for 8 Oct and cannot be done yet.",
+        "Session #5 cannot be changed.",
+        "Session #5 cannot be changed.",
+        "Session #5 cannot be changed.",
+        "The note could not be saved.",
+        "The note could not be saved.",
+        "The note is too long (2001 characters, at most 2000). Nothing was saved.",
+    ],
+    "cs": [
+        "Trénink #5 neexistuje.",
+        "Trénink #5 nahradil pozdější plán a nejde změnit.",
+        "Trénink #5 byl přesunut a nejde změnit.",
+        "Trénink #5 byl přesunut na #6 (9. 10.); změň ten.",
+        "Trénink #5 byl přesunut na #6 (9. 10.) a ten nahradil pozdější plán; není co měnit.",
+        "Trénink #5 je v plánu až 8. 10. a ještě nemůže být splněný.",
+        "Trénink #5 nejde změnit.",
+        "Trénink #5 nejde změnit.",
+        "Trénink #5 nejde změnit.",
+        "Poznámku se nepodařilo uložit.",
+        "Poznámku se nepodařilo uložit.",
+        "Poznámka je moc dlouhá (2001 znaků, nejvýš 2000). Nic se neuložilo.",
+    ],
+}
+
+
+@pytest.mark.parametrize("language", ["en", "cs"])
+def test_every_refusal_reason_has_a_reply(language):
+    refusals = every_refusal()
+    assert {refusal.reason for refusal in refusals} == set(plan.Reason)  # a new reason must be added here
+    t, r = texts(language), reply_texts(language)
+    assert [inbound_module.refusal_reply(t, r, refusal) for refusal in refusals] == REFUSAL_REPLIES[language]
 
 
 # ------------------------------------------------------ criterion 2: notes
@@ -921,17 +972,17 @@ async def test_a_note_is_dated_by_the_day_it_was_sent(tmp_path, sent, day):
 async def test_a_note_over_the_limit_is_refused_not_cut(tmp_path, language, reply):
     bench = Bench(tmp_path, language=language)
     saved = "Note saved (7 Oct)." if language == "en" else "Poznámka uložena (7. 10.)."
-    assert await bench.say("ž" * NOTE_MAX, 1) == saved  # the limit counts characters, not bytes
-    assert await bench.say(" " + "ž" * NOTE_MAX + " \n", 2) == saved  # measured after trimming
-    assert await bench.say("ž" * (NOTE_MAX + 1), 3) == reply
-    assert [len(text) for _day, text in bench.notes()] == [NOTE_MAX, NOTE_MAX] and bench.offset() == 4
+    assert await bench.say("ž" * 2000, 1) == saved  # the limit counts characters, not bytes
+    assert await bench.say(" " + "ž" * 2000 + " \n", 2) == saved  # measured after trimming
+    assert await bench.say("ž" * 2001, 3) == reply
+    assert [len(text) for _day, text in bench.notes()] == [2000, 2000] and bench.offset() == 4
 
 
 @pytest.mark.parametrize(("language", "reply"), [("en", REPLY_EN.note_refused), ("cs", REPLY_CS.note_refused)])
 async def test_a_note_with_a_nul_character_is_refused(tmp_path, language, reply):
     bench = Bench(tmp_path, language=language)
     assert await bench.say("a\x00b") == reply
-    assert await bench.say("a\x00" + "b" * NOTE_MAX, 101) == reply  # NUL is named before the length
+    assert await bench.say("a\x00" + "b" * 2000, 101) == reply  # NUL is named before the length
     assert bench.notes() == [] and bench.offset() == 102
 
 
@@ -1035,13 +1086,9 @@ async def test_the_wording_of_the_briefing_failure_is_pinned(tmp_path, language,
     ("language", "expected"),
     [("en", "Something went wrong (internal error)."), ("cs", "Něco se pokazilo (vnitřní chyba).")],
 )
-async def test_the_wording_of_the_internal_error_reply_is_pinned(tmp_path, monkeypatch, language, expected):
+async def test_the_wording_of_the_internal_error_reply_is_pinned(tmp_path, language, expected):
     bench = Bench(tmp_path, language=language)
-
-    def broken(*_args: Any, **_kwargs: Any) -> Any:
-        raise RuntimeError(SECRET)
-
-    monkeypatch.setattr(inbound_module.tools, "sessions_out", broken)
+    broken_week(bench)
     assert await bench.say("/plan") == expected
 
 

@@ -22,7 +22,7 @@ stay as `superseded`.
 | `set_goal` | write | creates a goal, or (with `goal_id`) changes the given fields; closed with status `achieved` / `abandoned`; a measurable goal gets a `metric` and a `target_value` (see Goal progress) |
 | `set_constraint` | write | creates a constraint (`kind` + title + details), or changes the given fields; status `resolved` once it no longer applies |
 | `save_plan` | write | saves the plan for one ISO week: replaces planned sessions from today on (the old ones stay as `superseded`), keeps done, skipped, moved and past ones |
-| `update_session` | write | sets a session's status (`planned` / `done` / `skipped` / `moved`); `moved` with `new_date` creates a linked planned copy; optional note |
+| `update_session` | write | sets a session's status (`planned` / `done` / `skipped` / `moved`); `moved` with `new_date` creates a linked planned copy; `done` is refused for a session dated after today; optional note |
 | `add_note` | write | adds a dated note to the log, optionally linked to a session |
 | `get_daily_briefing` | read | today's morning briefing: green / yellow / red verdict, the numbers behind it, what is missing, today's plan and alerts; computed the same way as the morning push, from current data |
 | `get_trends` | read | stored daily Garmin history (HRV, sleep, resting HR, Body Battery, stress, readiness, load, VO2max, activities by sport) for any period by day, week or month: count, mean, minimum, maximum, change |
@@ -178,7 +178,7 @@ ask the coach for.
 |---|---|---|
 | `/today`, `/dnes` | none (reads Garmin through `garmin-mcp` like `get_daily_briefing`; writes no briefing or alert state) | the text of `get_daily_briefing` → `push.text` at that moment |
 | `/plan` | none | the sessions of the current ISO week, one line each: `#<id> <weekday> <date> · <the briefing's session line>` |
-| `/done <id>`, `/skip <id>` | the session becomes `done` / `skipped` (the rules of `update_session`; `/done` also refuses a session dated after today) | `Recorded: <session line>`; for a missing, malformed or unknown id the usage line and today's `planned` sessions |
+| `/done <id>`, `/skip <id>` | the session becomes `done` / `skipped` (the rules of `update_session`, which refuse `done` for a session dated after today) | `Recorded: <session line>`; for a missing, malformed or unknown id the usage line and today's `planned` sessions |
 | `/help`, `/start`, any other `/…` | none | the command list (after `Unknown command.` for an unknown one) |
 | other text | a note dated by the local day the message was sent (Telegram's `date`, when it is not older than 48 hours; otherwise today) | `Note saved (<date>).`; a text over 2000 characters or with a NUL character is refused |
 | no text (photo, sticker, …) | none | `Only text messages are supported.` |
@@ -187,6 +187,8 @@ A command may end with `@<bot name>`, is not case-sensitive and takes nothing bu
 `/plan next` and `/today x` answer with the usage line and change nothing. An id is 1 to 9 digits, optionally
 after `#`. The answers come from the `ReplyTexts` catalogue of `COACH_LANGUAGE`, are plain text and are cut to
 4000 bytes like the briefing.
+`/done`, `/skip` and a note follow the rules of `update_session` and `add_note`: both call the Plan module
+(`src/coach_mcp/plan.py`), which checks and writes in one SQLite transaction.
 
 **Once only.** The table `telegram_inbound` holds the bot's id (the digits before the colon of its token) and the
 next `getUpdates` offset. An update's effect and the offset are stored before the answer is sent; a note and its

@@ -314,6 +314,67 @@ def _insert_session(
     return cur.lastrowid
 
 
+def _get(conn: sqlite3.Connection, table: str, row_id: int) -> dict[str, Any] | None:
+    row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
+    return None if row is None else dict(row)
+
+
+def _moved_to(conn: sqlite3.Connection, ids: Sequence[int]) -> dict[int, tuple[int, str]]:
+    """moved session id -> (id, date) of its planned copy; the latest copy when there are several."""
+    if not ids:
+        return {}
+    marks = ", ".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT id, date, moved_from_id FROM sessions WHERE moved_from_id IN ({marks}) ORDER BY id", tuple(ids)
+    ).fetchall()
+    return {row["moved_from_id"]: (row["id"], row["date"]) for row in rows}
+
+
+def _set_session_status(
+    conn: sqlite3.Connection, session_id: int, status: str, new_date: date | None, note: tuple[date, str] | None
+) -> tuple[int | None, int | None]:
+    cur = conn.execute("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?", (status, _now(), session_id))
+    if cur.rowcount == 0:
+        raise LookupError("session not found")
+    copy_id = None
+    if status == "moved":
+        assert new_date is not None
+        original = dict(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+        original["date"] = new_date.isoformat()
+        copy_id = _insert_session(conn, original, "planned", session_id)
+    note_id = _insert_note(conn, note[0], note[1], session_id) if note is not None else None
+    return copy_id, note_id
+
+
+class Transaction:
+    """One write transaction of ``Store.transaction()``: what it reads cannot change before it writes."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get_session(self, session_id: int) -> dict[str, Any] | None:
+        return _get(self._conn, "sessions", session_id)
+
+    def moved_to(self, session_id: int) -> tuple[int, str] | None:
+        """(id, date) of the planned copy of the moved session ``session_id``, None when there is none."""
+        return _moved_to(self._conn, [session_id]).get(session_id)
+
+    def get_note(self, note_id: int) -> dict[str, Any] | None:
+        return _get(self._conn, "notes", note_id)
+
+    def update_session_status(
+        self, session_id: int, status: str, new_date: date | None, note: tuple[date, str] | None
+    ) -> tuple[int | None, int | None]:
+        """As ``Store.update_session_status``, inside this transaction."""
+        return _set_session_status(self._conn, session_id, status, new_date, note)
+
+    def insert_note(self, day: date, text: str, session_id: int | None = None) -> int:
+        return _insert_note(self._conn, day, text, session_id)
+
+    def set_inbound(self, bot_id: str, next_update_id: int | None, at: datetime) -> None:
+        _set_inbound(self._conn, bot_id, next_update_id, at)
+
+
 class Store:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -331,6 +392,15 @@ class Store:
     def _conn(self) -> Iterator[sqlite3.Connection]:
         with contextlib.closing(self._connect()) as conn:
             yield conn
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[Transaction]:
+        """One write transaction (``BEGIN IMMEDIATE``): it holds the write lock from its first read, so no other
+        writer comes in between; commits when the block ends, rolls back when it raises."""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            with conn:
+                yield Transaction(conn)
 
     def _migrate(self) -> None:
         with self._conn() as conn:
@@ -444,14 +514,8 @@ class Store:
         return superseded, ids
 
     def moved_to(self, ids: Sequence[int]) -> dict[int, tuple[int, str]]:
-        if not ids:
-            return {}
-        marks = ", ".join("?" for _ in ids)
-        rows = self._all(
-            f"SELECT id, date, moved_from_id FROM sessions WHERE moved_from_id IN ({marks}) ORDER BY id",
-            tuple(ids),
-        )
-        return {row["moved_from_id"]: (row["id"], row["date"]) for row in rows}
+        with self._conn() as conn:
+            return _moved_to(conn, ids)
 
     def upsert_suggestions(self, rows: Sequence[tuple[int, str, bool, str | None]], evaluated_on: date) -> None:
         """Store (session_id, result, final, evidence JSON) for each row in one transaction; nothing is deleted."""
@@ -497,19 +561,7 @@ class Store:
         One transaction. Returns (copy_id, note_id).
         """
         with self._conn() as conn, conn:
-            cur = conn.execute(
-                "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?", (status, _now(), session_id)
-            )
-            if cur.rowcount == 0:
-                raise LookupError("session not found")
-            copy_id = None
-            if status == "moved":
-                assert new_date is not None
-                original = dict(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
-                original["date"] = new_date.isoformat()
-                copy_id = _insert_session(conn, original, "planned", session_id)
-            note_id = _insert_note(conn, note[0], note[1], session_id) if note is not None else None
-        return copy_id, note_id
+            return _set_session_status(conn, session_id, status, new_date, note)
 
     # ------------------------------------------------------------ briefing
 
