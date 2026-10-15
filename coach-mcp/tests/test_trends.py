@@ -17,9 +17,9 @@ from history_helpers import (
     seed_strength,
     seed_sync,
     seed_template,
-    sport,
 )
 from mcp.server.mcpserver.exceptions import ToolError
+from view_values import sport
 
 from conftest import TODAY
 from coach_mcp import trends

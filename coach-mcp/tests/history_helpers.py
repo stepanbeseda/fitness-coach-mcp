@@ -36,10 +36,6 @@ def seed_activities(
     store.upsert_history_activities({day: totals_json(totals)}, fetched_on or day + timedelta(days=1))
 
 
-def sport(count: int = 1, duration_min: float = 0, distance_km: float = 0, training_load: float = 0) -> dict[str, Any]:
-    return {"count": count, "duration_min": duration_min, "distance_km": distance_km, "training_load": training_load}
-
-
 async def run_job(
     store: Store,
     source: FakeHistorySource,

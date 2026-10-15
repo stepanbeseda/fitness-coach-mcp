@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import re
 import sqlite3
 from typing import Annotated, Any, Literal, assert_never
 
@@ -19,12 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import plan
 from .goals import parse_target_value, target_value_out
+from .history_view import plan_range
 from .reconcile import RECONCILE_DAYS
 from .store import Store
+from .values import parse_date
 
-_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-MAX_RANGE_DAYS = 92
 LATEST_NOTES = 10
 SEARCH_LIMIT = 20
 SEARCH_LIMIT_MAX = 50
@@ -57,16 +56,6 @@ class PlannedSession(BaseModel):
 
 
 # ------------------------------------------------------------------ helpers
-
-
-def parse_date(value: str, name: str) -> dt.date:
-    text = value.strip() if isinstance(value, str) else value
-    if not isinstance(text, str) or not _DATE_RE.fullmatch(text):
-        raise ToolError(f"{name} must be YYYY-MM-DD, got {value!r}")
-    try:
-        return dt.date.fromisoformat(text)
-    except ValueError:
-        raise ToolError(f"{name} is not a valid date: {value!r}") from None
 
 
 def week_of(day: dt.date) -> tuple[dt.date, dt.date, str]:
@@ -250,13 +239,7 @@ def get_plan(
     end_date: str | None = None,
     include_superseded: bool = False,
 ) -> dict[str, Any]:
-    start = parse_date(start_date, "start_date") if start_date is not None else week_of(today)[0]
-    end = parse_date(end_date, "end_date") if end_date is not None else start + dt.timedelta(days=6)
-    if start > end:
-        raise ToolError("start_date must be on or before end_date")
-    if (end - start).days + 1 > MAX_RANGE_DAYS:
-        raise ToolError(f"date range too long (max {MAX_RANGE_DAYS} days)")
-
+    start, end = plan_range(today, start_date, end_date)
     rows = store.sessions_between(start, end, include_superseded=include_superseded)
     return {
         "start": start.isoformat(),

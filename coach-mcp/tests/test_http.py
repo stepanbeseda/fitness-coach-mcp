@@ -47,8 +47,8 @@ from history_helpers import (
     seed_strength,
     seed_sync,
     seed_template,
-    sport,
 )
+from view_values import sport
 from weather_payloads import WEATHER_T0, open_meteo_payload
 
 EXPECTED_TOOLS = {

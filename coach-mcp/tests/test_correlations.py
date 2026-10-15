@@ -6,7 +6,8 @@ from datetime import date, timedelta
 from typing import Any
 
 import pytest
-from history_helpers import seed_activities, seed_day, sport
+from history_helpers import seed_activities, seed_day
+from view_values import sport
 from mcp.server.mcpserver.exceptions import ToolError
 
 from conftest import TODAY

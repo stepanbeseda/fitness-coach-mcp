@@ -10,7 +10,6 @@ are new whenever they hold.
 
 from __future__ import annotations
 
-import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from .messages import DEFAULT_LANGUAGE, Texts, texts
 from .push import PushMessage
 from .reconcile import MATCHED_TYPES
+from .values import finite
 
 if TYPE_CHECKING:
     from .garmin import GarminData, LastSync
@@ -60,12 +60,6 @@ _WS = re.compile(r"\s+")
 # ------------------------------------------------------------------ helpers
 
 
-def _num(value: Any) -> float | int | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return None
-    return value
-
-
 def _section(snapshot: Mapping[str, Any] | None, name: str) -> Mapping[str, Any] | None:
     """The snapshot section, or None when it is absent, not a dict, an error or unavailable."""
     if not isinstance(snapshot, Mapping):
@@ -101,10 +95,10 @@ def _baseline(section: Mapping[str, Any] | None) -> tuple[float | int, float | i
     raw = section.get("baseline_balanced_ms")
     if not isinstance(raw, list) or not raw:
         return None
-    low = _num(raw[0])
+    low = finite(raw[0])
     if low is None:
         return None
-    return low, _num(raw[1]) if len(raw) > 1 else None
+    return low, finite(raw[1]) if len(raw) > 1 else None
 
 
 # ------------------------------------------------------------ criteria levels
@@ -151,7 +145,7 @@ def nights_below_baseline(trend: Mapping[str, Any] | None, day: date) -> int | N
         entry = by_date.get(on.isoformat())
         if entry is None:
             return None
-        last, base = _num(entry.get("last_night_avg_ms")), _baseline(entry)
+        last, base = finite(entry.get("last_night_avg_ms")), _baseline(entry)
         if last is None or base is None:
             return None
         return last < base[0]
@@ -173,14 +167,14 @@ def criteria_from_snapshot(snapshot: Mapping[str, Any] | None, nights_below: int
 
     readiness = _section(snapshot, "readiness")
     if readiness is not None:
-        score = _num(readiness.get("morning_score"))
+        score = finite(readiness.get("morning_score"))
         if score is None:
-            score = _num(readiness.get("score"))
+            score = finite(readiness.get("score"))
         if score is not None:
             out["readiness"] = {"level": readiness_level(score), "score": score}
 
     hrv = _section(snapshot, "hrv")
-    last = _num(hrv.get("last_night_avg_ms")) if hrv is not None else None
+    last = finite(hrv.get("last_night_avg_ms")) if hrv is not None else None
     base = _baseline(hrv)
     if last is not None and base is not None:
         out["hrv"] = {
@@ -191,17 +185,17 @@ def criteria_from_snapshot(snapshot: Mapping[str, Any] | None, nights_below: int
         }
 
     sleep = _section(snapshot, "sleep")
-    duration = _num(sleep.get("duration_h")) if sleep is not None else None
+    duration = finite(sleep.get("duration_h")) if sleep is not None else None
     if sleep is not None and duration is not None:
         minutes = sleep_minutes(duration)
         entry: dict[str, Any] = {"level": sleep_level(minutes), "minutes": minutes}
-        score = _num(sleep.get("score"))
+        score = finite(sleep.get("score"))
         if score is not None:
             entry["score"] = score
         out["sleep"] = entry
 
     battery = _section(snapshot, "body_battery")
-    at_wake = _num(battery.get("at_wake")) if battery is not None else None
+    at_wake = finite(battery.get("at_wake")) if battery is not None else None
     if at_wake is not None:
         out["body_battery"] = {"level": body_battery_level(at_wake), "at_wake": at_wake}
     return out
@@ -226,7 +220,7 @@ def _acwr(snapshot: Mapping[str, Any] | None) -> tuple[str | None, float | int |
         return None, None
     raw = status.get("acwr_status")
     normalized = raw.strip().upper() if isinstance(raw, str) else None
-    return normalized, _num(status.get("acwr_ratio"))
+    return normalized, finite(status.get("acwr_ratio"))
 
 
 def _scheduled_entries(scheduled: Mapping[str, Any] | None, on: date) -> list[Mapping[str, Any]] | None:
@@ -239,7 +233,7 @@ def _resting_hr(snapshot: Mapping[str, Any] | None) -> tuple[float | int, float 
     section = _section(snapshot, "resting_hr")
     if section is None:
         return None
-    today, avg = _num(section.get("today")), _num(section.get("avg_7d"))
+    today, avg = finite(section.get("today")), finite(section.get("avg_7d"))
     return (today, avg) if today is not None and avg is not None else None
 
 
@@ -356,7 +350,7 @@ def _missed_names(t: Texts, scheduled: Mapping[str, Any] | None, day: date) -> l
 def hrv_night_present(snapshot: Mapping[str, Any] | None) -> bool:
     """Last night's HRV value is there (the baseline may still be missing)."""
     section = _section(snapshot, "hrv")
-    return section is not None and _num(section.get("last_night_avg_ms")) is not None
+    return section is not None and finite(section.get("last_night_avg_ms")) is not None
 
 
 def sync_when(t: Texts, local: datetime, day: date) -> str:

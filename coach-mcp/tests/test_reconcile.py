@@ -12,11 +12,11 @@ from fakes import FakeHistorySource
 from garmin_payloads import activities_payload, activity
 from fakes import FakeStrengthSource
 from hevy_payloads import day_workout, events_page, updated
-from history_helpers import local, make_job, next_run, run_first, run_job, seed_activities, seed_day, sport
+from history_helpers import local, make_job, next_run, run_first, run_job, seed_activities, seed_day
+from view_values import sport
 
 from coach_mcp import strength as strength_module
-from coach_mcp.history import activities_settled, day_activities, needs_fetch, with_hevy_strength
-from coach_mcp.strength import Coverage, DayStrength
+from coach_mcp.history_view import Coverage, DayStrength, with_hevy_strength
 from coach_mcp.reconcile import MATCHED_TYPES, RECONCILE_DAYS, DayActivities, Suggestion, suggest
 
 TODAY = date(2026, 10, 7)
@@ -148,43 +148,6 @@ def row(date_="2026-10-06", activities=None, fetched_on=None, failures=0):
         "activities_fetched_on": fetched_on,
         "activities_failures": failures,
     }
-
-
-def test_day_activities_leaves_out_days_without_fetched_activities():
-    rows = [
-        row("2026-10-01"),  # recovery only
-        row("2026-10-02", "{}", None),  # totals but no fetch date
-        row("2026-10-03", "{", "2026-10-04"),  # invalid JSON
-        row("2026-10-04", "[]", "2026-10-05"),  # not an object
-        row("2026-10-05", '{"running":{"count":1}}', "2026-10-06"),
-    ]
-    got = day_activities(rows)
-    assert set(got) == {"2026-10-05"}
-    assert got["2026-10-05"].totals == {"running": {"count": 1}}
-
-
-def test_day_activities_final_flag():
-    def final(fetched_on, failures=0):
-        return day_activities([row("2026-10-01", "{}", fetched_on, failures)])["2026-10-01"].final
-
-    assert (final("2026-10-02"), final("2026-10-03")) == (False, False)
-    assert (final("2026-10-04"), final("2026-10-05")) == (True, True)
-    assert final("2026-10-02", failures=3) is True
-    assert final("2026-10-02", failures=2) is False
-
-
-def test_activities_settled_is_the_inverse_of_the_refetch_rule():
-    d = date(2026, 10, 1)
-    for offset in range(1, 5):
-        fetched = d + timedelta(days=offset)
-        for failures in range(4):
-            assert activities_settled(d, fetched, failures) is (
-                not needs_fetch(d, fetched, failures, fetched + timedelta(days=1))
-            )
-
-
-def test_never_fetched_day_through_day_activities():
-    assert suggest([s(1)], day_activities([row("2026-10-06")])) == {}
 
 
 # --------------------------------------------------------------- the job step

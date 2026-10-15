@@ -6,7 +6,9 @@ Progress is the stored state, not a cursor: ``needs_fetch`` decides from the dat
 the store which days still need a call, so a restart resumes where the last run stopped. The clock and the
 sleep function are injected. Log lines carry outcome words, counters and exception class names only, never
 dates, values, payload text or arguments. After every run the job stores a suggestion (matched / no_activity)
-for the planned sessions of the last seven days (``reconcile``); it never changes a session status.
+for the planned sessions of the last seven days (``reconcile``, over the activity days of ``history_view``); it
+never changes a session status. The re-fetch window (``REFETCH_DAYS``, ``MAX_FAILURES``) is defined in
+``history_view``, whose settled flag is its inverse.
 A day whose snapshot had sections in error keeps them in ``recovery_missing``; after the re-fetch window such a
 day is fetched again, a few per night, and only its missing sections are written (``repair_sections``).
 
@@ -23,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, time as dt_time, timedelta
@@ -34,8 +35,10 @@ from . import strength
 from .config import Settings
 from .garmin import HistorySource, exception_kind
 from .hevy import StrengthSource
-from .reconcile import RECONCILE_DAYS, DayActivities, count_of, suggest
+from .history_view import MAX_FAILURES, REFETCH_DAYS, HistoryView
+from .reconcile import RECONCILE_DAYS, suggest
 from .store import Store
+from .values import finite
 
 log = logging.getLogger("coach_mcp.history")
 
@@ -44,8 +47,6 @@ RETRY_SECONDS = 3600.0
 RATE_LIMIT_BACKOFF_SECONDS = 3600.0
 MAX_BACKOFF_SECONDS = 28800.0
 MAX_SLEEP_SECONDS = 3600.0
-REFETCH_DAYS = 3
-MAX_FAILURES = 3
 REPAIR_ATTEMPTS = 3  # answered repair calls that are charged to a day
 REPAIR_DAYS_PER_NIGHT = 5  # answered repair calls per local date
 OUTAGE_ERRORS = 3
@@ -90,12 +91,6 @@ SPORTS = ("running", "cycling", "swimming", "walking", "hiking", "strength", "ot
 ENDURANCE_SPORTS = ("running", "cycling", "swimming", "walking", "hiking", "other")
 
 
-def _number(value: Any) -> int | float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        return None
-    return value
-
-
 def recovery_values(payload: dict[str, Any]) -> dict[str, Any]:
     """Columns of ``history_days`` from a ``get_recovery_snapshot`` payload.
 
@@ -114,9 +109,9 @@ def recovery_values(payload: dict[str, Any]) -> dict[str, Any]:
             if column == "hrv_status":
                 out[column] = value if isinstance(value, str) and 1 <= len(value) <= 40 else None
             else:
-                out[column] = _number(value)
+                out[column] = finite(value)
         if key == "readiness":
-            morning = _number(section.get("morning_score"))
+            morning = finite(section.get("morning_score"))
             if morning is not None:
                 out["readiness"] = morning
     return out
@@ -179,7 +174,7 @@ def activity_totals(payload: dict[str, Any], days: Sequence[date]) -> dict[date,
         )
         total["count"] += 1
         for field in ("duration_min", "distance_km", "training_load"):
-            total[field] += _number(row.get(field)) or 0
+            total[field] += finite(row.get(field)) or 0
     return {
         day: {
             sport: {
@@ -208,46 +203,6 @@ def needs_fetch(day: date, fetched_on: date | None, failures: int, today: date) 
     if fetched_on is None:
         return failures < MAX_FAILURES
     return fetched_on < today and fetched_on < day + timedelta(days=REFETCH_DAYS) and failures < MAX_FAILURES
-
-
-def activities_settled(day: date, fetched_on: date, failures: int) -> bool:
-    """No later run re-fetches the activities of ``day``: the inverse of the re-fetch rule in ``needs_fetch``."""
-    return fetched_on >= day + timedelta(days=REFETCH_DAYS) or failures >= MAX_FAILURES
-
-
-def with_hevy_strength(
-    days: Mapping[str, DayActivities], hevy: Mapping[date, strength.DayStrength], cov: strength.Coverage | None
-) -> dict[str, DayActivities]:
-    """Garmin day totals with Hevy strength workouts merged in (pure).
-
-    Only days whose Garmin activities were fetched are in ``days`` and none is added, so the other sports of a
-    day never get a false ``no_activity``. A day the Hevy history does not cover keeps its Garmin totals. On a
-    covered day Hevy's workouts replace the strength entry when there is at least one and not fewer than the
-    watch recorded (two watch sessions against one Hevy workout stay as Garmin evidence). Such a day is final
-    only when the Garmin side is final and the day lies outside the 3-day re-read of the Hevy listing.
-    """
-    out = dict(days)
-    if cov is None:
-        return out
-    for day_text, activities in days.items():
-        day = date.fromisoformat(day_text)
-        if not cov.covers(day):
-            continue
-        hevy_day = hevy.get(day)
-        count = hevy_day.workouts if hevy_day is not None else 0
-        if hevy_day is None or count == 0 or count < count_of(activities.totals.get("strength")):
-            continue
-        entry = {
-            "count": count,
-            "source": "hevy",
-            "sets": hevy_day.sets,
-            "volume_kg": round(hevy_day.volume_kg, 1),
-        }
-        out[day_text] = DayActivities(
-            {**activities.totals, "strength": entry},
-            activities.final and (cov.through - day).days >= strength.OVERLAP.days,
-        )
-    return out
 
 
 def _fetched_on(value: Any) -> date | None:
@@ -345,35 +300,10 @@ def prediction_values(
             continue
         values: dict[str, float | None] = {}
         for key, column in PREDICTION_KEYS.items():
-            value = _number(entry.get(key))
+            value = finite(entry.get(key))
             values[column] = value if value is not None and 0 < value <= MAX_PREDICTION_SECONDS else None
         if any(v is not None for v in values.values()):
             out[day] = values
-    return out
-
-
-def day_activities(rows: Sequence[Mapping[str, Any]]) -> dict[str, DayActivities]:
-    """Stored activity totals per date (``history_days`` rows) for ``reconcile.suggest``.
-
-    A day never fetched (activities NULL, also a given-up day), with invalid JSON or without a fetch date is
-    left out, so it gets no suggestion.
-    """
-    out: dict[str, DayActivities] = {}
-    for row in rows:
-        fetched_on = _fetched_on(row.get("activities_fetched_on"))
-        text = row.get("activities")
-        if fetched_on is None or not isinstance(text, str):
-            continue
-        try:
-            parsed = json.loads(text)
-        except ValueError:
-            continue
-        if not isinstance(parsed, dict):
-            continue
-        settled = activities_settled(
-            date.fromisoformat(row["date"]), fetched_on, row.get("activities_failures") or 0
-        )
-        out[row["date"]] = DayActivities(parsed, settled)
     return out
 
 
@@ -590,13 +520,7 @@ class HistoryJob:
         Returns (matched, no_activity).
         """
         first, last = today - timedelta(days=RECONCILE_DAYS), today - timedelta(days=1)
-        days = with_hevy_strength(
-            day_activities(self._store.history_rows(first, last)),
-            strength.day_totals(
-                self._store.strength_workout_rows(first, last), strength.Templates(self._store.hevy_templates())
-            ),
-            strength.coverage(self._store.hevy_sync_state()),
-        )
+        days = HistoryView(self._store).activity_days(first, last)
         found = suggest(self._store.sessions_between(first, last), days)
         self._store.upsert_suggestions(
             [

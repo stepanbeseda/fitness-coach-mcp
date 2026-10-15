@@ -16,11 +16,9 @@ from hevy_payloads import (
 from history_helpers import exercise, seed_strength, seed_sync, seed_template
 from mcp.server.mcpserver.exceptions import ToolError
 
-from coach_mcp import strength, trends
+from coach_mcp import strength
+from coach_mcp.history_view import Coverage, Templates, day_totals
 from coach_mcp.strength import (
-    Coverage,
-    Templates,
-    day_totals,
     e1rm,
     exercises_json,
     get_strength_progress,
@@ -318,19 +316,10 @@ def test_unusable_sync_state_counts_as_never_synced():
     ):
         assert listing_due(bad, FIRST, TODAY) is True
         assert listing_since(bad, FIRST, PRAGUE)[1] is True
-        assert strength.coverage(bad) is None
 
 
 def test_since_text_has_no_offset_or_fraction():
     assert since_text(datetime(2026, 7, 9, 22, 0, 5, 123, tzinfo=PRAGUE)) == "2026-07-09T20:00:05Z"
-
-
-def test_coverage_through_is_the_day_before_the_sync():
-    assert strength.coverage(None) is None
-    cov = strength.coverage(state(covered_from=date(2026, 9, 1), synced_on=date(2026, 10, 7)))
-    assert cov == Coverage(date(2026, 9, 1), date(2026, 10, 6))
-    assert cov.covers(date(2026, 9, 1)) and cov.covers(date(2026, 10, 6))
-    assert not cov.covers(date(2026, 8, 31)) and not cov.covers(date(2026, 10, 7))
 
 
 # --------------------------------------------------------------- read side
@@ -342,73 +331,6 @@ def row(day: str, *entries: dict[str, Any], workout_id: str = "W") -> dict[str, 
 
 def found(group: str | None, type_: str = "weight_reps", title: str | None = None) -> dict[str, Any]:
     return {"found": 1, "primary_muscle_group": group, "type": type_, "title": title}
-
-
-def test_day_totals_groups_by_primary_muscle_group():
-    templates = Templates(
-        {
-            "A": found("chest", title="Bench"),
-            "B": {"found": 0, "primary_muscle_group": None, "type": None, "title": None},
-            "C": {"found": None, "primary_muscle_group": None, "type": None, "title": None},
-            "D": found(None),
-            "E": found("quadriceps"),
-        }
-    )
-    rows = [
-        row("2026-10-05", exercise("A", 3, 1500.0, (100, 5, 116.7)), exercise("B", 2, 100.0), workout_id="W1"),
-        row("2026-10-05", exercise("C", 1, 10.0), exercise("D", 4, 40.0), exercise("E", 5, 500.0), workout_id="W2"),
-        row("2026-10-06", exercise("A", 2, 800.0), exercise("Z", 1, 5.0)),  # Z: no template row at all
-    ]
-    totals = day_totals(rows, templates)
-    mon, tue = totals[date(2026, 10, 5)], totals[date(2026, 10, 6)]
-    assert (mon.workouts, mon.sets, mon.volume_kg) == (2, 15, 2150.0)
-    assert mon.muscle_sets == {"chest": 3, "unknown": 7, "quadriceps": 5}
-    assert mon.muscle_volume == {"chest": 1500.0, "unknown": 150.0, "quadriceps": 500.0}
-    assert (tue.workouts, tue.sets, tue.volume_kg) == (1, 3, 805.0)
-    assert tue.muscle_sets == {"chest": 2, "unknown": 1}
-    assert mon.exercises["A"] == {
-        "title": "Bench",
-        "sets": 3,
-        "volume_kg": 1500.0,
-        "best": {"weight_kg": 100.0, "reps": 5, "e1rm_kg": 116.7},
-    }
-
-
-def test_day_totals_best_of_a_day_across_workouts_and_title_fallback():
-    templates = Templates({"A": found("chest")})  # found, but without a title
-    rows = [
-        row("2026-10-05", exercise("A", 1, 100.0, (100, 5, 116.7), title="Stored title"), workout_id="W1"),
-        row("2026-10-05", exercise("A", 1, 110.0, (110, 3, 121.0)), workout_id="W2"),
-        row("2026-10-05", exercise("A", 1, 90.0, (90, 6, 108.0)), workout_id="W3"),
-    ]
-    entry = day_totals(rows, templates)[date(2026, 10, 5)].exercises["A"]
-    assert entry["best"] == {"weight_kg": 110.0, "reps": 3, "e1rm_kg": 121.0}
-    assert (entry["sets"], entry["volume_kg"], entry["title"]) == (3, 300.0, "Stored title")
-
-
-def test_assisted_template_counts_sets_but_no_volume_or_best():
-    templates = Templates({"A": found("lats", type_="bodyweight_assisted_reps", title="Assisted pull-up")})
-    totals = day_totals([row("2026-10-05", exercise("A", 3, 600.0, (40, 8, 50.7)))], templates)
-    day = totals[date(2026, 10, 5)]
-    assert (day.sets, day.volume_kg, day.muscle_sets, day.muscle_volume) == (3, 0.0, {"lats": 3}, {"lats": 0.0})
-    assert day.exercises["A"] == {"title": "Assisted pull-up", "sets": 3, "volume_kg": 0.0, "best": None}
-    # the same entry under a template that is not assisted counts in full
-    normal = day_totals([row("2026-10-05", exercise("A", 3, 600.0, (40, 8, 50.7)))], Templates({"A": found("lats")}))
-    assert normal[date(2026, 10, 5)].volume_kg == 600.0 and normal[date(2026, 10, 5)].exercises["A"]["best"] is not None
-
-
-def test_invalid_exercises_json_counts_the_workout_only():
-    rows = [
-        {"date": "2026-10-05", "exercises": "not json"},
-        {"date": "2026-10-05", "exercises": "{}"},
-        {"date": "2026-10-05", "exercises": '[1, {"template_id": 5, "sets": 2}, {"template_id": "A"}]'},
-        {"date": "garbage", "exercises": "[]"},
-        {"exercises": "[]"},
-    ]
-    totals = day_totals(rows, Templates({}))
-    assert list(totals) == [date(2026, 10, 5)]
-    day = totals[date(2026, 10, 5)]
-    assert (day.workouts, day.sets, day.volume_kg, day.exercises) == (3, 0, 0.0, {})
 
 
 def test_week_sums_only_covered_days_and_keeps_the_best_per_template():
@@ -584,7 +506,3 @@ def test_strength_progress_date_errors(store):
     assert progress(store, start_date="2024-10-06", end_date="2026-10-06")["available"] is True  # 731 days
     with pytest.raises(ToolError, match="start_date"):
         progress(store, start_date="yesterday")
-
-
-def test_max_range_equals_trends():
-    assert strength.MAX_RANGE_DAYS == trends.MAX_LONG_RANGE
