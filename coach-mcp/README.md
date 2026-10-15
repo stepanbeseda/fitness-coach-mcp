@@ -599,3 +599,10 @@ and the tests on every build (no network, SQLite in a temporary directory, a fix
 instead of real time; fake backends stand in for Garmin, Telegram and Open-Meteo).
 Dependency locks (`requirements.lock`, `requirements-dev.lock`) are regenerated only through
 `scripts/lock-deps.sh`.
+
+The stored history has one read side: `src/coach_mcp/history_view.py` turns the rows of the nightly job into
+day values (recovery values, parsed activity totals with their settled flag, Hevy strength days with the
+coverage, race predictions) and owns the date-range defaults and limits; `get_trends`, `get_weekly_report`,
+`get_correlations`, `get_goal_progress`, `get_strength_progress` and the plan reconciliation read only through
+it. The tests of those tools build view values (`tests/view_values.py`); `tests/test_history_golden.py` compares
+their JSON with the output recorded before the view existed (`tests/history_golden.json`).
