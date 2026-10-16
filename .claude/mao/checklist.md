@@ -24,7 +24,9 @@ repeated findings.
 - [ ] `FakeGarmin.responses` in `garmin-mcp/tests/conftest.py` has a key for
   every new `get_*` call.
 - [ ] Nothing was silently weakened: a deleted test has a "new home" line in
-  the spec/PR.
+  the spec/PR, and the home really reaches the path the deleted test reached
+  (re-apply the mutant that test killed and see the new home fail; a recording
+  row or a generic test is not a home if it never takes the branch).
 - [ ] A change that adds an item to a shared list (the briefing tool list, a fake's
   responses), adds a parameter to a function, or changes a call order was grepped
   against the existing tests: literal copies (expected call dicts, `wait_for` on a call
