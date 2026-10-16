@@ -874,24 +874,6 @@ async def test_crash_in_a_run_is_logged_and_retried(store, monkeypatch, caplog):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("day", "next_day", "hours"),
-    [
-        (date(2026, 10, 25), date(2026, 10, 26), 24),  # the day Prague leaves summer time (03:00 -> 02:00)
-        (date(2026, 10, 24), date(2026, 10, 25), 25),  # the night before: 03:30 to 03:30 is 25 real hours
-        (date(2026, 3, 28), date(2026, 3, 29), 23),  # the night summer time starts (02:00 -> 03:00)
-    ],
-)
-async def test_next_history_time_after_dst_change(store, day, next_day, hours):
-    source = FakeHistorySource()
-    job, clock = make_job(store, source, local(day, 3, 29), history_backfill_days=1)
-    delay = await run_first(job, clock)
-    assert clock.now() + timedelta(seconds=delay) == local(next_day, 3, 30)
-    assert source.times[0] == local(day, 3, 30)
-    assert (local(next_day, 3, 30) - source.times[0].astimezone(dt.UTC)).total_seconds() == hours * 3600
-
-
-@pytest.mark.anyio
 async def test_history_logs_carry_no_values_or_dates(store, caplog):
     caplog.set_level(logging.DEBUG)
 

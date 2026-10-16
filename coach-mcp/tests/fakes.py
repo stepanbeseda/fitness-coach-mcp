@@ -178,7 +178,9 @@ class FakeHistorySource:
 
 
 class FakePush:
-    def __init__(self, outcomes: list[str] | None = None, clock: FakeClock | None = None) -> None:
+    """``outcomes``: one per send (the last one repeats); an exception in the list is raised by that send."""
+
+    def __init__(self, outcomes: list[str | Exception] | None = None, clock: FakeClock | None = None) -> None:
         self._outcomes = list(outcomes or ["sent"])
         self._clock = clock
         self.sent: list[tuple[datetime | None, PushMessage]] = []
@@ -186,7 +188,10 @@ class FakePush:
     async def send(self, msg: PushMessage) -> Any:
         self.sent.append((self._clock.now() if self._clock else None, msg))
         index = min(len(self.sent) - 1, len(self._outcomes) - 1)
-        return self._outcomes[index]
+        outcome = self._outcomes[index]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 class _StaticToken:

@@ -412,6 +412,15 @@ def test_evidence_source_comes_from_the_entry(entry, expected):
 
 
 @pytest.mark.anyio
+async def test_the_reconcile_step_uses_the_local_date_just_after_midnight(store):
+    # 00:29 local on 10-08 is 22:29 UTC on 10-07: today is 10-08, so a session of 10-07 is inside the window
+    session_id = add_session(store, "2026-10-07")
+    job, clock = make_job(store, FakeHistorySource(), local(date(2026, 10, 8), 0, 29), history_backfill_days=1)
+    await run_first(job, clock)
+    assert store.suggestions_for([session_id])[session_id]["evaluated_on"] == "2026-10-08"
+
+
+@pytest.mark.anyio
 async def test_hevy_workout_matches_a_planned_strength_session_in_one_run(store, caplog):
     caplog.set_level(logging.INFO, logger="coach_mcp.history")
     session_id = add_session(store, "2026-10-06", type_="strength", description="Legs")

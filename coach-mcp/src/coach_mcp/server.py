@@ -12,7 +12,6 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
-from zoneinfo import ZoneInfo
 
 import httpx2
 from mcp.server.mcpserver import MCPServer
@@ -26,6 +25,7 @@ from starlette.types import ASGIApp
 from . import __version__, goals, plan, strength, tools, trends
 from . import correlations
 from .auth import BackendToken, BearerAuthMiddleware
+from .clock import LocalClock
 from .config import Settings
 from .garmin import GarminReader, GarminSource, HistorySource, exception_kind
 from .hevy import HevyReader, StrengthSource
@@ -544,17 +544,11 @@ def create_app(
 ) -> ASGIApp:
     settings = settings or Settings.from_env()
     store = store or Store(settings.db_path)
-    zone = ZoneInfo(settings.timezone)
+    clock = LocalClock(settings.timezone, now)
     if now is None:
-
-        def now() -> datetime:
-            return datetime.now(zone)
-
+        now = clock.now
     if today is None:
-        clock = now
-
-        def today() -> date:
-            return clock().astimezone(zone).date()
+        today = clock.today
 
     reader = GarminReader(settings)
     garmin = garmin or reader

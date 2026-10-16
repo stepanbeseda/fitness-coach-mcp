@@ -24,12 +24,12 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, assert_never
-from zoneinfo import ZoneInfo
 
 import httpx2
 
 from . import plan, tools
 from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _session_line
+from .clock import LocalClock
 from .config import Settings, read_bot_id, read_bot_token
 from .garmin import GarminSource, exception_kind
 from .messages import ReplyTexts, Texts, reply_texts, texts
@@ -92,7 +92,7 @@ class InboundPoller:
         self._now = now
         self._sleep = sleep
         self._transport = transport
-        self._zone = ZoneInfo(settings.timezone)
+        self._clock = LocalClock(settings.timezone, now)
         self._owner = int(settings.telegram_chat_id)
         self._failures = 0
 
@@ -262,7 +262,7 @@ class InboundPoller:
         """(command word, status word, reply). Stores the effect and the offset; never sends."""
         language = self._settings.language
         t, r = texts(language), reply_texts(language)
-        now = self._now().astimezone(self._zone)
+        now = self._clock.now()
         today = now.date()
         text = message.get("text")
         if not isinstance(text, str) or not text.strip():
@@ -310,7 +310,7 @@ class InboundPoller:
             except (ValueError, OverflowError, OSError):
                 return now.date()
             if now - at <= NOTE_DATE_WINDOW:
-                return min(at, now).astimezone(self._zone).date()
+                return self._clock.day_of(min(at, now))
         return now.date()
 
     def _line(self, t: Texts, r: ReplyTexts, session: Mapping[str, Any]) -> str:
