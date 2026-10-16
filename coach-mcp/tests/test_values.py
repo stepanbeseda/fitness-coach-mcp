@@ -52,12 +52,20 @@ def test_valid_id_bounds():
     assert not valid_id("") and not valid_id("x" * 65) and not valid_id(5) and not valid_id(None)
 
 
+CHECKS = {"isfinite", "isnan", "isinf"}
+
+
 def _isfinite_calls() -> list[str]:
+    """The modules that use a ``math`` finiteness check: ``math.isfinite``, a bare name, or ``from math import``."""
     found = []
     for path in sorted(PACKAGE.glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            name = node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else None
-            if name == "isfinite":
+            names = {a.name for a in node.names} if isinstance(node, ast.ImportFrom) else set()
+            if isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.Name):
+                names.add(node.id)
+            if names & CHECKS:
                 found.append(path.name)
     return found
 
