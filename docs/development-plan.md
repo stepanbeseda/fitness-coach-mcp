@@ -105,10 +105,10 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 20 | Operations alerts via Telegram | 08 | done |
 | 21 | Static checks in the test stage | — | done |
 | 22 | Two-way Telegram | 08 | done |
-| 23 | One Plan module for sessions and notes | 22 | planned |
-| 24 | History view | — | planned |
-| 25 | Garmin sections in one place | — | planned |
-| 26 | Daily delivery and a local clock | — | planned |
+| 23 | One Plan module for sessions and notes | 22 | done |
+| 24 | History view | — | done |
+| 25 | Garmin sections in one place | — | done |
+| 26 | Daily delivery and a local clock | — | done |
 | 27 | Nightly history run in parts | 24, 26 | planned |
 | 28 | Garmin tool definitions next to their code | 25 | planned |
 | 29 | Recovery snapshot parsed once | 24, 27 | planned |
@@ -1839,6 +1839,45 @@ Out of scope: new commands or tools, schema changes, other wording changes.
 **Requested:** 2026-10-15, by the owner, from the architecture review of
 2026-10-15 (candidate 1); owner decision on a future `done` the same day.
 
+**Delivered:** 2026-10-16, PR #44 (`mao/pr23-plan-module`), squash-merged into
+`main` as `b85a111`, no rebase. New `coach_mcp/plan.py` holds the rules for
+marking a planned session and for adding a note (`note_text`, `mark_session`,
+`add_note`); they return `Marked | Noted | Refusal` with a closed `Reason` set
+and never read a clock (`today` and the note day come from the caller).
+`Store.transaction()` (SQLite `BEGIN IMMEDIATE`, commit at the end of the
+block, rollback on an exception) makes the check and the write one transaction
+on both paths, so the race window of the old Telegram `_mark` is gone; the SQL
+of `update_session_status` and `moved_to` exists once in shared helpers.
+`tools.update_session` and `tools.add_note` keep only argument parsing and
+`refusal_error(refusal, field)` (a `match` with `assert_never`, so a reason
+without a text fails mypy); `inbound._mark` and the note branch of `_handle`
+call Plan and map a refusal through `refusal_reply` to the `ReplyTexts`
+catalogue. `NOTE_MAX`, the NUL and length checks, the session reads and the
+`ToolError` import are gone from `inbound.py`. No schema change (schema stays
+9), no migration, no new tool, config value, secret or dependency. All six
+criteria met offline (`CHECK OK tree=2b17695a897d garmin=424 gateway=91
+coach=1560 e2e=OK`; coach 1542 to 1560, 18 new tests; all 34 mutants of the
+spec table killed, and of the reviewer's 19 own 12 killed and 7 survived, see
+below). Owner decision of 2026-10-15 in effect: a session dated after today
+cannot be marked `done` on either path, re-marking an already `done` future
+session included; `skipped` and `planned` still work. Deviations (accepted in
+review): Plan has 12 refusal reasons, not the chapter's 9 (MOVED, TEXT_EMPTY
+and TEXT_NUL added, spec D3), the set is asserted equal to `set(Reason)` in
+three test files; Telegram gets one new reply, `session_moved_superseded`, in
+both catalogues for a moved session whose copy a later plan replaced (it used
+to get the wrong `session_moved_to`; no existing string changed, spec D7); a
+direct call with a 2001-character note now raises `ToolError` instead of
+`sqlite3.IntegrityError` (over MCP nothing changes). One test was deleted
+(`test_a_session_that_changes_under_the_command_is_refused`; the guarantee is
+held once by
+`test_store.py::test_a_transaction_holds_the_write_lock_from_its_first_read`)
+and eight rewritten, all listed in the PR body. Review took one round:
+APPROVED (0 blocking, 4 non-blocking). Spec check: 1 blocking (the negative
+greps G3 and G4 needed `-w`), 4 non-blocking, fixed in the spec before
+implementation. Open non-blocking: O1 to O4, section 5. Nothing needs the test
+host; not tested on the live stack. Deploy: rebuild `coach-mcp`
+(`DEPLOY-2026-10-16.md`).
+
 ### PR 24 — History view
 
 Every reader of the stored history rebuilds the training day from the raw
@@ -1894,6 +1933,47 @@ Out of scope: schema changes, the nightly job (PR 27), new metrics or tools.
 **Requested:** 2026-10-15, by the owner, from the architecture review of
 2026-10-15 (candidate 2).
 
+**Delivered:** 2026-10-16, PR #46 (`mao/pr24-history-view`), squash-merged
+into `main` as `ab2d76d`; the branch started on `b85a111` (PR 23) and was
+rebased once onto `f0cbbb8` (PR 25, garmin-only) without a conflict. New
+`coach_mcp/history_view.py` (`HistoryView`, `history_range`, `plan_range`, the
+re-fetch constants `REFETCH_DAYS`, `MAX_FAILURES`, `OVERLAP`) turns the stored
+rows into finished values (recovery values, parsed activities with their
+settled flag, Hevy strength days merged with the coverage, race predictions)
+and owns the range defaults and limits. New `coach_mcp/values.py` is the one
+finite-number guard (`finite`, `finite_float`, `whole`, `valid_id`) plus
+`parse_date`, moved from `tools.py`; it is the only module that calls
+`math.isfinite` (12 hits in 8 modules on the base, an AST test keeps it so).
+`trends`, `correlations`, `goals`, `strength.get_strength_progress`,
+`history._reconcile` and `tools.get_plan` read through the view; each reader
+gains a keyword-only last parameter `history=None`, so `server.py` and
+`scheduler.py` are unchanged, and the write side is untouched. No tool,
+argument, description, `INSTRUCTIONS`, env variable, dependency, log line,
+error text, schema or data change. All five criteria met offline (`CHECK OK
+tree=6f93f135f082 garmin=449 gateway=91 coach=1633 e2e=OK`, reviewer, on
+`dce4f7c`; coach 1560 to 1633). Criterion 4 by a golden:
+`tests/test_history_golden.py` compares 70 entries (69 reader calls of the six
+tools, 17 of them error texts, plus the reconcile step) as exact JSON text
+with `tests/history_golden.json`, committed first and green on the old code
+(recorded on `da44156`, never regenerated; the reviewer regenerated it
+byte-identical). Mutation: the 41 mutants of the spec table all killed.
+Malformed-row handling kept (the stricter rule wins for every reader; all rows
+the nightly job never writes): an unreadable stored `date` in the range is
+skipped by every reader (it was a tool error in `get_trends`,
+`get_correlations` and `get_weekly_report`, and crashed the reconcile step);
+activities without a readable `activities_fetched_on`, or stored as a BLOB,
+are ignored; `days_with_data` counts a day only with a readable fetch date.
+Deviations: spec D4 said only `get_weekly_report` raised on an unreadable
+date, but `get_trends` and `get_correlations` raised too (the code and the
+golden are right; review O2); spec-check notes N1 to N5 applied beyond the
+spec text (test imports, 12 extra view cases killing six surviving predicate
+mutants, `is not None` instead of `or`, the AST guard also rejects
+from-imports of `isfinite`, `isnan` and `isinf`, `weather._location` keeps its
+bool coordinate behaviour). Review took one round: APPROVED (0 blocking, 5
+non-blocking). Spec check: 0 blocking, 6 non-blocking, all applied. Open
+non-blocking: O1, O3, O4, O5 and N6, section 5. Nothing needs the test host.
+Deploy: rebuild `coach-mcp` (`DEPLOY-2026-10-16.md`).
+
 ### PR 25 — Garmin sections in one place
 
 Section 1 says that a section Garmin cannot provide returns `"error"` or
@@ -1947,6 +2027,50 @@ Out of scope: new tools, changes to response shapes, tool registration in
 **Requested:** 2026-10-15, by the owner, from the architecture review of
 2026-10-15 (candidate 3).
 
+**Delivered:** 2026-10-16, PR #45 (`mao/pr25-garmin-sections`), squash-merged
+into `main` as `f0cbbb8`; the branch was rebased once onto `b85a111` (PR 23,
+coach-only) without a conflict and the reviewer ran the check on the rebased
+tree. New `garmin_coach_mcp/sections.py` (`Call` with `missing_is_empty` and
+`required`, `Section` with `uses` and `if_error`, `fetch_sections`,
+`UNAVAILABLE`, `error_value`) holds the fail-soft rule once (404 as empty, a
+section in error, a badly shaped payload, the authentication abort, a required
+call) on top of `GarminService.call_many`, which stays the concurrency and
+authentication engine; `garmin_client.py` is unchanged. Nine tool functions in
+four modules declare calls and sections: `recovery_snapshot`, `device_status`
+and the per-day fallback of `hrv_trend` (`health.py`); `performance_metrics`,
+`race_predictions`, `running_tolerance` and `gear` (`performance.py`);
+`nutrition` (`body.py`); `get_activity` (`activities.py`). Removed:
+`health._section`, `performance._day` (now public `formatting.date_prefix`),
+`activities.none_if_missing`, `body._pair_section` and two copies of the
+try/except. `tests/test_module_boundaries.py` fails when a tool module imports
+an `_`-prefixed name from another one (positive control on the old source:
+`health._section` and `performance._day`, in three modules).
+`tests/test_section_answers.py` compares the exact answers of the nine tools
+in 302 scenarios with a recording made on the old code first (commit
+`5a1e3af`; re-recorded byte-equal by the reviewer); only the declared D5 key
+differs. No tool-list, argument, `server.py`, dependency, config, schema or
+image-digest change. All six criteria met offline (`CHECK OK tree=bdb5c04aeef3
+garmin=449 gateway=91 coach=1560 e2e=OK`; garmin 424 to 449, 12 more than the
+spec's 437: three tests from spec-check notes N1 to N3 and nine boundary cases
+from N4). Mutants: the spec table 21 of 21 killed, the implementer's four
+extra killed, of the reviewer's own 18 thirteen killed (the survivors are
+findings 1 to 3). Deviations, accepted by the orchestrator at design: D5, the
+one intended behaviour change: a shaper exception in `get_activity` detail,
+laps or HR zones, and in `gear` item shaping, now degrades like every section
+(`unexpected Garmin response ...`, `laps_error`, zones left out,
+`stats_error`) instead of failing the whole tool; D2, the chapter's "every
+tool module" is read as every module that has sections (a tool with one strict
+call keeps `service.call`); D6, the log line `could not shape <call>:
+<ExceptionType>` keeps its text and level, its logger is now
+`garmin_coach_mcp.sections`. Found by review, not declared in the spec
+(finding 4): `get_race_predictions` and `get_running_tolerance` moved to
+`call_many`, so a non-`ToolError` exception inside the library now surfaces as
+an `ExceptionGroup` text, as it already did for the seven tools on
+`call_many`; the tool fails either way. Review took one round: APPROVED (0
+blocking, 6 non-blocking, kept open). Spec check: 0 blocking, 5 non-blocking,
+all applied. Open non-blocking: section 5. Nothing needs the test host.
+Deploy: rebuild `garmin-mcp` (`DEPLOY-2026-10-16.md`).
+
 ### PR 26 — Daily delivery and a local clock
 
 `coach-mcp/src/coach_mcp/scheduler.py` sends the morning briefing
@@ -1988,6 +2112,45 @@ Out of scope: send times, retry counts, message text, `PushSender`.
 
 **Requested:** 2026-10-15, by the owner, from the architecture review of
 2026-10-15 (candidate 4).
+
+**Delivered:** 2026-10-16, PR #47 (`mao/pr26-daily-delivery`), squash-merged
+into `main` as `df65171`. The branch was implemented on `b85a111` (PR 23),
+then stacked on PR 24's approved tip `dce4f7c` for its rebase round (one
+conflict, the `strength.py` import block, resolved as spec-check note N2
+prescribed: PR 24's `history_view` import line plus `from .clock import
+local_at, local_day`); after PR 24's squash merge `git rebase --onto
+origin/main dce4f7c` left the tree identical (`2b724487759e`), so the check
+and both reviews held. New `coach_mcp/clock.py` (`LocalClock`: zone, now,
+today, the instant of a local clock time on a day, seconds until an instant,
+next occurrence) replaces `_at`, `_until` and the "today in the zone" helpers
+copied between `scheduler.py` and `history.py`;
+`tests/test_clock.py::test_local_time_exists_once` is an AST guard that fails
+when a module other than `clock.py` and `config.py` builds local time (it sees
+five shapes only, review O5). New `coach_mcp/delivery.py` (`DailyDelivery`)
+sends one message a day and decides send, skip, retry or give up; it owns the
+window, the per-day state and the order of the two messages. `scheduler.py`
+keeps the loop, the retry gate and two adapters (morning briefing, Monday
+report); `send_briefing_command` and `send_weekly_report_command` use
+`send_now`. `history.py`, `inbound.py`, `server.py` and `strength.py` build
+local time through the clock; their constructors keep `now=` and their
+signatures. No dependency, config, secret, schema or tool-list change. All
+four criteria met offline (`CHECK OK tree=2b724487759e garmin=449 gateway=91
+coach=1673 e2e=OK`, reviewer round 2; coach 1633 to 1673). Behaviour
+unchanged, shown by the base tree's 737 tests of six files running on the new
+source and a 4160-case old-vs-new differential run (13 start instants
+including the DST days, 8 push scripts, 4 Garmin modes, 5 windows, weekly on
+and off; all identical, positive controls fail it); all 29 designer mutants
+killed on both trees. Deviations: per-message crash handling stays a setting
+(`raise` for the briefing, `retry` for the Monday report) instead of one rule,
+because unifying would move the briefing's retry after a crash near the cutoff
+from 09:35 to 09:30 (spec decision 2, pinned by two new scheduler tests);
+`HistoryJob` still adds `timedelta`s to the zone-aware `now()` (spec decision
+5). Review took two rounds: round 1 APPROVED (0 blocking, 6 non-blocking),
+round 2 a delta review of the rebase APPROVED (no new findings). Spec check: 0
+blocking, 5 non-blocking, all applied. Open non-blocking, and the DST
+follow-up proposed for PR 27: section 5. No criterion needs the test host; the
+next 06:30 briefing and the Monday report show the live effect after the
+deploy. Deploy: rebuild `coach-mcp` (`DEPLOY-2026-10-16.md`).
 
 ### PR 27 — Nightly history run in parts
 
@@ -2377,6 +2540,97 @@ Out of scope: changes to `garmin-mcp`, new metrics.
   app) and U4 (Garmin's step limit; the limit of 50 is kept). The label of a step
   without an exercise is known since the live run ("--" with the note below, U1)
   but the READMEs and `docs/coach-instructions.md` name no label.
+- **Batch of 2026-10-15 (PR 23 to 26) is merged but not deployed.**
+  Squash-merged 2026-10-16: PR 23 #44 `b85a111`, PR 25 #45 `f0cbbb8`, PR 24
+  #46 `ab2d76d`, PR 26 #47 `df65171`. `coach-mcp` and `garmin-mcp` are rebuilt
+  together; no schema change (schema stays 9), no migration, no secret, `.env`
+  or compose change, no criterion for the test host. The steps are in
+  `DEPLOY-2026-10-16.md`. Behaviour changes on live: a session dated after
+  today can no longer be marked `done` (MCP and Telegram); a shaper exception
+  in `get_activity` or `gear` degrades the section instead of failing the
+  tool.
+- **PR 23 one Plan module, non-blocking review findings (round 1,
+  2026-10-16).** O1: no test pins the order of the three move rules
+  (NOT_PLANNED, SAME_DATE, PAST_DATE in `plan.py`); swapping any two keeps the
+  suite green (the base had the same gap); one row per pair in
+  `test_plan.py::test_every_session_refusal_writes_nothing` closes it. O2: the
+  log status word of an unknown id (`bad_argument` in `inbound._mark`) is not
+  pinned, `test_log_lines_carry_outcome_words_only` uses a malformed id
+  (pre-existing). O3: the `plan.mark_session` docstring says the session is
+  checked "in the order of `Reason`", which is loose (FUTURE comes after the
+  move rules, COPY_SUPERSEDED before MOVED_TO; same result). O4:
+  `test_add_note_refusals_write_nothing` is narrower than spec 6.1 (NOT_FOUND
+  only without `inbound`); nothing reachable is left uncovered.
+- **PR 24 history view, non-blocking review findings (round 1, 2026-10-16).**
+  O1: the skip of a `race_predictions` row with an unreadable date
+  (`history_view.py`, the `if day is not None:` branch) has no test; the
+  mutant `if True:` survives, and such a row (for example `2026-09-31`) would
+  crash `get_goal_progress` on sorting; not a regression, the old guard in
+  `goals` was untested too; one raw-SQL row in
+  `test_predictions_are_finite_values_of_the_range` closes it. O3: the helper
+  `row()` in `tests/test_reconcile.py` is dead. O4: `goals.py:93` is 130
+  characters after the `_number_text` rename. O5: other survivors, low impact
+  (the `isinstance(status, str)` guard on `hrv_status`, `activity_days(first,
+  today)` in `_reconcile`, the finite check of `morning_score` in the
+  briefing, `_Acc.add_set` with `finite` instead of `finite_float`). N6: the
+  delivered text of PR 09 above says `history.py` gains `activities_settled`
+  and `day_activities`; since PR 24 they live in `history_view.py` (historic
+  text, left as written).
+- **PR 25 Garmin sections, non-blocking review findings (round 1,
+  2026-10-16).** 1: the recording rows meant as the new home of the four
+  deleted shaper-monkeypatch tests (`race_predictions`, `running_tolerance`,
+  `device_status` and `get_activity` weather, "odd" payloads) never take the
+  shaper-exception path (28 rows, 20 000 fuzzed payloads per shaper never
+  raised), so only the generic S4 test covers it and the mutants
+  `R-race-call-renamed` and `R-tolerance-shaped-outside` survive; this is an
+  error in spec 6.3 (a recording row is a new home only if it takes the path);
+  a tool-level test per tool with a shaper that raises would close it. 2: a
+  gear item without a uuid (`performance.py`, the `stats[f"gear_{n}"] if ...
+  else shape_gear_item(i, None)` branch) has no test, as before; real Garmin
+  gear has a uuid; one line in `test_gear_tool_fetches_stats_per_item` closes
+  it. 3: the night-without-summary branch of the HRV per-day fallback
+  (`health.py`, `... if summary else None`) has no test (pre-existing); the
+  `hrv_trend get_hrv_data odd *` rows do not reach it. 4: the `ExceptionGroup`
+  surfacing in `get_race_predictions` and `get_running_tolerance` (see
+  "Delivered"). 5: D5 is tested at tool level only for zones (detail, laps and
+  gear only by S4), and `_gear_section.if_error` calls the shaper again inside
+  the `except` block, so "`if_error` must not raise" is stated but not
+  enforced. 6: the README sentence "Tool modules share helpers only through
+  `formatting.py` and `sections.py`" overstates (`workouts.py` uses public
+  functions of `exercises.py`); it should say "private helpers".
+- **PR 26 daily delivery and local clock, non-blocking review findings (round
+  1, 2026-10-16).** O1: "a new day resets the window flags" has no killing
+  test (the same mutant survives on the base); a row in `test_delivery.py`:
+  send on day D at 06:30, sleep to D+1 10:00, expect `skipped
+  reason=late_start` and no second send. O2: the wiring of
+  `briefing_retry_minutes` into the retry interval is not pinned (every
+  scheduler test uses the default 15 minutes; a hard-coded
+  `retry_seconds=900.0` survives; pre-existing). O3: the adapters' store-error
+  path (`briefing status=state_error` through a real `Store`) is pinned only
+  on stubs, by criterion 2; a `Store` subclass whose `record_briefing_sent`
+  raises would test it without patching. O4: per-call-site local-date mutants
+  in `history.py` and `server.py` survive (equivalent in production, where
+  `now` is already zone-aware; the gap predates the PR); optional, one
+  midnight test per site. O5: `coach-mcp/README.md` says `tests/test_clock.py`
+  "fails when another module builds local time itself", but the AST guard sees
+  five shapes only (not `zoneinfo.ZoneInfo(...)` used directly, an aliased
+  import, `date.today()`, `datetime.datetime.now(zone)`,
+  `.replace(tzinfo=zone)`); the wording should list the shapes. O6: cosmetic
+  (`test_send_now_takes_today_from_the_configured_zone` reads the wall clock
+  twice; the first commit of the branch is not green alone). Proposed for PR
+  27, which owns the history schedule next: `HistoryJob` adds `timedelta`s to
+  the zone-aware `now()`, so a backoff across a DST change wakes one hour off
+  (`datetime(2026,10,24,22, tzinfo=Prague) + 8 h` is 9 real hours) and `min()`
+  of two same-zone datetimes compares wall times; harmless (a retry an hour
+  early or late, twice a year), kept deliberately by PR 26; PR 27 can do the
+  arithmetic in UTC through `LocalClock`.
+- **Chapters that build on the batch of 2026-10-15.** PR 27 and PR 29 build on
+  `history_view.py` (PR 24) and PR 27 on `clock.py` (PR 26): they take stored
+  history through `HistoryView`, build no local time themselves
+  (`test_local_time_exists_once` fails otherwise) and no finite-number check
+  outside `values.py`. New check-then-write code uses `Store.transaction()`
+  (PR 23). PR 28 must classify every garmin module it adds in
+  `tests/test_module_boundaries.py` (PR 25).
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between

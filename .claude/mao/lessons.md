@@ -471,3 +471,73 @@ commits), no rebase.
   trailers no longer reach `main` and the PR title is the only commit text; `project.md` (Git) says so. At step 0,
   read the setting with `gh api repos/<o>/<r> --jq '.squash_merge_commit_title, .squash_merge_commit_message'`
   again in every run, because the owner can change it. (PR 07 journal, 2026-10-12 07:07)
+
+## Batch of 2026-10-15 (PR 23, 24, 25 and 26)
+
+Four refactor chapters from the architecture review, `--merge`, merge order 23, 25, 24, 26 (#44 to #47, no schema
+change). Every PR was designed in one attempt with no questions, a reference patch and a prototype harness in
+`PR-NN-proto/`; every spec check found 0 blocking items except PR 23 (1); implementation took one attempt each (PR 26 a
+second one for the rebase), review one round each (PR 26 two, the second a delta review), no escalation.
+
+- **`scripts/check.sh` takes the machine lock itself; wrapping it in an outer `flock` on the same file deadlocks.**
+  Worker-25 hit it once and killed the run. Docker builds and `docker run` of a hand-made command go under
+  `flock /tmp/fcm-docker.lock`; `scripts/check.sh --tag pr<NN>` and `scripts/e2e-test.sh` run bare. The implementers of
+  PR 25 and PR 26 wrote "no outer flock" next to their CHECK line. (PR 25 spec check, observations; PR 25 impl 1,
+  PR 26 impl 1 and 2)
+- **A dependent PR can be stacked on its predecessor's approved tip and rebased with `--onto`; the final rebase is then
+  tree-identical and the check holds.** PR 26 needed PR 24's code (`history_view`) but PR 24 was still in review. The
+  orchestrator started PR 26's implementation on PR 23's merge, let the implementer rebase onto PR 24's reviewed tip
+  `dce4f7c` (one conflict, named in advance by spec check N2), reviewed that delta (round 2), and after PR 24's squash
+  merge ran `git rebase --onto origin/main ab2d76d dce4f7c`: tree `2b724487759e`, equal to the checked tree, so no new
+  check and no new review. Two conditions made it work: PR 24 was not changed after its approval (otherwise redo the
+  stacked rebase), and the spec check had listed the only expected conflict. (PR 26 journal, B3.5; impl 2; PR 24 journal)
+- **Commit the reference recording or golden first, on the old code, and the refactor review becomes a comparison of two
+  test runs.** PR 24 committed `tests/history_golden.json` (70 entries, exact JSON of six tools) as its first commit,
+  green on the old code (`1 passed` on `f0cbbb8` plus the golden), and PR 25 committed `section_answers.json` (302
+  scenarios) with `CHANGED = {}` as its first commit (`5a1e3af`, 425 passed on the old source). The reviewer
+  regenerated the file on the old tree (byte-equal, `cmp`) and checked that it never changed afterwards
+  (`git diff <first commit> HEAD -- <file>` empty), so "same answers" was shown, not argued, and the single changed
+  key (D5) had to be declared in a `CHANGED` table with its own test. PR 26 did the same with a 4160-case differential
+  run of the old and the new scheduler. A refactor chapter with "behaviour unchanged" in its Done-when names such a
+  recording in the spec and orders the commits so it exists before the first moved line. (PR 24 and PR 25 reviews;
+  PR 26 review 1)
+- **A grep meant to be empty needs `-w` (or an anchored pattern) when the pattern is a substring of a catalogue
+  field.** Spec grep G3 (`get_session\|moved_to\|insert_note\|update_session_status` over `inbound.py`) matched the
+  reply field `session_moved_to` on a correct tree, so the reviewer's literal grep would have failed a right
+  implementation and the implementer could not have made it empty. The spec check ran it on the reference patch, which
+  is the only reason it was caught (blocking B1); `-w` gave the expected empty and, for G4, exactly the three
+  expected lines. Every "must be empty" grep in a spec is run on the reference patch, shows its positive hit on the old
+  tree, and names the word boundary. (PR 23 spec check B1; PR 23 review, G1 to G5 with positive controls)
+- **A spec that moves a deleted test to a "new home" must show that the home reaches the same path.** PR 25's spec 6.3
+  named the odd-payload rows of the recording as the new home of four deleted shaper-monkeypatch tests, but none of
+  those 28 rows (nor 20 000 fuzzed payloads per shaper) ever made a shaper raise, so only the generic S4 test covered
+  the path and two wiring mutants survived (`R-race-call-renamed`, `R-tolerance-shaped-outside`). The PR body listed
+  the tests with their "new homes" and the reviewer found the gap only by mutating the wiring. The spec check runs
+  each deleted test's mutant against the claimed new home (the monkeypatch deleted, the mutant that test killed
+  re-applied) before the spec is accepted. (PR 25 review, finding 1; checklist item "Nothing was silently weakened")
+- **A probe that supports a "before" claim must reach the branch it describes.** The designer of PR 24 probed the old
+  readers with an unreadable date `2026-10-1`, which as text sorts outside the ranges of `get_trends` and
+  `get_correlations`, and concluded that only `get_weekly_report` raised; the reviewer's probe with in-range rows
+  (`2026-10-02 `, `2026-09-31`) showed all three raised. The code and the golden were right and only the spec text and
+  the PR body were corrected, but a wrong "before" side would have mis-stated the behaviour change in criterion 4. A
+  probe for a malformed row uses a value inside the requested range, and the probe prints that the branch was taken.
+  (PR 24 review, O2)
+- **A mutant that also survives on the base tree is a pre-existing gap: record it once, do not widen the refactor.**
+  The PR 23 order-of-rules mutants (R1, R2, R2b), the PR 24 finite-check mutants and the PR 26 window-reset mutant all survived the base tree as well.
+  The reviewers marked them "pre-existing" with the base-tree run as evidence, kept them as non-blocking and the plan's
+  section 5 lists them with the row that would close each, instead of widening the refactor PR. (PR 23 O1 and O2,
+  PR 24 O5, PR 26 O1, O2 and O4)
+- **A guard test that sees a fixed set of shapes is documented with those shapes.** `test_local_time_exists_once` finds
+  five constructions of local time; the README sentence said it "fails when another module builds local time itself".
+  The reviewer listed what it does not see (`zoneinfo.ZoneInfo(...)` used directly, an aliased import, `date.today()`,
+  `datetime.datetime.now(zone)`, `.replace(tzinfo=zone)`). State the shapes in the docs, and add a positive row for
+  every shape the guard claims (`test_the_guard_finds_each_shape`; in round 2 six plants in `history_view.py`,
+  `values.py` and `plan.py` each turned the guard red). The same holds for the AST guard of `math.isfinite` in PR 24
+  (it also rejects from-imports) and for `test_module_boundaries.py` of PR 25 (every new garmin module must be
+  classified, which PR 28 has to do). (PR 26 review 1, O5; PR 24 N4)
+- **Mutation harnesses run in the project's image, offline, with the timeout inside the container, and the reviewers
+  re-run the spec's table in full.** PR 23: 34 of 34 killed plus 19 reviewer mutants (12 killed); PR 24: 41 of 41 plus
+  20 (15 killed); PR 25: 21 of 21 plus 18 (13 killed); PR 26: 29 of 29 on both trees plus 29 (9 survived, all
+  pre-existing or equivalent). The survivors of the reviewers' own mutants were each classified as equivalent,
+  unreachable, pre-existing or a finding in the review file, which is what made the four approvals cheap to trust.
+  (reviews of PR 23 to 26; PR 22 mutation entry above)
