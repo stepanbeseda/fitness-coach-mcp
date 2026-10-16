@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .messages import DEFAULT_LANGUAGE, LANGUAGES
+from .values import finite
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
@@ -90,7 +91,7 @@ def _coordinate(env: dict[str, str], name: str, low: int, high: int) -> float | 
         value = float(raw)
     except ValueError:
         value = math.nan
-    if not math.isfinite(value):
+    if finite(value) is None:
         raise ValueError(f"{name} must be a number in decimal degrees, e.g. 51.48")
     if not low <= value <= high:
         raise ValueError(f"{name} must be between {low} and {high}")

@@ -8,14 +8,15 @@ date at that trend. Reasons are codes, not prose, so the Monday message can tran
 from __future__ import annotations
 
 import datetime as dt
-import math
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+from .history_view import HistoryReader, HistoryView
 from .store import Store
+from .values import finite
 
 RECENT_DAYS = 14  # the current value is at most this old
 TREND_DAYS = 84  # the trend window: 12 weeks up to the current value
@@ -57,7 +58,7 @@ def clock(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
 
 
-def _number(value: float) -> str:
+def _number_text(value: float) -> str:
     return f"{value:g}"
 
 
@@ -85,11 +86,11 @@ def parse_target_value(metric: str, value: Any) -> float:
             number = float(value.strip())
         else:
             raise ToolError(message)
-        if not math.isfinite(number):
+        if finite(number) is None:
             raise ToolError(message)
         number = round(number, 1)
     if not spec.low <= number <= spec.high:
-        low, high = (clock(spec.low), clock(spec.high)) if spec.unit == "s" else (_number(spec.low), _number(spec.high))
+        low, high = (clock(spec.low), clock(spec.high)) if spec.unit == "s" else (_number_text(spec.low), _number_text(spec.high))
         raise ToolError(f"target_value for {metric} must be between {low} and {high}")
     return number
 
@@ -102,26 +103,15 @@ def target_value_out(metric: str, value: float) -> str | float:
 # ----------------------------------------------------------------- progress
 
 
-def _series(store: Store, metric: str, today: dt.date) -> list[tuple[dt.date, float]]:
+def _series(history: HistoryReader, metric: str, today: dt.date) -> list[tuple[dt.date, float]]:
     spec = GOAL_METRICS[metric]
     start = today - dt.timedelta(days=SERIES_DAYS)
-    rows = (
-        store.race_prediction_rows(start, today)
-        if spec.source == "race_predictions"
-        else store.history_rows(start, today)
-    )
+    days = history.predictions(start, today) if spec.source == "race_predictions" else history.days(start, today)
     points: list[tuple[dt.date, float]] = []
-    for row in rows:
-        value = row.get(spec.column)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            continue
-        if not math.isfinite(value) or value <= 0:
-            continue
-        try:
-            day = dt.date.fromisoformat(row["date"])
-        except ValueError:
-            continue
-        points.append((day, float(value)))
+    for day in days:
+        value = day.values.get(spec.column)
+        if value is not None and value > 0:
+            points.append((day.date, float(value)))
     points.sort()
     return points
 
@@ -152,7 +142,7 @@ def _point_out(spec: MetricSpec, point: tuple[dt.date, float] | None) -> dict[st
     return out
 
 
-def _goal_progress(store: Store, goal: dict[str, Any], today: dt.date) -> dict[str, Any]:
+def _goal_progress(history: HistoryReader, goal: dict[str, Any], today: dt.date) -> dict[str, Any]:
     metric = goal["metric"]
     spec = GOAL_METRICS[metric]
     target = goal["target_value"]
@@ -163,7 +153,7 @@ def _goal_progress(store: Store, goal: dict[str, Any], today: dt.date) -> dict[s
         if spec.unit == "s":
             target_out["time"] = clock(target)
 
-    points = _series(store, metric, today)
+    points = _series(history, metric, today)
     current = points[-1] if points and points[-1][0] >= today - dt.timedelta(days=RECENT_DAYS) else None
     out: dict[str, Any] = {
         "goal_id": goal["id"],
@@ -216,11 +206,12 @@ def _goal_progress(store: Store, goal: dict[str, Any], today: dt.date) -> dict[s
     return out
 
 
-def get_goal_progress(store: Store, today: dt.date) -> dict[str, Any]:
+def get_goal_progress(store: Store, today: dt.date, *, history: HistoryReader | None = None) -> dict[str, Any]:
     active = store.list_goals("active")
     measurable = [g for g in active if g["metric"] is not None]
+    view = history if history is not None else HistoryView(store)
     return {
         "today": today.isoformat(),
         "goals_without_metric": len(active) - len(measurable),
-        "goals": [_goal_progress(store, g, today) for g in measurable],
+        "goals": [_goal_progress(view, g, today) for g in measurable],
     }

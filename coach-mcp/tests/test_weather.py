@@ -155,6 +155,15 @@ async def test_arguments_override_home():
 
 
 @pytest.mark.anyio
+async def test_a_bool_coordinate_counts_as_its_number():
+    # the guard moved to values.finite in PR 24; a bool argument was accepted before and still is
+    service, seen, _ = make()
+    result = await service.forecast(True, False)
+    assert result["location"] == {"latitude": 1.0, "longitude": 0.0, "source": "arguments"}
+    assert (seen[0].url.params["latitude"], seen[0].url.params["longitude"]) == ("1.00", "0.00")
+
+
+@pytest.mark.anyio
 async def test_missing_location_is_a_clear_error():
     service, seen, _ = make(settings=Settings())
     with pytest.raises(ToolError) as exc:

@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,6 +24,7 @@ import httpx2
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .config import Settings, round_coordinate
+from .values import finite
 
 log = logging.getLogger("coach_mcp.weather")
 
@@ -95,13 +95,6 @@ class Forecast:
 # ------------------------------------------------------------------ validation
 
 
-def _num(value: Any) -> float | None:
-    """A finite number kept as is; null, strings, booleans and non-finite values become None."""
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return value if math.isfinite(value) else None
-
-
 def _list(container: dict[str, Any], key: str, length: int | None = None) -> list[Any]:
     value = container.get(key)
     if not isinstance(value, list) or (length is not None and len(value) != length):
@@ -139,7 +132,7 @@ def _parse(body: bytes) -> Forecast:
     times = _list(hourly, "time")
     columns = [_list(hourly, key, len(times)) for key in _HOURLY_FIELDS]
     hours = [
-        Hour(_local_datetime(t), _num(a), _num(b), _num(c), _num(d))
+        Hour(_local_datetime(t), finite(a), finite(b), finite(c), finite(d))
         for t, a, b, c, d in zip(times, *columns, strict=True)
     ]
 
@@ -303,7 +296,9 @@ class WeatherService:
             return round_coordinate(home_lat), round_coordinate(home_lon), "home"
         if latitude is None or longitude is None:
             raise ToolError(ONE_COORDINATE)
-        if not (math.isfinite(latitude) and math.isfinite(longitude)) or abs(latitude) > 90 or abs(longitude) > 180:
+        # float() keeps the old rule for a bool (True counted as 1), which finite() would reject
+        not_finite = finite(float(latitude)) is None or finite(float(longitude)) is None
+        if not_finite or abs(latitude) > 90 or abs(longitude) > 180:
             raise ToolError(OUT_OF_RANGE)
         return round_coordinate(latitude), round_coordinate(longitude), "arguments"
 

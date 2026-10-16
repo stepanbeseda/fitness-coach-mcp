@@ -1,6 +1,7 @@
 """Trends and the weekly report over the stored Garmin history (``history_days``).
 
-Pure functions over the store with today's date passed in; nothing here reads the clock or calls Garmin.
+Pure functions over the history view (``history_view``) with today's date passed in; nothing here reads the
+clock or calls Garmin; only the weekly adherence reads the planned sessions from the store.
 A value that was never stored is skipped, never counted as zero: a day without a value is not a day with
 a low value. Activity totals are the exception by design: a day whose activities were fetched and found
 empty is a real zero.
@@ -10,8 +11,7 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
-import json
-import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -19,7 +19,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from . import strength, tools
 from .history import ENDURANCE_SPORTS, SPORTS
+from .history_view import HistoryDay, HistoryReader, HistoryView, history_range
 from .store import Store
+from .values import finite, parse_date
 
 # ----------------------------------------------------------------- catalogue
 
@@ -61,10 +63,6 @@ TOTAL_METRICS: dict[str, tuple[str, str, str, int, int]] = {
 METRIC_NAMES: tuple[str, ...] = (*DAILY_METRICS, *TOTAL_METRICS)
 TrendMetric = Literal[METRIC_NAMES]  # type: ignore[valid-type]
 
-MAX_DAY_RANGE = 92
-MAX_LONG_RANGE = 731
-DEFAULT_RANGE_DAYS = 90
-
 # ------------------------------------------------------------------ helpers
 
 
@@ -73,37 +71,20 @@ def _round(value: float, decimals: int) -> float | int:
     return int(rounded) if decimals == 0 else rounded
 
 
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        return None
-    return value
-
-
-def _activities(row: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The per-sport totals of a stored day; None when never fetched or not valid JSON."""
-    if row is None or row.get("activities") is None:
-        return None
-    try:
-        parsed = json.loads(row["activities"])
-    except (TypeError, ValueError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _sport_sum(acts: dict[str, Any], sports: tuple[str, ...], field: str) -> float:
+def _sport_sum(acts: Mapping[str, Any], sports: tuple[str, ...], field: str) -> float:
     total = 0.0
     for sport in sports:
         entry = acts.get(sport)
         if isinstance(entry, dict):
-            total += _number(entry.get(field)) or 0
+            total += finite(entry.get(field)) or 0
     return total
 
 
-def _daily(row: dict[str, Any], metric: str) -> float | None:
+def _daily(day: HistoryDay, metric: str) -> float | None:
     if metric in DAILY_METRICS:
-        return _number(row.get(metric))
+        return day.values.get(metric)
     group, field, *_ = TOTAL_METRICS[metric]
-    acts = _activities(row)
+    acts = day.activities
     return None if acts is None else _sport_sum(acts, TOTAL_GROUPS[group], field)
 
 
@@ -128,23 +109,13 @@ def get_trends(
     start_date: str | None,
     end_date: str | None,
     period: str,
+    history: HistoryReader | None = None,
 ) -> dict[str, Any]:
     names = list(dict.fromkeys(metrics))
-    end = tools.parse_date(end_date, "end_date") if end_date is not None else today - dt.timedelta(days=1)
-    if end > today:
-        raise ToolError("end_date must not be after today")
-    start = tools.parse_date(start_date, "start_date") if start_date is not None else end - dt.timedelta(
-        days=DEFAULT_RANGE_DAYS - 1
-    )
-    if start > end:
-        raise ToolError("start_date must be on or before end_date")
-    limit = MAX_DAY_RANGE if period == "day" else MAX_LONG_RANGE
-    if (end - start).days + 1 > limit:
-        raise ToolError(f"date range too long for period {period} (max {limit} days)")
-
-    rows = store.history_rows(start, end)
-    by_day = {dt.date.fromisoformat(r["date"]): r for r in rows}
-    days_with_data = sum(1 for r in rows if r["recovery_fetched_on"] or r["activities_fetched_on"])
+    start, end = history_range(today, start_date, end_date, period=period)
+    days = (history if history is not None else HistoryView(store)).days(start, end)
+    by_day = {day.date: day for day in days}
+    days_with_data = sum(1 for day in days if day.has_data)
     return {
         "start": start.isoformat(),
         "end": end.isoformat(),
@@ -155,7 +126,7 @@ def get_trends(
 
 
 def _trend(
-    metric: str, by_day: dict[dt.date, dict[str, Any]], start: dt.date, end: dt.date, period: str
+    metric: str, by_day: dict[dt.date, HistoryDay], start: dt.date, end: dt.date, period: str
 ) -> dict[str, Any]:
     if metric in DAILY_METRICS:
         unit, decimals = DAILY_METRICS[metric]
@@ -234,17 +205,17 @@ MIN_BEST_WEEKS = 4
 class _Week:
     """The seven stored days of one ISO week (a missing row is None)."""
 
-    def __init__(self, monday: dt.date, by_day: dict[dt.date, dict[str, Any]]) -> None:
+    def __init__(self, monday: dt.date, by_day: dict[dt.date, HistoryDay]) -> None:
         self.monday = monday
-        self.days: list[tuple[dt.date, dict[str, Any] | None]] = [
+        self.days: list[tuple[dt.date, HistoryDay | None]] = [
             (monday + dt.timedelta(days=n), by_day.get(monday + dt.timedelta(days=n))) for n in range(7)
         ]
-        self.acts: list[dict[str, Any] | None] = [_activities(row) for _, row in self.days]
+        self.acts: list[Mapping[str, Any] | None] = [day.activities if day else None for _, day in self.days]
 
     def values(self, column: str) -> list[float]:
         out = []
-        for _, row in self.days:
-            value = _number(row.get(column)) if row else None
+        for _, day in self.days:
+            value = day.values.get(column) if day else None
             if value is not None:
                 out.append(value)
         return out
@@ -300,9 +271,11 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
-def get_weekly_report(store: Store, today: dt.date, *, week: str | None) -> dict[str, Any]:
+def get_weekly_report(
+    store: Store, today: dt.date, *, week: str | None, history: HistoryReader | None = None
+) -> dict[str, Any]:
     if week is not None:
-        monday, sunday, label = tools.week_of(tools.parse_date(week, "week"))
+        monday, sunday, label = tools.week_of(parse_date(week, "week"))
     else:
         monday, sunday, label = tools.week_of(today - dt.timedelta(days=7))
     if monday > today:
@@ -310,8 +283,8 @@ def get_weekly_report(store: Store, today: dt.date, *, week: str | None) -> dict
     partial = sunday >= today
 
     baseline_mondays = [monday - dt.timedelta(days=7 * n) for n in range(BASELINE_WEEKS, 0, -1)]
-    rows = store.history_rows(baseline_mondays[0], sunday)
-    by_day = {dt.date.fromisoformat(r["date"]): r for r in rows}
+    view = history if history is not None else HistoryView(store)
+    by_day = {day.date: day for day in view.days(baseline_mondays[0], sunday)}
     this = _Week(monday, by_day)
     baselines = [_Week(m, by_day) for m in baseline_mondays]
     complete_baselines = [w for w in baselines if w.complete]
@@ -329,7 +302,7 @@ def get_weekly_report(store: Store, today: dt.date, *, week: str | None) -> dict
         "hrv": _daily_stat(this, baselines, "hrv_last_night_ms"),
         "resting": _daily_stat(this, baselines, "resting_hr"),
     }
-    strength_section, strength_bests, strength_flags = _strength(store, monday, sunday, baseline_mondays, partial)
+    strength_section, strength_bests, strength_flags = _strength(view, monday, sunday, baseline_mondays, partial)
     return {
         "week": {
             "start": monday.isoformat(),
@@ -344,24 +317,24 @@ def get_weekly_report(store: Store, today: dt.date, *, week: str | None) -> dict
         "hrv": hrv,
         "resting_hr": resting,
         "adherence": adherence,
-        "new_bests": _new_bests(store, this, monday, final) + strength_bests,
+        "new_bests": _new_bests(view, this, monday, final) + strength_bests,
         "flags": _flags(this, final, stats) + strength_flags,
     }
 
 
 def _strength(
-    store: Store, monday: dt.date, sunday: dt.date, baseline_mondays: list[dt.date], partial: bool
+    history: HistoryReader, monday: dt.date, sunday: dt.date, baseline_mondays: list[dt.date], partial: bool
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """The strength section, new e1RM bests and flags of the week from the stored Hevy workouts.
 
     A week has a section when at least one of its days is covered by the Hevy history; baselines are the
     complete covered weeks among the previous four, and the volume flag needs a final week like the others.
     """
-    cov = strength.coverage(store.hevy_sync_state())
+    hist = history.strength(baseline_mondays[0], sunday)
+    cov = hist.coverage
     if cov is None:
         return dict(STRENGTH_NO_DATA), [], []
-    templates = strength.Templates(store.hevy_templates())
-    totals = strength.day_totals(store.strength_workout_rows(baseline_mondays[0], sunday), templates)
+    totals = hist.days
     this = strength.StrengthWeek(monday, totals, cov)
     if this.days == 0:
         return dict(STRENGTH_NO_DATA), [], []
@@ -401,7 +374,7 @@ def _strength(
     ):
         flags.append(_flag("strength_volume_up", volume))
 
-    earlier = strength.day_totals(store.strength_workout_rows(None, monday - dt.timedelta(days=1)), templates)
+    earlier = history.strength(None, monday - dt.timedelta(days=1)).days
     bests: list[dict[str, Any]] = []
     for tid, (best, day, title) in this.best.items():
         previous = max(
@@ -484,15 +457,15 @@ def _endurance(this: _Week, complete_baselines: list[_Week]) -> dict[str, Any]:
             "training_load": _round(this.total(("strength",), "training_load"), 1),
         }
     latest = next(
-        (row for _, row in reversed(this.days) if row is not None and _number(row.get("acute_load")) is not None),
+        (day for _, day in reversed(this.days) if day is not None and day.values.get("acute_load") is not None),
         None,
     )
     if latest is not None:
         out["load"] = {
-            "date": latest["date"],
-            "acute": _number(latest.get("acute_load")),
-            "chronic": _number(latest.get("chronic_load")),
-            "acwr_ratio": _number(latest.get("acwr_ratio")),
+            "date": latest.date.isoformat(),
+            "acute": latest.values.get("acute_load"),
+            "chronic": latest.values.get("chronic_load"),
+            "acwr_ratio": latest.values.get("acwr_ratio"),
         }
     return out
 
@@ -517,9 +490,7 @@ def _hrv_section(this: _Week, baselines: list[_Week]) -> dict[str, Any]:
         return {"available": False}
     stat = _daily_stat(this, baselines, "hrv_last_night_ms")
     assert stat is not None
-    status = next(
-        (row["hrv_status"] for _, row in reversed(this.days) if row is not None and row.get("hrv_status")), None
-    )
+    status = next((day.hrv_status for _, day in reversed(this.days) if day is not None and day.hrv_status), None)
     return {
         "days": len(values),
         "last_night_ms": stat.out(),
@@ -556,11 +527,11 @@ _WEEKLY_BESTS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _new_bests(store: Store, this: _Week, monday: dt.date, final: bool) -> list[dict[str, Any]]:
-    earlier_rows = store.history_rows(None, monday - dt.timedelta(days=1))
+def _new_bests(history: HistoryReader, this: _Week, monday: dt.date, final: bool) -> list[dict[str, Any]]:
+    earlier_days = history.days(None, monday - dt.timedelta(days=1))
     out: list[dict[str, Any]] = []
     for column in ("vo2max_running", "vo2max_cycling"):
-        earlier = [v for r in earlier_rows if (v := _number(r.get(column))) is not None]
+        earlier = [v for day in earlier_days if (v := day.values.get(column)) is not None]
         week_values = this.values(column)
         if len(earlier) >= MIN_VO2MAX_DAYS and week_values and max(week_values) > max(earlier):
             out.append(
@@ -573,7 +544,7 @@ def _new_bests(store: Store, this: _Week, monday: dt.date, final: bool) -> list[
     if not final:
         return out
 
-    by_day = {dt.date.fromisoformat(r["date"]): r for r in earlier_rows}
+    by_day = {day.date: day for day in earlier_days}
     first = min(by_day, default=monday)
     first_monday = first - dt.timedelta(days=first.weekday())
     earlier_weeks = []

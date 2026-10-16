@@ -1,16 +1,17 @@
 """Plan reconciliation: which past planned sessions have a recorded activity of the same day and sport.
 
 Pure functions, no I/O and no clock. The history job feeds them the stored sessions and activity totals each
-night and stores the result as a suggestion; nothing here changes a session status. The module imports nothing
-from the package, so ``history`` and ``briefing`` can both import it without a cycle.
+night and stores the result as a suggestion; nothing here changes a session status. The module imports only
+``values`` from the package, so ``history``, ``history_view`` and ``briefing`` can all import it without a cycle.
 """
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
+
+from .values import finite
 
 RECONCILE_DAYS = 7  # the window: today - 7 .. today - 1
 MATCHED_TYPES = ("running", "cycling", "swimming", "strength")  # session type == history sport of the totals
@@ -37,14 +38,11 @@ def _count(entry: Any) -> int:
 
 
 def _positive(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value) and value > 0
+    number = finite(value)
+    return number is not None and number > 0
 
 
 count_of = _count  # the validity rule for a stored count, shared with the history job's Hevy merge
-
-
-def _finite(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _evidence(sport: str, entry: Mapping[str, Any], count: int) -> dict[str, Any]:
@@ -59,7 +57,7 @@ def _evidence(sport: str, entry: Mapping[str, Any], count: int) -> dict[str, Any
     sets = entry.get("sets")
     if isinstance(sets, int) and not isinstance(sets, bool):
         evidence["sets"] = sets
-    if _finite(entry.get("volume_kg")):
+    if finite(entry.get("volume_kg")) is not None:
         evidence["volume_kg"] = entry["volume_kg"]
     return evidence
 

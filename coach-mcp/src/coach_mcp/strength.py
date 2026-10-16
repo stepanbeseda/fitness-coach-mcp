@@ -1,57 +1,28 @@
 """Strength history from Hevy: pure rules for summarising workouts, reading workout events and evaluating
-event pages (used by the history job), and the read side over the store (day totals, weeks,
-``get_strength_progress``); no clock, no network; raw sets are never stored.
+event pages (used by the history job), and the weekly sums and ``get_strength_progress`` over the strength days
+of the history view (``history_view``, which sums the stored summaries); no clock, no network; raw sets are
+never stored.
 """
 
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time as dt_time, timedelta
-from typing import Any, Literal, TypeGuard
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from mcp.server.mcpserver.exceptions import ToolError
-
-from . import tools
+from .history_view import OVERLAP, Coverage, DayStrength, HistoryReader, HistoryView, better, history_range, sync_dates
 from .store import Store
+from .values import finite_float, valid_id, whole
 
 EVENTS_PAGE_SIZE = 10  # hevy-mcp's maximum page_size
 MAX_EVENT_PAGES = 200
 MAX_E1RM_REPS = 12  # Epley is not used above 12 reps
-OVERLAP = timedelta(days=3)  # every listing re-reads the last 3 days (late syncs, since semantics unverified)
-UNKNOWN_GROUP = "unknown"
-ASSISTED_TYPES = frozenset({"bodyweight_assisted_reps"})  # weight_kg is assistance: no volume, no e1RM
 MAX_TITLE = 200
-MAX_ID = 64
-# Equals trends.MAX_LONG_RANGE (trends imports this module, so the number cannot be imported); a test pins it.
-MAX_RANGE_DAYS = 731
-DEFAULT_RANGE_DAYS = 90
 
 # ------------------------------------------------------------ write side: summaries
-
-
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        return None
-    return float(value)
-
-
-def _whole(value: Any) -> int | None:
-    """An int, or a float that holds a whole number; bool and everything else is None."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
-
-
-def _valid_id(value: Any) -> TypeGuard[str]:
-    return isinstance(value, str) and 1 <= len(value) <= MAX_ID
 
 
 def e1rm(weight_kg: float, reps: int) -> float | None:
@@ -72,7 +43,7 @@ class _Acc:
 
     def add_set(self, raw: Mapping[str, Any]) -> None:
         self.sets += 1
-        weight, reps = _finite(raw.get("weight_kg")), _whole(raw.get("reps"))
+        weight, reps = finite_float(raw.get("weight_kg")), whole(raw.get("reps"))
         if weight is not None and weight > 0 and reps is not None and reps >= 1:
             self.volume += weight * reps
         if weight is None or reps is None:
@@ -95,7 +66,7 @@ def summarize_exercises(workout: Mapping[str, Any]) -> list[dict[str, Any]]:
         return []
     accs: dict[str, _Acc] = {}
     for exercise in exercises:
-        if not isinstance(exercise, dict) or not _valid_id(exercise.get("exercise_template_id")):
+        if not isinstance(exercise, dict) or not valid_id(exercise.get("exercise_template_id")):
             continue
         acc = accs.setdefault(exercise["exercise_template_id"], _Acc())
         title = exercise.get("title")
@@ -179,13 +150,13 @@ def parse_events(events: Sequence[Any], zone: ZoneInfo) -> EventBatch:
     skipped = 0
     for event in events:
         kind = event.get("type") if isinstance(event, dict) else None
-        if kind == "deleted" and _valid_id(event.get("id")):
+        if kind == "deleted" and valid_id(event.get("id")):
             if event["id"] not in deletes:
                 deletes.append(event["id"])
             continue
         workout = event.get("workout") if kind == "updated" else None
         day = workout_day(workout.get("start_time"), zone) if isinstance(workout, dict) else None
-        if not isinstance(workout, dict) or not _valid_id(workout.get("id")) or day is None:
+        if not isinstance(workout, dict) or not valid_id(workout.get("id")) or day is None:
             skipped += 1
             continue
         candidate = (day, updated_key(workout.get("updated_at")), exercises_json(summarize_exercises(workout)))
@@ -217,22 +188,9 @@ def page_step(payload: Mapping[str, Any], page: int) -> Literal["next", "complet
 # ------------------------------------------------------------- write side: sync window
 
 
-def _state_dates(state: Mapping[str, Any] | None) -> tuple[date, date, datetime] | None:
-    """(covered_from, synced_on, synced_at) of a usable ``hevy_sync`` row, else None."""
-    if state is None:
-        return None
-    try:
-        synced_at = datetime.fromisoformat(state["synced_at"])
-        if synced_at.tzinfo is None:
-            return None
-        return date.fromisoformat(state["covered_from"]), date.fromisoformat(state["synced_on"]), synced_at
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
 def listing_due(state: Mapping[str, Any] | None, first: date, today: date) -> bool:
     """A listing is needed: never completed, the range grew (first < covered_from), or not yet today."""
-    dates = _state_dates(state)
+    dates = sync_dates(state)
     if dates is None:
         return True
     covered_from, synced_on, _ = dates
@@ -242,7 +200,7 @@ def listing_due(state: Mapping[str, Any] | None, first: date, today: date) -> bo
 def listing_since(state: Mapping[str, Any] | None, first: date, zone: ZoneInfo) -> tuple[datetime, bool]:
     """(since, full): local midnight of ``first`` (as UTC) when never completed or the range grew; otherwise the
     stored ``synced_at`` minus ``OVERLAP``."""
-    dates = _state_dates(state)
+    dates = sync_dates(state)
     if dates is None or first < dates[0]:
         return datetime.combine(first, dt_time(0), tzinfo=zone).astimezone(UTC), True
     return dates[2].astimezone(UTC) - OVERLAP, False
@@ -252,115 +210,7 @@ def since_text(instant: datetime) -> str:
     return instant.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# --------------------------------------------------------------- read side: coverage
-
-
-@dataclass(frozen=True)
-class Coverage:
-    first: date
-    through: date
-
-    def covers(self, day: date) -> bool:
-        return self.first <= day <= self.through
-
-
-def coverage(state: Mapping[str, Any] | None) -> Coverage | None:
-    """``covered_from`` .. ``synced_on`` - 1; None before the first complete listing."""
-    dates = _state_dates(state)
-    if dates is None:
-        return None
-    return Coverage(dates[0], dates[1] - timedelta(days=1))
-
-
-class Templates:
-    def __init__(self, rows: Mapping[str, Mapping[str, Any]]) -> None:
-        self._rows = rows
-
-    def _found(self, tid: str) -> Mapping[str, Any] | None:
-        row = self._rows.get(tid)
-        return row if row is not None and row.get("found") == 1 else None
-
-    def group(self, tid: str) -> str:
-        """Primary muscle group of a found template, else ``UNKNOWN_GROUP``."""
-        row = self._found(tid)
-        group = row.get("primary_muscle_group") if row else None
-        return group if isinstance(group, str) and group else UNKNOWN_GROUP
-
-    def title(self, tid: str) -> str | None:
-        row = self._found(tid)
-        title = row.get("title") if row else None
-        return title if isinstance(title, str) and title else None
-
-    def counts_load(self, tid: str) -> bool:
-        """False for a found template whose type is assisted bodyweight (its weight is assistance)."""
-        row = self._found(tid)
-        return not (row is not None and row.get("type") in ASSISTED_TYPES)
-
-
-@dataclass
-class DayStrength:
-    workouts: int = 0
-    sets: int = 0
-    volume_kg: float = 0.0
-    muscle_sets: dict[str, int] = field(default_factory=dict)
-    muscle_volume: dict[str, float] = field(default_factory=dict)
-    exercises: dict[str, dict[str, Any]] = field(default_factory=dict)  # tid -> {title, sets, volume_kg, best}
-
-
-def _entries(text: Any) -> list[dict[str, Any]]:
-    try:
-        parsed = json.loads(text)
-    except (TypeError, ValueError):
-        return []
-    return [e for e in parsed if isinstance(e, dict)] if isinstance(parsed, list) else []
-
-
-def _better(candidate: Mapping[str, Any], best: Mapping[str, Any] | None) -> bool:
-    """Higher e1RM wins, a tie goes to the heavier set; the first one seen stays otherwise."""
-    if best is None:
-        return True
-    return (candidate["e1rm_kg"], candidate["weight_kg"]) > (best["e1rm_kg"], best["weight_kg"])
-
-
-def _valid_best(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    weight, estimate, reps = _finite(value.get("weight_kg")), _finite(value.get("e1rm_kg")), _whole(value.get("reps"))
-    if weight is None or estimate is None or reps is None:
-        return None
-    return {"weight_kg": weight, "reps": reps, "e1rm_kg": estimate}
-
-
-def day_totals(rows: Sequence[Mapping[str, Any]], templates: Templates) -> dict[date, DayStrength]:
-    """Per local day: workouts, working sets and volume (also per primary muscle group) and the best set of
-    every template, summed on read from the stored workout summaries."""
-    out: dict[date, DayStrength] = {}
-    for row in rows:
-        try:
-            day = date.fromisoformat(row["date"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        total = out.setdefault(day, DayStrength())
-        total.workouts += 1
-        for entry in _entries(row.get("exercises")):
-            tid, sets = entry.get("template_id"), _whole(entry.get("sets"))
-            if not _valid_id(tid) or sets is None:
-                continue
-            group = templates.group(tid)
-            total.sets += sets
-            total.muscle_sets[group] = total.muscle_sets.get(group, 0) + sets
-            counts = templates.counts_load(tid)
-            volume = (_finite(entry.get("volume_kg")) or 0.0) if counts else 0.0
-            total.volume_kg += volume
-            total.muscle_volume[group] = total.muscle_volume.get(group, 0.0) + volume
-            title = templates.title(tid) or (entry["title"] if isinstance(entry.get("title"), str) else None)
-            day_entry = total.exercises.setdefault(tid, {"title": title, "sets": 0, "volume_kg": 0.0, "best": None})
-            day_entry["sets"] += sets
-            day_entry["volume_kg"] += volume
-            best = _valid_best(entry.get("best")) if counts else None
-            if best is not None and _better(best, day_entry["best"]):
-                day_entry["best"] = best
-    return out
+# --------------------------------------------------------------- read side: weeks
 
 
 class StrengthWeek:
@@ -392,7 +242,7 @@ class StrengthWeek:
                 self.muscle_volume[group] = self.muscle_volume.get(group, 0.0) + volume
             for tid, entry in total.exercises.items():
                 known = self.best.get(tid)
-                if entry["best"] is not None and _better(entry["best"], known[0] if known else None):
+                if entry["best"] is not None and better(entry["best"], known[0] if known else None):
                     self.best[tid] = (entry["best"], day, entry["title"])
 
     @property
@@ -449,19 +299,11 @@ def get_strength_progress(
     end_date: str | None,
     plateau_weeks: int,
     limit: int,
+    history: HistoryReader | None = None,
 ) -> dict[str, Any]:
-    end = tools.parse_date(end_date, "end_date") if end_date is not None else today - timedelta(days=1)
-    if end > today:
-        raise ToolError("end_date must not be after today")
-    start = tools.parse_date(start_date, "start_date") if start_date is not None else end - timedelta(
-        days=DEFAULT_RANGE_DAYS - 1
-    )
-    if start > end:
-        raise ToolError("start_date must be on or before end_date")
-    if (end - start).days + 1 > MAX_RANGE_DAYS:
-        raise ToolError(f"date range too long (max {MAX_RANGE_DAYS} days)")
-
-    cov = coverage(store.hevy_sync_state())
+    start, end = history_range(today, start_date, end_date)
+    hist = (history if history is not None else HistoryView(store)).strength(start, end)
+    cov = hist.coverage
     if cov is None:
         return {
             "start": start.isoformat(),
@@ -472,8 +314,7 @@ def get_strength_progress(
             "coverage": None,
             "exercises": [],
         }
-    templates = Templates(store.hevy_templates())
-    totals = day_totals(store.strength_workout_rows(start, end), templates)
+    totals = hist.days
     series: dict[str, list[dict[str, Any]]] = {}
     titles: dict[str, str | None] = {}
     for day in sorted(totals):
@@ -498,7 +339,7 @@ def get_strength_progress(
         "coverage": {"from": cov.first.isoformat(), "through": cov.through.isoformat()},
         "matched": len(ordered),
         "exercises": [
-            _exercise_progress(tid, titles.get(tid), templates.group(tid), series[tid], end, plateau_weeks)
+            _exercise_progress(tid, titles.get(tid), hist.group(tid), series[tid], end, plateau_weeks)
             for tid in ordered[:limit]
         ],
     }
