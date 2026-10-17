@@ -164,48 +164,9 @@ The parts most relevant to building LLM agents that act on real, personal data:
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph clients["Clients"]
-        web["claude.ai<br/>web · Desktop · mobile"]
-        local["Claude Code / mcp-remote<br/>your devices on the tailnet"]
-    end
+![Architecture: clients reach a Tailscale node and the OAuth gateway, which routes to the hevy, coach and garmin MCP backends and their external APIs](docs/architecture.svg)
 
-    anthropic["Anthropic cloud<br/>160.79.104.0/21"]
-    web --> anthropic
-    anthropic -- "HTTPS :443 · Tailscale Funnel" --> ts
-    local -- "WireGuard · tailnet" --> ts
-
-    subgraph host["Your server · Docker Compose · no published ports"]
-        subgraph ns["Shared network namespace · loopback only"]
-            ts["<b>ts</b><br/>Tailscale node fitness-mcp<br/>serve + funnel :443"]
-            gateway["<b>gateway</b><br/>OAuth 2.1 AS + resource server<br/>reverse proxy · audit · rate limit"]
-            ts -- "127.0.0.1:8080" --> gateway
-        end
-
-        subgraph mcpnet["Private network &quot;mcp&quot;"]
-            hevy["<b>hevy-mcp</b><br/>official image"]
-            garmin["<b>garmin-mcp</b><br/>custom server<br/>tokens: garmin-tokens volume"]
-            coach["<b>coach-mcp</b><br/>goals · plan · notes · briefing<br/>SQLite: coach-data volume"]
-        end
-
-        gateway -- "/hevy/mcp" --> hevy
-        gateway -- "/garmin/mcp" --> garmin
-        gateway -- "/coach/mcp" --> coach
-        coach -. "read tools only" .-> garmin
-        coach -. "read tools only" .-> hevy
-    end
-
-    hevyapi["Hevy API"]
-    gc["Garmin Connect"]
-    tg["Telegram Bot API<br/>briefing and your replies, optional"]
-    om["Open-Meteo<br/>rounded coordinates only"]
-
-    hevy --> hevyapi
-    garmin --> gc
-    coach --> tg
-    coach --> om
-```
+Editable source: [`docs/architecture.html`](docs/architecture.html).
 
 The `ts` sidecar runs `tailscale/tailscale` v1.102.5 in userspace mode as the node `fitness-mcp` (tag
 `tag:fitness-mcp`). The backends make only the outbound calls shown; nothing on the server accepts inbound
