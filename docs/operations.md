@@ -21,7 +21,8 @@ weather, Garmin token renewal, updates, backups and fixes for common problems. S
 | Nightly history (progress) | `docker compose logs coach-mcp` (lines `history status=…`) |
 | Backup | `scripts/backup.sh` (for cron: `--quiet`, exit 1 = no archive was created) |
 | Telegram bot | `scripts/setup-secrets.sh telegram-token` (token from @BotFather, prints the chat id), `scripts/setup-secrets.sh telegram-chat-id` (the chat id again) |
-| New versions | `scripts/check-updates.sh` |
+| New versions | Dependabot pull requests and `scripts/check-updates.sh` (see "Updates") |
+| Known vulnerabilities | `gh workflow run audit.yml` (runs every Monday by itself) |
 | Test without touching production | `scripts/e2e-test.sh` (separate Compose project, no internet, no Tailscale) |
 | Full check (tests + e2e) | `scripts/check.sh --tag <tag>` (ends with the line `CHECK OK tree=…`) |
 
@@ -287,10 +288,27 @@ version bump in `garmin-mcp/pyproject.toml` → `scripts/lock-deps.sh` → rebui
 
 ## Updates
 
-Nothing updates by itself. The procedure:
+Three things watch the pins; none of them deploys anything.
+
+- **Dependabot** (`.github/dependabot.yml`) opens pull requests once a month: one for the GitHub Actions and one
+  per base image. The `python:3.13-slim` digest of `gateway`, `garmin-mcp` and `coach-mcp` moves in one PR; a new
+  Python minor is not proposed, because the locks are compiled for 3.13. CI runs on every such PR. A `tailscale`
+  or `hevy-mcp` PR stays red in the `scripts` job (`scripts/check-pins.sh`) until you add a commit to it that
+  sets the same version in that service's `image:` tag in `docker-compose.yml`. Merge a green PR, then deploy
+  it with steps 3 to 5 below.
+- **The audit** (`.github/workflows/audit.yml`) runs `pip-audit` on every `requirements*.lock` each Monday, on
+  demand (`gh workflow run audit.yml`) and on pull requests that change a lock or a `pyproject.toml`. GitHub
+  mails you when the scheduled run fails. A red run names the package and the fixed version: raise it (step 2)
+  and run the audit again. GitHub turns scheduled workflows off after 60 days without a commit in a public
+  repository; turn it back on in the Actions tab.
+- **`scripts/check-updates.sh`** reports what Dependabot does not: newer Python packages, the uv image of
+  `scripts/lock-deps.sh` and, with Docker, a moved digest of the base images.
+
+The procedure by hand (Python packages, or a pin without a Dependabot PR):
 
 1. `scripts/check-updates.sh`: what is new.
-2. Change the pin (`tailscale/Dockerfile`, `hevy-mcp/Dockerfile` including the digest, or `pyproject.toml`).
+2. Change the pin (`tailscale/Dockerfile` or `hevy-mcp/Dockerfile` including the digest, with the same version in
+   the `image:` tag in `docker-compose.yml`; or `pyproject.toml`). `scripts/check-pins.sh` checks the pins.
    For Python, run `scripts/lock-deps.sh` (optionally `--upgrade`). `ruff` and `mypy` are pinned to exact
    versions in the `test` / `dev` extra of each `pyproject.toml`, because a newer version can report new
    findings; `scripts/check-updates.sh` does not list them.

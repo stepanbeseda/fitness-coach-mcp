@@ -3223,6 +3223,14 @@ architecture review of 2026-10-18: system-03 and presentation-03); questions and
   outside `values.py`. New check-then-write code uses `Store.transaction()`
   (PR 23). PR 28 must classify every garmin module it adds in
   `tests/test_module_boundaries.py` (PR 25).
+- **Image vulnerability scan (from PR 32).** The architecture review of
+  2026-10-18 (ops-06) proposed a Trivy scan of the built images. PR 32 left
+  it out: the `aquasecurity/trivy-action` and `setup-trivy` tags were
+  force-pushed with a secret-stealing payload on 2026-03-19 (CVE-2026-33634),
+  OS fixes of the base images arrive as Dependabot digest bumps, and
+  `pip-audit` covers the Python packages. If wanted later: the Trivy binary
+  pinned by version and checksum (or an image digest), weekly, report-only,
+  HIGH and CRITICAL with a fix only.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between

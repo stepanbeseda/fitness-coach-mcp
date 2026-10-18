@@ -115,6 +115,9 @@ Several PRs may be implemented at once in separate worktrees (background:
 - CI: `.github/workflows/ci.yml` runs per-service ruff, mypy and pytest, the offline script tests and
   `scripts/check.sh --tag ci` on every PR. The local check above stays the gate for review evidence
   (`tree=`); a red CI run on the PR is a finding. Do not change the workflow without a plan chapter.
+  `.github/workflows/audit.yml` (since PR 32) runs `pip-audit` on every lock weekly and on PRs that change
+  a lock or a `pyproject.toml`; it is not a required check, but a red audit on such a PR is a finding.
+  Dependabot (`.github/dependabot.yml`) opens update PRs that are not MAO PRs: the owner merges them.
 
 ## Test host
 

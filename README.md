@@ -392,7 +392,9 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same three 
 offline tests of the operations scripts, and then `scripts/check.sh`: the Docker test stage of each service and
 the end-to-end OAuth + MCP flow in a throwaway Compose project. Run `scripts/check.sh` locally before a PR.
 Dependencies are hash-locked; after changing a `pyproject.toml`, regenerate the locks with
-`scripts/lock-deps.sh`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+`scripts/lock-deps.sh`. Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) proposes monthly bumps of
+the pinned Actions and base images, and [`.github/workflows/audit.yml`](.github/workflows/audit.yml) runs
+`pip-audit` on every lock each week. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Repository layout
 
@@ -406,8 +408,9 @@ hevy-mcp/                wrapper around the official image (secrets from files, 
 garmin-mcp/              Garmin MCP server (Python, python-garminconnect + MCP SDK), tests
 coach-mcp/               coach memory (Python, MCP SDK, SQLite), tests
 scripts/                 setup-secrets, garmin-login, healthcheck, backup, smoke-test, admin, check-updates,
-                         lock-deps; tests: check (the full check), e2e-test
-.github/workflows/       CI: per-service ruff, mypy and pytest, script tests, scripts/check.sh
+                         lock-deps; tests: check (the full check), e2e-test, check-pins
+.github/workflows/       CI: per-service ruff, mypy and pytest, script tests, scripts/check.sh; weekly pip-audit
+.github/dependabot.yml   monthly update PRs for the Actions and base images
 docs/coach-instructions.md   Custom Instructions for the "Fitness coach" Claude project
 docs/operations.md       running the stack: Telegram features, history, backups, updates, troubleshooting
 docs/how-this-was-built.md   the development process in short
