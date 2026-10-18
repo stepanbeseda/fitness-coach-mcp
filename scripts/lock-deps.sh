@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Re-generate the hash-locked requirements files from pyproject.toml using a
-# pinned uv image (linux/aarch64, CPython 3.13).
+# pinned uv image (linux/aarch64, CPython 3.13): the three services and the
+# pip-audit tool of the CI audit (.github/audit). scripts/check-updates.sh
+# reports a newer uv image.
 #
 #   scripts/lock-deps.sh [--upgrade]
 source "$(dirname "$0")/lib.sh"
@@ -19,7 +21,7 @@ lock() {
   ok "$dir/$out"
 }
 
-for dir in gateway garmin-mcp coach-mcp; do
+for dir in gateway garmin-mcp coach-mcp .github/audit; do
   [[ -f "$dir/pyproject.toml" ]] || continue
   lock "$dir" requirements.lock
   for extra in dev test; do

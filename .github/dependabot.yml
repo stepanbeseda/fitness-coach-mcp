@@ -1,0 +1,42 @@
+# Version updates for what Dependabot can bump without breaking a pin: the SHA-pinned GitHub Actions and the
+# digest-pinned base images. Python packages are not here: the hash locks come from scripts/lock-deps.sh
+# (uv, linux/aarch64), which Dependabot cannot run; scripts/check-updates.sh reports them and
+# .github/workflows/audit.yml audits them every week. How to handle these PRs: docs/operations.md, "Updates".
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directories:
+      - /gateway
+      - /garmin-mcp
+      - /coach-mcp
+      - /hevy-mcp
+      - /tailscale
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per image across all five directories: the python base of gateway, garmin-mcp and coach-mcp
+      # moves in one PR (scripts/check-pins.sh requires the three pins to be equal).
+      docker-images:
+        group-by: dependency-name
+    ignore:
+      # The hash locks are compiled for CPython 3.13 (scripts/lock-deps.sh); a new Python minor is a planned
+      # change, not a bump. Digest refreshes of python:3.13-slim still come.
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

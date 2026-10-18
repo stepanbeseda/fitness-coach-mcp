@@ -15,7 +15,8 @@ for anything larger, please open an issue first so we can agree on the approach.
 - **Privacy of logs.** Logs and the audit trail carry tool names, outcomes and durations only: never arguments,
   results, tokens or health values.
 - **Supply chain.** Dependencies are pinned and hash-locked (`scripts/lock-deps.sh`), base images pinned by digest.
-  A new dependency needs a reason in the PR.
+  A new dependency needs a reason in the PR. Dependabot proposes bumps of the Actions and base images, a weekly
+  `pip-audit` checks every lock, and `scripts/check-pins.sh` keeps every `FROM` pinned by digest (no `ARG`).
 - **No secrets, personal hostnames or account identifiers** in code, docs or tests.
 - English for code, docs and commit messages (short imperative subject, e.g. "Add weekly report tool").
 

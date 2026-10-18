@@ -1,8 +1,7 @@
 # garmin-coach-mcp: curated Garmin Connect MCP server (Streamable HTTP, stateless).
 # Dependencies are installed from hash-locked files (see README.md to regenerate).
-ARG PYTHON_IMAGE=python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
-
-FROM ${PYTHON_IMAGE} AS deps
+# The base image is a literal pin (no ARG), so Dependabot and scripts/check-pins.sh see it.
+FROM python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b AS deps
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

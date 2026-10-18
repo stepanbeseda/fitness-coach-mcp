@@ -1,0 +1,49 @@
+name: Audit
+
+# Known vulnerabilities in the hash-locked Python dependencies: pip-audit reads every service lock as it is
+# (no resolution, no install) and asks the PyPI advisory database. A red run means a pinned version has a
+# published advisory; bump it with scripts/lock-deps.sh (docs/operations.md, "Updates"). Separate from CI, so a
+# newly published advisory never blocks an unrelated pull request.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "**/requirements*.lock"
+      - "**/pyproject.toml"
+      - ".github/audit/**"
+      - ".github/workflows/audit.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install pip-audit (hash-locked)
+        run: python -m pip install --no-deps --require-hashes -r .github/audit/requirements.lock
+      - name: Audit the service locks
+        run: |
+          shopt -s nullglob
+          locks=(*/requirements*.lock .github/audit/requirements.lock)
+          if (( ${#locks[@]} < 2 )); then echo "::error::no service requirements*.lock found"; exit 1; fi
+          status=0
+          for lock in "${locks[@]}"; do
+            echo "::group::$lock"
+            rc=0
+            python -m pip_audit --strict --require-hashes --disable-pip --progress-spinner off -r "$lock" || rc=$?
+            echo "::endgroup::"
+            if (( rc )); then echo "::error file=$lock::pip-audit exit $rc for $lock"; status=1; fi
+          done
+          exit "$status"

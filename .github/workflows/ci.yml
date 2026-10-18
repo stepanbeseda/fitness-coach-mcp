@@ -42,7 +42,7 @@ jobs:
       - name: Pytest
         run: python -m pytest
 
-  # Offline tests of the operations scripts (no Docker, no network).
+  # Offline tests of the operations scripts and the image-pin check (no Docker, no network).
   scripts:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -54,6 +54,12 @@ jobs:
         run: scripts/test-setup-secrets.sh
       - name: healthcheck.sh tests
         run: scripts/test-healthcheck.sh
+      - name: Image pins
+        run: scripts/check-pins.sh
+      - name: check-pins.sh tests
+        run: scripts/test-check-pins.sh
+      - name: check-updates.sh tests
+        run: scripts/test-check-updates.sh
 
   # The project's full check: Docker test stages of all services, then the end-to-end OAuth + MCP flow in a
   # throwaway Compose project (no real secrets, no Tailscale login).
