@@ -14,7 +14,7 @@ OAuth 2.1 gateway on your own server:
   the watch), performance metrics (race predictions and their daily history, lactate threshold, heart-rate and
   power zones, VO2max), running tolerance, personal records, gear, body composition, nutrition and hydration. It
   can log a manual weigh-in and create structured run, ride and strength workouts scheduled to the watch.
-- **Hevy** (`hevy-mcp/`, upstream [`chrisdoc/hevy-mcp`](https://github.com/chrisdoc/hevy-mcp) 6.1.16). It covers
+- **Hevy** (`hevy-mcp/`, upstream [`chrisdoc/hevy-mcp`](https://github.com/chrisdoc/hevy-mcp) 6.2.1). It covers
   strength-training history, routines, exercise templates and writing routines and workouts.
 - **Coach memory** (`coach-mcp/`, custom server on SQLite). It stores goals, constraints (injuries, available
   days, equipment), a dated training plan with status, and a notes log. On top of that it computes:
