@@ -2,7 +2,10 @@
 
 `section_answers.json` holds one short hash per scenario. It was recorded from the code before PR 25 with
 `RECORD_SECTION_ANSWERS=1`: the refactor leaves every answer, error text and key order as it was. A scenario whose
-answer PR 25 changes on purpose is listed in CHANGED with the test that states the new answer."""
+answer PR 25 changes on purpose is listed in CHANGED with the test that states the new answer.
+PR 31 adds a kind to every error: `without_kinds` drops the `error_kind` keys and a raised ToolError subclass is
+named ToolError, so the recording shows that the kinds are the only change (test_error_kinds.py and
+tests/contract/garmin_answers.json pin them)."""
 
 import copy
 import hashlib
@@ -13,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from garminconnect import GarminConnectNotFoundError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from conftest import AUTH_ERROR, CONN_ERROR, FakeGarmin
 from garmin_coach_mcp import activities, body, health, performance
@@ -67,6 +71,14 @@ def _scenarios() -> list[tuple[str, str, str, str]]:
     return rows
 
 
+def without_kinds(value):
+    if isinstance(value, dict):
+        return {k: without_kinds(v) for k, v in value.items() if k != "error_kind"}
+    if isinstance(value, list):
+        return [without_kinds(v) for v in value]
+    return value
+
+
 async def _answer(settings, tool: str, method: str, kind: str, name: str) -> str:
     fake = FakeGarmin()
     service = GarminService(settings, garmin_factory=lambda: fake)
@@ -77,9 +89,9 @@ async def _answer(settings, tool: str, method: str, kind: str, name: str) -> str
     if kind == "odd":
         fake.responses[method] = copy.deepcopy(ODD[name])
     try:
-        return to_json(await TOOLS[tool][0](service))
+        return to_json(without_kinds(await TOOLS[tool][0](service)))
     except Exception as exc:  # a failure of the whole tool is part of the answer
-        return f"raised {type(exc).__name__}: {exc}"
+        return f"raised {'ToolError' if isinstance(exc, ToolError) else type(exc).__name__}: {exc}"
 
 
 @pytest.mark.anyio

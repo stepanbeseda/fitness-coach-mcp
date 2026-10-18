@@ -12,6 +12,7 @@ from typing import Any
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .formatting import as_dict, as_list, clean, clock, date_prefix, km, num, pace_per_km, resolve_date, resolve_range, today
+from .errors import UNEXPECTED_ANSWER, GarminError
 from .garmin_client import GarminService
 from .sections import UNAVAILABLE, Call, Section, fetch_sections
 
@@ -484,7 +485,10 @@ async def personal_records(service: GarminService) -> dict[str, Any]:
 def _gear_list(client: Any) -> Any:
     pid = getattr(client, "profile_id", None)
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        raise ToolError("Garmin did not report a profile id for this account, so gear cannot be listed. Retry later.")
+        raise GarminError(
+            "Garmin did not report a profile id for this account, so gear cannot be listed. Retry later.",
+            UNEXPECTED_ANSWER,
+        )
     return client.get_gear(str(pid))
 
 

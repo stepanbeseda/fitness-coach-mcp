@@ -43,6 +43,7 @@ from .formatting import (
     resolve_date,
     today,
 )
+from .errors import UNEXPECTED_ANSWER, GarminError, kind_of
 from .garmin_client import GarminService
 
 MAX_TOTAL_STEPS = 50
@@ -702,7 +703,10 @@ async def create_workout(
     created = as_dict(await service.call(lambda c: c.upload_workout(payload)))
     workout_id = created.get("workoutId")
     if not workout_id:
-        raise ToolError("Garmin accepted the upload but returned no workoutId; check Garmin Connect before retrying.")
+        raise GarminError(
+            "Garmin accepted the upload but returned no workoutId; check Garmin Connect before retrying.",
+            UNEXPECTED_ANSWER,
+        )
     result: dict[str, Any] = {
         "workout_id": workout_id,
         "name": created.get("workoutName") or spec.name,
@@ -720,7 +724,11 @@ async def create_workout(
             schedule = await service.call(lambda c: c.schedule_workout(workout_id, day))
             result["scheduled"] = clean({"date": day, "schedule_id": _schedule_id(schedule)})
         except ToolError as exc:
-            result["scheduled"] = {"date": day, "error": f"workout created but scheduling failed: {exc}"}
+            result["scheduled"] = {
+                "date": day,
+                "error": f"workout created but scheduling failed: {exc}",
+                "error_kind": kind_of(exc),
+            }
     result["next_step"] = "Sync the watch with the Garmin Connect app to receive the workout."
     return clean(result)
 

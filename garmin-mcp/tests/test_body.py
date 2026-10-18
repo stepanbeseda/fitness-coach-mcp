@@ -373,10 +373,14 @@ async def test_log_weight_read_back_failure_still_reports_stored(service, fake):
     assert fake.weigh_ins[0][0] == 77.8
     assert out["stored"] is True
     assert "500" in out["entry"]["error"] and out["entry"]["error"].startswith("stored, but")
+    assert out["entry"]["error_kind"] == "garmin_unavailable"
 
 
 @pytest.mark.anyio
 async def test_log_weight_entry_not_yet_visible(service, fake):
     out = await body.log_weight(service, 76.5, "2026-09-30")
     assert out["stored"] is True
-    assert out["entry"] == {"error": "stored, but the new weigh-in is not in Garmin's day view yet"}
+    assert out["entry"] == {
+        "error": "stored, but the new weigh-in is not in Garmin's day view yet",
+        "error_kind": "not_found",
+    }
