@@ -365,6 +365,36 @@ def test_refresh_retry_inside_grace_window_forks_the_grant(h):
         assert h.mcp(renewed.json()["access_token"]).status_code == 200
 
 
+def test_pkce_parameters_are_required(h):
+    # Each omission alone must be refused; the other parameter would pass its own check.
+    for omitted in ({"code_challenge_method": None}, {"code_challenge": None},
+                    {"code_challenge_method": None, "code_challenge": None}):
+        r = h.start(**omitted)
+        assert r.status_code == 302, omitted
+        assert query(r)["error"] == ["invalid_request"], omitted
+
+
+def test_refresh_grace_window_is_120_seconds(h):
+    # A retry 110 s after the rotation is inside the grace window, one 121 s after it is a reuse.
+    # (docs/gateway-design.md, conformance matrix, refresh rotation.)
+    for age, expected in ((110, 200), (121, 400)):
+        first = h.tokens()
+        h.refresh(first["refresh_token"])
+        h.store._conn.execute("UPDATE tokens SET rotated_at = rotated_at - ? WHERE rotated_at IS NOT NULL", (age,))
+        retry = h.refresh(first["refresh_token"])
+        assert retry.status_code == expected, age
+        if expected == 400:
+            assert retry.json()["error"] == "invalid_grant"
+
+
+def test_revocation_is_refused_outside_the_token_networks(h):
+    tokens = h.tokens()
+    r = h.client.post("/revoke", data={"token": tokens["refresh_token"], "client_id": CLAUDE}, headers=FUNNEL_PUBLIC)
+    assert r.status_code == 403
+    assert h.mcp(tokens["access_token"]).status_code == 200
+    assert h.refresh(tokens["refresh_token"]).status_code == 200
+
+
 def test_expired_access_token(h):
     tokens = h.tokens()
     h.store._conn.execute("UPDATE tokens SET expires_at = 1 WHERE kind = 'access'")
