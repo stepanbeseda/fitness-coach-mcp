@@ -456,8 +456,8 @@ not newer than the image.
   image).
 - The Garmin tokens are replaced without a side copy (they can be recreated with `scripts/garmin-login.sh`);
   `--check` shows an expired token from the archive.
-- On a new host, first start the stack according to the [README](../README.md#installation) (`scripts/deploy.sh`) so that
-  Compose creates the volumes, and only then restore.
+- On a new host, first start the stack according to the [README](../README.md#installation) (`scripts/deploy.sh`)
+  so that Compose creates the volumes, and only then restore.
 - When a command ends with an error, do not continue with the next one; after `docker compose start` the
   service runs with its existing data.
 
