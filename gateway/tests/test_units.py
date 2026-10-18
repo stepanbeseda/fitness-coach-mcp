@@ -47,6 +47,18 @@ def test_normalize_resource(value, expected):
     assert normalize_resource(value) == expected
 
 
+def test_pkce_length_bounds():
+    import base64
+    import hashlib
+
+    for length, accepted in ((42, False), (43, True), (128, True), (129, False)):
+        verifier = "a" * length
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        assert verify_pkce(verifier, challenge) is accepted, length
+    for length, accepted in ((42, False), (43, True), (44, False)):
+        assert is_valid_code_challenge("A" * length) is accepted, length
+
+
 def test_redirect_uri_matching():
     client = Client("c", "c", ("https://claude.ai/api/mcp/auth_callback", "http://localhost/callback"))
     assert redirect_uri_allowed(client, "https://claude.ai/api/mcp/auth_callback")

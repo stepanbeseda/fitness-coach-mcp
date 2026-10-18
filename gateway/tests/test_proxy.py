@@ -96,6 +96,14 @@ def test_bearer_scheme_required(h):
     assert 'error="invalid_request"' in r.headers["www-authenticate"]
 
 
+def test_access_token_in_query_is_not_accepted(h):
+    token = h.tokens()["access_token"]
+    r = h.mcp(None, path=f"/hevy/mcp?access_token={token}")
+    assert r.status_code == 401
+    assert r.headers["www-authenticate"].startswith("Bearer ")
+    assert h.backends["hevy"].requests == []
+
+
 def test_mcp_rate_limit_per_grant(make_harness):
     h = make_harness(mcp_rate=60, mcp_burst=3)
     token = h.tokens()["access_token"]
