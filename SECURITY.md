@@ -18,9 +18,14 @@ In scope:
 - `coach-mcp/`, `garmin-mcp/`: tool access control (the read-only token), handling of health data in logs, the
   Telegram integration.
 - `docker-compose.yml`, `tailscale/` and `scripts/`: container hardening, secret handling.
+- The coach's model behaviour: prompt injection through tool results (text that third parties write into Garmin,
+  Hevy or calendar data) that makes the model act against the owner, within the limits in the README,
+  [Security model](README.md#security-model) ("LLM / prompt injection").
 
 Out of scope: the upstream projects this repository builds on (`chrisdoc/hevy-mcp`, `python-garminconnect`,
 Tailscale, the MCP SDK); report those to their maintainers. Issues that need an attacker already on the owner's
 tailnet or server are of limited interest but still welcome.
 
-The design and its assumptions are described in the README, [Security model](README.md#security-model).
+The design and its assumptions are described in the README, [Security model](README.md#security-model), and for
+the gateway in the [Gateway design note](docs/gateway-design.md): threat model, conformance matrix, non-goals and
+known limitations.
