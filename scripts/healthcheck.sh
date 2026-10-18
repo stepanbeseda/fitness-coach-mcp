@@ -214,7 +214,7 @@ for client in config["clients"]:
     pinned = set(client["redirect_uris"])
     missing = sorted(live - pinned)
     if missing:
-        issues.append(f"FAIL {cid}: new redirect_uris {missing} → add them to gateway/config.toml")
+        issues.append(f"FAIL {cid}: new redirect_uris {missing} → add them to gateway/config.toml, commit, then scripts/deploy.sh")
 print("\n".join(issues))
 PY
 )"

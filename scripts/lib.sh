@@ -41,6 +41,11 @@ require_docker() {
 
 dc() { docker compose "$@"; }
 
+# compose_image SERVICE: the image reference docker compose resolves for SERVICE (FCM_VERSION from .env).
+compose_image() {
+  dc config --format json | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$1"
+}
+
 require_env() {
   [[ -n "$PUBLIC_BASE_URL" ]] || die "Missing .env with PUBLIC_BASE_URL (cp .env.example .env && chmod 600 .env)."
 }
