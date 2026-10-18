@@ -144,10 +144,13 @@ The parts most relevant to building LLM agents that act on real, personal data:
 - **Memory outside the model.** Goals, constraints, the plan and notes live in SQLite with FTS5 search. The
   coach is told to search its memory before asking the athlete again. Nothing is hard-deleted: goals end as
   achieved or abandoned, constraints as resolved, replaced sessions as superseded.
-- **Human in the loop for every write.** Every tool that changes Garmin, Hevy or coach state says so in its
-  MCP annotations and description. The [coach instructions](docs/coach-instructions.md) require showing the
-  proposal and getting explicit confirmation first. Plan reconciliation only *suggests* a session status from
-  recorded activities, and the athlete confirms it.
+- **Human confirmation for every write (instructed, plus claude.ai tool permissions).** Every tool that changes
+  Garmin, Hevy or coach state says so in its MCP annotations and description. The
+  [coach instructions](docs/coach-instructions.md) require showing the proposal and getting explicit
+  confirmation first, and claude.ai by default asks before it runs a tool that is not marked read-only. No server
+  enforces the confirmation; what limits a wrong write is described in the Security model below (LLM / prompt
+  injection). Plan reconciliation only *suggests* a session status from recorded activities, and the athlete
+  confirms it.
 - **Least privilege between components.** The coach server reads Garmin with a separate read-only token, so
   `garmin-mcp` rejects its write tools before they run. It may call only two read tools on Hevy. The client's
   OAuth token is never forwarded to a backend.
@@ -200,6 +203,10 @@ tailnet-only) untouched, and the gateway does not have to publish any port on th
 | Containers | Non-root (uid 10001), `read_only`, `cap_drop: ALL`, `no-new-privileges`, memory and process limits, healthchecks, log rotation. Images pinned by `tag@sha256`, Python dependencies hash-locked. |
 | Secrets | `secrets/` (0700, files 0640 with group 10001), Docker secrets. Never in git, env or logs. |
 | Audit | `/data/audit.jsonl` + stdout: logins, token issue/refresh/revocation, every MCP call (method, tool, outcome, duration). Never arguments, results, tokens or passwords. |
+| LLM / prompt injection | Tool results carry text that third parties can write: Garmin activity and workout names and descriptions, Hevy titles and notes, and calendar events and invites when Google Calendar is enabled. The [coach instructions](docs/coach-instructions.md) tell the model to treat that text as data, never as instructions, and never to add attendees to calendar events; that is a prompt rule, not enforcement. What limits the damage is in code: `coach-mcp` reads Garmin with the read-only token and may call only two read tools on Hevy, and the write tools of this stack change only your own Garmin, Hevy and coach data. Keep claude.ai asking before each write tool runs; do not let write tools run without approval. What remains: with Google Calendar or web tools enabled in the claude.ai Project, an injected instruction could send data out, for example as an event invitation to an outside address. Telegram messages are not third-party text: `coach-mcp` accepts only your own chat and sender id. |
+
+Why the gateway is a custom OAuth server, its threat model, a conformance matrix that names the test behind each
+standard, its non-goals and its known limitations: [Gateway design note](docs/gateway-design.md).
 
 ## Installation
 
@@ -431,9 +438,11 @@ scripts/                 setup-secrets, deploy, garmin-login, healthcheck, backu
 .github/dependabot.yml   monthly update PRs for the Actions and base images
 docs/coach-instructions.md   Custom Instructions for the "Fitness coach" Claude project
 docs/operations.md       running the stack: Telegram features, history, backups, updates, troubleshooting
+docs/gateway-design.md   gateway threat model, why it is custom, conformance matrix, known limitations
 docs/how-this-was-built.md   the development process in short
 docs/development-plan.md the full development plan: decisions, boundaries and one brief per PR
 .claude/mao/             project configuration, review checklist and lessons for the coding agents
+.claude/settings.json    Claude Code deny rules for .env, secrets/ and data/ (defence in depth, not a boundary)
 ```
 
 ## License
