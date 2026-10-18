@@ -221,7 +221,9 @@ The log (`docker compose logs coach-mcp`) has one Garmin line per run, `history 
 paused|rate_limited|service_error|auth|unreachable|no_credentials fetched=… failed=… pending=… given_up=…
 ms=… repaired=…`, never data or values (`repaired` = days whose missing sections loaded in a repair call). With
 `COACH_HISTORY_TIME` inside the briefing window there is also one
-`history status=config_warning` line after startup. `healthcheck.sh` reports the job state (`on` / `off` /
+`history status=config_warning` line after startup. A `history status=contract_warning sections=…` line means
+`garmin-mcp` answered snapshot sections in a shape this `coach-mcp` does not know: deploy both from the same
+commit. `healthcheck.sh` reports the job state (`on` / `off` /
 `stopped`).
 
 ## Weather

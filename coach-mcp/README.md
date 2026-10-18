@@ -322,7 +322,15 @@ most once a day.
 From `garmin-mcp` the server may call only six read tools (`get_device_status`, `get_recovery_snapshot`,
 `get_hrv_trend`, `list_scheduled_workouts`, `list_activities`, `get_race_predictions`). The coach code does not call
 its write tools, and `garmin-mcp` rejects them with the coach's read-only token before they run. From `hevy-mcp` it
-may call only `get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
+may call only `get-workout-events` and `get-exercise-template`. It tells a Garmin rate limit and a missing
+Garmin login from other errors by `garmin-mcp`'s error kind (`rate_limited`, `garmin_auth`; in `_meta` of a failed
+call, as `error_kind` in an error section); only an answer without a kind (an older `garmin-mcp`) is read by its
+text (`HTTP 429`, `scripts/garmin-login.sh`). `tests/test_garmin_contract.py` feeds the coach's readers the
+answers `garmin-mcp` records for its canned payloads (`tests/contract/garmin_answers.json`, the same file as
+`garmin-mcp/tests/contract/garmin_answers.json`). A snapshot section in a shape the coach does not know (an object
+with keys, none of them known) counts as a section in error: it is stored as missing, repaired like one, and the
+run logs `history status=contract_warning sections=…` (section names only).
+For each run the log has one line for Garmin:
 `history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=…`
 (`repaired` = days whose missing sections loaded in a repair call of this run; `reconcile=error kind=…` when plan
 reconciliation fails; the history run does not fail because of it), one for the race predictions
