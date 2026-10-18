@@ -33,6 +33,16 @@ Each PR goes through the same loop, configured in [`.claude/mao/project.md`](../
 5. **Owner (me)**: anything outside the repository is stop-and-ask. That covers deploys to the live stack,
    secrets, deleting data, and any call that writes to my real Garmin or Hevy account.
 
+The agents run on the same host as the live stack, because `scripts/check.sh` needs Docker. Docker access is
+root-equivalent: a container an agent starts could mount `secrets/` or the data volumes. So the forbidden list and
+the stop-and-ask rules in `project.md` are process guards, backed by Claude Code's own approval prompts; they are
+not a security boundary. A real boundary would be a separate machine without the live secrets, which this project
+does not use. The committed [`.claude/settings.json`](../.claude/settings.json) adds deny rules for `.env`,
+`secrets/` and `data/` as defence in depth. In a probe with Claude Code 2.1.302 they stopped the Read tool on all
+three paths, the Edit tool on `.env`, the Write tool in `secrets/` and a direct shell read or write such as
+`cat .env`, but a command that reached the files another way, such as `grep -r` over the repository or a script
+that builds the path, still read them.
+
 ## 3. Mistakes become rules
 
 Review findings that repeat do not stay in review comments:
