@@ -49,6 +49,9 @@ MAX_BUFFERED_RESPONSE = 8 * 1024 * 1024
 OBSERVE_LIMIT = 512 * 1024
 MAX_CONCURRENT_REQUESTS = 16
 MAX_CONCURRENT_STREAMS = 8
+# How long a request waits for a free slot before the gateway answers 503 "busy".
+REQUEST_SLOT_TIMEOUT = 10.0
+STREAM_SLOT_TIMEOUT = 1.0
 _EVENT_SPLIT = re.compile(r"\r?\n\r?\n")
 
 
@@ -305,7 +308,7 @@ class McpProxy:
         headers["user-agent"] = "fitness-coach-mcp-gateway"
         is_stream = request.method == "GET"
         slot = _Slot((self._streams if is_stream else self._requests)[backend.name])
-        if not await slot.acquire(timeout=1.0 if is_stream else 10.0):
+        if not await slot.acquire(timeout=STREAM_SLOT_TIMEOUT if is_stream else REQUEST_SLOT_TIMEOUT):
             self.audit.event("mcp.busy", **audit_base, method=rpc.method_str())
             return JSONResponse({"error": "busy"}, status_code=503, headers={"Retry-After": "5"})
 
