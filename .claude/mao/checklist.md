@@ -56,8 +56,14 @@ repeated findings.
   guard, not only the removal of the guard: `<=` against `<`, `any` against
   `all` or `sum`, `upper()` dropped, a tie rule reversed, a type guard turned
   into `True`; each has a case that tells it apart, and the reviewer runs them.
+  A table of claims (a conformance matrix, a "proved by this test" list) has
+  one predicate mutant per claim, run before the table is accepted, and a
+  boundary guarded in two layers (refuse and revoke) asserts the effect of
+  each layer in its boundary case.
 - [ ] Every mutant of a spec's mutation table was run on the prescribed tests, and the test named as its killer
-  turns red; a guard that answers first needs a variant where only the mutated half decides.
+  turns red; a guard that answers first needs a variant where only the mutated half decides. "Dropping any one rule
+  turns it red" is shown by dropping exactly one rule with the rest of the input consistent: a mutant that a second
+  rule also catches proves nothing about the first.
 - [ ] Every case that a criterion enumerates (for example "a missing, malformed
   or unreadable token") has its own test row; a case without a row is a
   finding, because its guard survives mutation. Expected values prescribed by a
@@ -130,7 +136,9 @@ repeated findings.
 ## Documentation
 
 - [ ] Docs and docstrings describe the new behaviour; grep for the old
-  wording is empty. A tool-list change updates `garmin-mcp/README.md`,
+  wording is empty, with the plan excluded (`-- ':!docs/development-plan.md'`)
+  because its chapter quotes the old wording, and with its positive hit shown on
+  the base tree. A tool-list change updates `garmin-mcp/README.md`,
   `README.md`, `docs/coach-instructions.md` and `INSTRUCTIONS` in `server.py`;
   `coach-mcp/README.md` and `INSTRUCTIONS` in
   `coach-mcp/src/coach_mcp/server.py` for coach tools.
