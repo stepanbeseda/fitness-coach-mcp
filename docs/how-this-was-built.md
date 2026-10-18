@@ -1,6 +1,6 @@
 # How this was built
 
-The project was built in about two weeks, as 27 planned PRs on top of an initial skeleton (22 features, then 5
+The project was built in about two weeks, as 32 planned PRs on top of an initial skeleton (22 features, then 10
 refactors and fixes from two architecture reviews; 3 more are planned), mostly by Claude Code agents working to
 a written plan, with me as the owner who decides, reviews and deploys. This page explains the process; the
 artefacts it refers to are all in the repository.
@@ -59,7 +59,7 @@ shaper needs a canned payload that takes it, and the self-review mutates each br
 
 ## 4. Verification in layers
 
-- **Offline tests** (more than 1,100 test functions) with a fake Garmin client and canned payloads; no test
+- **Offline tests** (more than 1,200 test functions) with a fake Garmin client and canned payloads; no test
   touches the network. The last line of `scripts/check.sh` (`CHECK OK ... garmin=<n> gateway=<n> coach=<n>`)
   gives the exact number of passing tests per service.
 - **Static checks** (ruff and mypy) in each service's Docker test stage, so an image cannot be built from code

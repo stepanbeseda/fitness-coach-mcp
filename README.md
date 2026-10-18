@@ -157,7 +157,7 @@ The parts most relevant to building LLM agents that act on real, personal data:
 - **Honest statistics.** `get_correlations` returns Pearson and Spearman with the number of paired days, refuses
   below 14 pairs, and carries a "correlation is not a cause" caveat that the instructions require the coach
   to repeat.
-- **Tested offline.** More than 1,100 test functions run against fakes and canned payloads, with no network. An
+- **Tested offline.** More than 1,200 test functions run against fakes and canned payloads, with no network. An
   end-to-end test runs the full OAuth + MCP flow in a throwaway Compose project (`scripts/check.sh`).
 - **Statically checked.** Every image build lints the three Python services with `ruff` and type-checks their
   `src/` with `mypy` in strict mode before the tests run; a finding fails the build.
