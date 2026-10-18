@@ -60,6 +60,8 @@ jobs:
         run: scripts/test-check-pins.sh
       - name: check-updates.sh tests
         run: scripts/test-check-updates.sh
+      - name: deploy.sh tests
+        run: scripts/test-deploy.sh
 
   # The project's full check: Docker test stages of all services, then the end-to-end OAuth + MCP flow in a
   # throwaway Compose project (no real secrets, no Tailscale login).

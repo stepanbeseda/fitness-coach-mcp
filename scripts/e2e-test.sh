@@ -4,8 +4,9 @@
 # untouched), starts them as a separate compose project ($E2E_PROJECT) with the
 # compose.test.yml overlay (no Tailscale login, no internet), runs the OAuth +
 # MCP flow from scripts/e2e_flow.py and tears everything down again.
-# Before the build it runs the offline tests of setup-secrets.sh and healthcheck.sh and the ingress wiring check
-# (scripts/check-ingress.py); once the stack is healthy it checks coach-mcp's read-only Garmin token from inside coach-mcp (scripts/e2e_coach_garmin.py).
+# Before the build it runs the offline tests of setup-secrets.sh, healthcheck.sh and deploy.sh and the
+# ingress wiring check (scripts/check-ingress.py); once the stack is healthy it checks coach-mcp's read-only
+# Garmin token from inside coach-mcp (scripts/e2e_coach_garmin.py).
 #
 #   scripts/e2e-test.sh
 #   E2E_PROJECT=fcm-e2e-pr07 E2E_TAG=pr07 scripts/e2e-test.sh   parallel-safe run (scripts/check.sh)
@@ -53,6 +54,9 @@ bash scripts/test-healthcheck.sh >&2 || die "Offline test of healthcheck.sh fail
 info "Ingress wiring (scripts/check-ingress.py)..."
 python3 scripts/check-ingress.py --self-test >&2 && python3 scripts/check-ingress.py >&2 \
   || die "Ingress wiring check failed (output above)."
+
+info "Offline test of scripts/deploy.sh..."
+bash scripts/test-deploy.sh >&2 || die "Offline test of deploy.sh failed (output above)."
 
 info "Build images..."
 # --progress=plain: with stdout redirected, Compose's default (tty) progress renderer fails with
