@@ -1,11 +1,13 @@
 """Where did a request come from?
 
-The gateway listens on 127.0.0.1 inside the Tailscale sidecar's network namespace,
-so every request is proxied by `tailscale serve`, which
+The gateway listens on 127.0.0.2 inside the Tailscale sidecar's network namespace. tailscaled runs in userspace
+mode, where netstack forwards a tailnet connection to any port without a serve handler to 127.0.0.1:<port>, so
+nothing may listen on 127.0.0.1 (config.listen_address_problem refuses it, scripts/check-ingress.py checks the
+wiring) and every request arrives through `tailscale serve` on :443, which
 - adds `Tailscale-Funnel-Request: ?1` to requests that came through Funnel,
 - adds `Tailscale-User-Login` for requests from users' own (untagged) tailnet devices,
-- strips client-supplied copies of both, and sets X-Forwarded-For to the real
-  client address (the public IP for Funnel traffic).
+- strips client-supplied copies of both, and sets X-Forwarded-For to the real client address (one entry; the
+  public IP for Funnel traffic). The right-most entry is used, so a client-supplied entry can never be the one read.
 """
 
 from __future__ import annotations

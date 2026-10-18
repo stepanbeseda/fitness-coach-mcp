@@ -1,0 +1,1350 @@
+[
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true,
+   "readOnlyHint": false,
+   "title": "Create structured workout"
+  },
+  "description": "Create a structured running, cycling or strength workout in Garmin Connect and optionally\nschedule it, so it syncs to the watch. Only call after the athlete confirmed the plan.\nRunning and cycling steps: type (warmup|interval|recovery|rest|cooldown), end\n({\"type\":\"time\",\"seconds\":N} | {\"type\":\"distance\",\"meters\":N} | {\"type\":\"lap_button\"}) and\noptional target: {\"type\":\"heart_rate_zone\",\"zone\":1-5} | {\"type\":\"heart_rate\",\"min_bpm\",\"max_bpm\"} |\n{\"type\":\"pace\",\"slowest\":\"5:30\",\"fastest\":\"5:10\"} (running, per km) |\n{\"type\":\"power\",\"min_watts\",\"max_watts\"} (cycling) | {\"type\":\"cadence\",\"min\",\"max\"}.\nInterval blocks: {\"type\":\"repeat\",\"iterations\":N,\"steps\":[...]}.\nStrength (sport \"strength\") takes only exercise items, in order:\n{\"type\":\"exercise\",\"category\",\"name\",\"sets\",\"reps\" or \"seconds\",\"weight_kg\",\"rest_seconds\",\"note\"};\ncategory and name come from find_strength_exercise. An exercise Garmin does not know is sent with\n\"title\" (its name in Hevy) instead of category and name: the watch shows it without an exercise\nname, with the title as its note, and the result lists it under \"unmapped\". All sets of one item\nare the same; add a second item for a warm-up set or another weight. Creating twice makes two\nworkouts, so do not retry blindly after an error; check list_workouts first.",
+  "inputSchema": {
+   "properties": {
+    "name": {
+     "description": "Workout name shown on the watch.",
+     "maxLength": 80,
+     "minLength": 1,
+     "title": "Name",
+     "type": "string"
+    },
+    "sport": {
+     "description": "Sport of the workout.",
+     "enum": [
+      "running",
+      "cycling",
+      "strength"
+     ],
+     "title": "Sport",
+     "type": "string"
+    },
+    "steps": {
+     "description": "Ordered steps; use a 'repeat' item for interval blocks, 'exercise' items for strength.",
+     "items": {
+      "discriminator": {
+       "mapping": {
+        "cooldown": "#/$defs/Step",
+        "exercise": "#/$defs/Exercise",
+        "interval": "#/$defs/Step",
+        "recovery": "#/$defs/Step",
+        "repeat": "#/$defs/Repeat",
+        "rest": "#/$defs/Step",
+        "warmup": "#/$defs/Step"
+       },
+       "propertyName": "type"
+      },
+      "oneOf": [
+       {
+        "$ref": "#/$defs/Step"
+       },
+       {
+        "$ref": "#/$defs/Repeat"
+       },
+       {
+        "$ref": "#/$defs/Exercise"
+       }
+      ]
+     },
+     "maxItems": 30,
+     "minItems": 1,
+     "title": "Steps",
+     "type": "array"
+    },
+    "description": {
+     "anyOf": [
+      {
+       "maxLength": 500,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional notes.",
+     "title": "Description"
+    },
+    "schedule_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD to also put it on the Garmin calendar (syncs to the watch).",
+     "title": "Schedule Date"
+    }
+   },
+   "required": [
+    "name",
+    "sport",
+    "steps"
+   ],
+   "type": "object",
+   "$defs": {
+    "CadenceTarget": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "cadence",
+       "title": "Type",
+       "type": "string"
+      },
+      "min": {
+       "description": "Steps/min when running, rpm when cycling.",
+       "maximum": 250,
+       "minimum": 20,
+       "title": "Min",
+       "type": "integer"
+      },
+      "max": {
+       "maximum": 250,
+       "minimum": 20,
+       "title": "Max",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "type",
+      "min",
+      "max"
+     ],
+     "title": "CadenceTarget",
+     "type": "object"
+    },
+    "DistanceEnd": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "distance",
+       "title": "Type",
+       "type": "string"
+      },
+      "meters": {
+       "description": "Step length in meters (50 m - 300 km).",
+       "maximum": 300000,
+       "minimum": 50,
+       "title": "Meters",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "type",
+      "meters"
+     ],
+     "title": "DistanceEnd",
+     "type": "object"
+    },
+    "Exercise": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "exercise",
+       "title": "Type",
+       "type": "string"
+      },
+      "category": {
+       "anyOf": [
+        {
+         "maxLength": 60,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Garmin exercise category from find_strength_exercise, e.g. 'BENCH_PRESS'. Omit category and name when Garmin has no match.",
+       "title": "Category"
+      },
+      "name": {
+       "anyOf": [
+        {
+         "maxLength": 80,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Garmin exercise name from find_strength_exercise, e.g. 'BARBELL_BENCH_PRESS'.",
+       "title": "Name"
+      },
+      "title": {
+       "anyOf": [
+        {
+         "maxLength": 60,
+         "minLength": 1,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "The athlete's own title of the exercise (the Hevy title). Required without category and name: it is then the note of the step.",
+       "title": "Title"
+      },
+      "sets": {
+       "description": "Number of sets (1-20).",
+       "maximum": 20,
+       "minimum": 1,
+       "title": "Sets",
+       "type": "integer"
+      },
+      "reps": {
+       "anyOf": [
+        {
+         "maximum": 200,
+         "minimum": 1,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Repetitions per set (1-200). Give reps or seconds.",
+       "title": "Reps"
+      },
+      "seconds": {
+       "anyOf": [
+        {
+         "maximum": 3600,
+         "minimum": 5,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Seconds per set for a hold or a carry (5-3600), instead of reps.",
+       "title": "Seconds"
+      },
+      "weight_kg": {
+       "anyOf": [
+        {
+         "maximum": 500,
+         "minimum": 0.1,
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Target weight in kg; omit for body weight.",
+       "title": "Weight Kg"
+      },
+      "rest_seconds": {
+       "description": "Rest after each set in seconds (0-900; 0 = no rest step).",
+       "maximum": 900,
+       "minimum": 0,
+       "title": "Rest Seconds",
+       "type": "integer"
+      },
+      "note": {
+       "anyOf": [
+        {
+         "maxLength": 100,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Short cue shown with the exercise.",
+       "title": "Note"
+      }
+     },
+     "required": [
+      "type",
+      "sets",
+      "rest_seconds"
+     ],
+     "title": "Exercise",
+     "type": "object"
+    },
+    "HeartRateTarget": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "heart_rate",
+       "title": "Type",
+       "type": "string"
+      },
+      "min_bpm": {
+       "maximum": 220,
+       "minimum": 60,
+       "title": "Min Bpm",
+       "type": "integer"
+      },
+      "max_bpm": {
+       "maximum": 230,
+       "minimum": 60,
+       "title": "Max Bpm",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "type",
+      "min_bpm",
+      "max_bpm"
+     ],
+     "title": "HeartRateTarget",
+     "type": "object"
+    },
+    "HeartRateZoneTarget": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "heart_rate_zone",
+       "title": "Type",
+       "type": "string"
+      },
+      "zone": {
+       "description": "Garmin heart-rate zone 1-5 (user's own zones).",
+       "maximum": 5,
+       "minimum": 1,
+       "title": "Zone",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "type",
+      "zone"
+     ],
+     "title": "HeartRateZoneTarget",
+     "type": "object"
+    },
+    "LapButtonEnd": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "lap_button",
+       "title": "Type",
+       "type": "string"
+      }
+     },
+     "required": [
+      "type"
+     ],
+     "title": "LapButtonEnd",
+     "type": "object"
+    },
+    "NoTarget": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "none",
+       "default": "none",
+       "title": "Type",
+       "type": "string"
+      }
+     },
+     "title": "NoTarget",
+     "type": "object"
+    },
+    "PaceTarget": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "pace",
+       "title": "Type",
+       "type": "string"
+      },
+      "slowest": {
+       "description": "Slowest acceptable pace per km as 'M:SS', e.g. '5:30'.",
+       "title": "Slowest",
+       "type": "string"
+      },
+      "fastest": {
+       "description": "Fastest acceptable pace per km as 'M:SS', e.g. '5:10'.",
+       "title": "Fastest",
+       "type": "string"
+      }
+     },
+     "required": [
+      "type",
+      "slowest",
+      "fastest"
+     ],
+     "title": "PaceTarget",
+     "type": "object"
+    },
+    "PowerTarget": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "power",
+       "title": "Type",
+       "type": "string"
+      },
+      "min_watts": {
+       "maximum": 2000,
+       "minimum": 30,
+       "title": "Min Watts",
+       "type": "integer"
+      },
+      "max_watts": {
+       "maximum": 2500,
+       "minimum": 30,
+       "title": "Max Watts",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "type",
+      "min_watts",
+      "max_watts"
+     ],
+     "title": "PowerTarget",
+     "type": "object"
+    },
+    "Repeat": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "repeat",
+       "title": "Type",
+       "type": "string"
+      },
+      "iterations": {
+       "maximum": 50,
+       "minimum": 2,
+       "title": "Iterations",
+       "type": "integer"
+      },
+      "steps": {
+       "description": "Steps repeated as a block.",
+       "items": {
+        "$ref": "#/$defs/Step"
+       },
+       "maxItems": 10,
+       "minItems": 1,
+       "title": "Steps",
+       "type": "array"
+      }
+     },
+     "required": [
+      "type",
+      "iterations",
+      "steps"
+     ],
+     "title": "Repeat",
+     "type": "object"
+    },
+    "Step": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "enum": [
+        "warmup",
+        "interval",
+        "recovery",
+        "rest",
+        "cooldown"
+       ],
+       "title": "Type",
+       "type": "string"
+      },
+      "end": {
+       "description": "When the step ends: time, distance or lap button.",
+       "discriminator": {
+        "mapping": {
+         "distance": "#/$defs/DistanceEnd",
+         "lap_button": "#/$defs/LapButtonEnd",
+         "time": "#/$defs/TimeEnd"
+        },
+        "propertyName": "type"
+       },
+       "oneOf": [
+        {
+         "$ref": "#/$defs/TimeEnd"
+        },
+        {
+         "$ref": "#/$defs/DistanceEnd"
+        },
+        {
+         "$ref": "#/$defs/LapButtonEnd"
+        }
+       ],
+       "title": "End"
+      },
+      "target": {
+       "description": "Intensity target (default none).",
+       "discriminator": {
+        "mapping": {
+         "cadence": "#/$defs/CadenceTarget",
+         "heart_rate": "#/$defs/HeartRateTarget",
+         "heart_rate_zone": "#/$defs/HeartRateZoneTarget",
+         "none": "#/$defs/NoTarget",
+         "pace": "#/$defs/PaceTarget",
+         "power": "#/$defs/PowerTarget"
+        },
+        "propertyName": "type"
+       },
+       "oneOf": [
+        {
+         "$ref": "#/$defs/NoTarget"
+        },
+        {
+         "$ref": "#/$defs/HeartRateZoneTarget"
+        },
+        {
+         "$ref": "#/$defs/HeartRateTarget"
+        },
+        {
+         "$ref": "#/$defs/PaceTarget"
+        },
+        {
+         "$ref": "#/$defs/PowerTarget"
+        },
+        {
+         "$ref": "#/$defs/CadenceTarget"
+        }
+       ],
+       "title": "Target"
+      },
+      "note": {
+       "anyOf": [
+        {
+         "maxLength": 100,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Short cue shown with the step.",
+       "title": "Note"
+      }
+     },
+     "required": [
+      "type",
+      "end"
+     ],
+     "title": "Step",
+     "type": "object"
+    },
+    "TimeEnd": {
+     "additionalProperties": false,
+     "properties": {
+      "type": {
+       "const": "time",
+       "title": "Type",
+       "type": "string"
+      },
+      "seconds": {
+       "description": "Step length in seconds (10 s - 6 h).",
+       "maximum": 21600,
+       "minimum": 10,
+       "title": "Seconds",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "type",
+      "seconds"
+     ],
+     "title": "TimeEnd",
+     "type": "object"
+    }
+   },
+   "title": "create_workoutArguments"
+  },
+  "name": "create_workout",
+  "title": "Create structured workout"
+ },
+ {
+  "annotations": {
+   "openWorldHint": false,
+   "readOnlyHint": true,
+   "title": "Find strength exercise"
+  },
+  "description": "Search Garmin's strength exercise catalogue (bundled with the server, about 1 500 exercises)\nfor an exercise title, for example a Hevy title such as \"Bench Press (Barbell)\". Returns the best\nmatches first: exercise (Garmin's display name), category and name (pass both to create_workout)\nand a score from 0 to 1 (1 = the same words). It is a word match: check that the match is the\nsame movement and equipment. An empty list, or no match that fits, means Garmin does not know the\nexercise: send it to create_workout with its title instead of category and name.",
+  "inputSchema": {
+   "properties": {
+    "query": {
+     "description": "Exercise title, e.g. the Hevy title 'Bench Press (Barbell)' (2-80 characters).",
+     "maxLength": 80,
+     "minLength": 2,
+     "title": "Query",
+     "type": "string"
+    },
+    "limit": {
+     "default": 5,
+     "description": "Maximum matches returned (1-20).",
+     "maximum": 20,
+     "minimum": 1,
+     "title": "Limit",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "type": "object",
+   "title": "find_strength_exerciseArguments"
+  },
+  "name": "find_strength_exercise",
+  "title": "Find strength exercise"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Activity detail"
+  },
+  "description": "One activity in detail: summary metrics, laps/splits (pace or speed, HR, power,\ncadence, workout step), time in each heart-rate zone and the weather during the activity\n(temperature, feels-like, humidity, wind, conditions). For strength activities also the sets\nrecorded on the watch: exercise, reps, weight (kg) and duration per set, plus a summary per\nexercise, and the active-set and rep totals of the activity. A part Garmin cannot provide is\n\"available\": false or \"error\".",
+  "inputSchema": {
+   "properties": {
+    "activity_id": {
+     "description": "Activity id from list_activities.",
+     "exclusiveMinimum": 0,
+     "title": "Activity Id",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "activity_id"
+   ],
+   "type": "object",
+   "title": "get_activityArguments"
+  },
+  "name": "get_activity",
+  "title": "Activity detail"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Body Battery"
+  },
+  "description": "Body Battery per day (max 31 days): charged, drained, start, high, low and latest\nlevel.",
+  "inputSchema": {
+   "properties": {
+    "start_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD; defaults to end_date.",
+     "title": "Start Date"
+    },
+    "end_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "End Date"
+    }
+   },
+   "type": "object",
+   "title": "get_body_batteryArguments"
+  },
+  "name": "get_body_battery",
+  "title": "Body Battery"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Body composition"
+  },
+  "description": "Weigh-ins in a date range (max 366 days, default the last 30): one entry per day with\nweight (kg), BMI, body fat %, muscle mass (kg), body water % and bone mass (kg) where the\nscale provides them, plus a summary (first and last value, change, 7-day average weight,\nbody-fat change). An empty range returns \"available\": false with an empty list.",
+  "inputSchema": {
+   "properties": {
+    "start_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD; default end_date - 29 days.",
+     "title": "Start Date"
+    },
+    "end_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "End Date"
+    }
+   },
+   "type": "object",
+   "title": "get_body_compositionArguments"
+  },
+  "name": "get_body_composition",
+  "title": "Body composition"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Daily summary"
+  },
+  "description": "Daily wellness summary: steps, distance, calories, resting/min/max heart rate, stress\n(average, max, minutes per level), intensity minutes, Body Battery, sleep hours, SpO2.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "Date"
+    }
+   },
+   "type": "object",
+   "title": "get_daily_summaryArguments"
+  },
+  "name": "get_daily_summary",
+  "title": "Daily summary"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Device status"
+  },
+  "description": "When Garmin last received the athlete's data: the device that uploaded last and the upload time\n(time_utc to the second, time_local in the athlete's time zone), plus the primary activity tracker\n(name, status) and the number of registered devices. Call it when last night's sleep or HRV is\nmissing, to tell \"the watch has not synced yet\" from \"no data for the night\". Sections that Garmin\ncannot provide contain an \"error\" or \"available\": false instead of failing the whole call.",
+  "inputSchema": {
+   "properties": {},
+   "type": "object",
+   "title": "get_device_statusArguments"
+  },
+  "name": "get_device_status",
+  "title": "Device status"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Gear"
+  },
+  "description": "The athlete's gear (shoes, bikes, other), active and retired: name, type, start date,\ntotal distance, activity count, Garmin's distance limit when set and a retired flag.\nUse it to flag worn-out shoes.",
+  "inputSchema": {
+   "properties": {},
+   "type": "object",
+   "title": "get_gearArguments"
+  },
+  "name": "get_gear",
+  "title": "Gear"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "HRV trend"
+  },
+  "description": "Nightly HRV (ms) per day with weekly average, HRV status and personal baseline range,\nplus a summary (mean, min/max, change between the first and second half of the period).\nUse it to judge whether recovery is trending up or down.",
+  "inputSchema": {
+   "properties": {
+    "days": {
+     "default": 14,
+     "description": "Number of days ending at end_date (1-28).",
+     "maximum": 28,
+     "minimum": 1,
+     "title": "Days",
+     "type": "integer"
+    },
+    "end_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "End Date"
+    }
+   },
+   "type": "object",
+   "title": "get_hrv_trendArguments"
+  },
+  "name": "get_hrv_trend",
+  "title": "HRV trend"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Nutrition and hydration"
+  },
+  "description": "One day of intake: calories consumed vs. goal, protein / carbs / fat (g) vs. goals,\nmeals (name, calories, macros, number of items) and hydration (intake vs. goal in ml,\nsweat loss). Each part that Garmin does not provide answers \"available\": false or\n\"error\" while the others still arrive.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "Date"
+    }
+   },
+   "type": "object",
+   "title": "get_nutritionArguments"
+  },
+  "name": "get_nutrition",
+  "title": "Nutrition and hydration"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Performance metrics"
+  },
+  "description": "Measured performance values for setting paces and zones, in one call: Garmin race\npredictions (5 km, 10 km, half marathon, marathon: time and pace per km), lactate\nthreshold (heart rate, pace, running power), heart-rate zones per sport profile and\ncycling power zones with their boundaries, endurance score and hill score (latest value\nand change over the window) and the weekly VO2max trend. Sections that Garmin cannot\nprovide contain an \"error\" or \"available\": false instead of failing the whole call.",
+  "inputSchema": {
+   "properties": {
+    "weeks": {
+     "default": 12,
+     "description": "Weeks of history for the VO2max trend and the endurance/hill score change (2-52).",
+     "maximum": 52,
+     "minimum": 2,
+     "title": "Weeks",
+     "type": "integer"
+    }
+   },
+   "type": "object",
+   "title": "get_performance_metricsArguments"
+  },
+  "name": "get_performance_metrics",
+  "title": "Performance metrics"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Personal records"
+  },
+  "description": "Garmin personal records: type (1k, 1_mile, 5k, 10k, half_marathon, marathon,\nlongest_run; other record types as type_id with the raw value), time and pace or\ndistance, date and activity id.",
+  "inputSchema": {
+   "properties": {},
+   "type": "object",
+   "title": "get_personal_recordsArguments"
+  },
+  "name": "get_personal_records",
+  "title": "Personal records"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Race predictions"
+  },
+  "description": "Garmin's daily race predictions over a date range (max 366 days, default the 28 days ending\ntoday): per day the predicted 5 km, 10 km, half marathon and marathon times in seconds. Use it\nfor the history of the predictions; get_performance_metrics has the latest ones with pace. Days\nwithout a prediction are left out; an empty range returns \"available\": false.",
+  "inputSchema": {
+   "properties": {
+    "start_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD; default end_date - 27 days.",
+     "title": "Start Date"
+    },
+    "end_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "End Date"
+    }
+   },
+   "type": "object",
+   "title": "get_race_predictionsArguments"
+  },
+  "name": "get_race_predictions",
+  "title": "Race predictions"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Recovery snapshot"
+  },
+  "description": "One call with everything needed before planning a session: training readiness (score,\nlevel, contributing factors, recovery time), last night's HRV vs. baseline, sleep (score,\nduration, stages), Body Battery, resting HR (+7-day average), stress and training status\n(acute/chronic load, VO2max). Sections that Garmin cannot provide contain an \"error\" or\n\"available\": false instead of failing the whole call.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "Date"
+    }
+   },
+   "type": "object",
+   "title": "get_recovery_snapshotArguments"
+  },
+  "name": "get_recovery_snapshot",
+  "title": "Recovery snapshot"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Running tolerance"
+  },
+  "description": "Garmin's running tolerance per week: the athlete's weekly running load against the load\nGarmin estimates they can currently tolerate (watches with Running Tolerance). Garmin does not\ndocument this payload, so each week lists Garmin's own fields in snake_case (identifiers\ndropped). Use it before raising weekly running volume. Without the feature or data the result\nis \"available\": false.",
+  "inputSchema": {
+   "properties": {
+    "weeks": {
+     "default": 8,
+     "description": "Weeks ending at end_date (1-26).",
+     "maximum": 26,
+     "minimum": 1,
+     "title": "Weeks",
+     "type": "integer"
+    },
+    "end_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "End Date"
+    }
+   },
+   "type": "object",
+   "title": "get_running_toleranceArguments"
+  },
+  "name": "get_running_tolerance",
+  "title": "Running tolerance"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Sleep"
+  },
+  "description": "Sleep for the night ending on the given date: score and quality, duration, deep/light/\nREM/awake minutes, start/end time, overnight HRV, resting HR, respiration, SpO2, Body\nBattery change and Garmin's score components.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "Date"
+    }
+   },
+   "type": "object",
+   "title": "get_sleepArguments"
+  },
+  "name": "get_sleep",
+  "title": "Sleep"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Training readiness"
+  },
+  "description": "Garmin Training Readiness for a day: latest score and level, morning score, recovery\ntime in hours and each contributing factor (sleep, sleep history, recovery time, acute\nload, HRV, stress history) with its percent and feedback.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "Date"
+    }
+   },
+   "type": "object",
+   "title": "get_training_readinessArguments"
+  },
+  "name": "get_training_readiness",
+  "title": "Training readiness"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Training status"
+  },
+  "description": "Training status (e.g. PRODUCTIVE, MAINTAINING, RECOVERY, UNPRODUCTIVE, DETRAINING,\nOVERREACHING), acute and chronic training load with ACWR, 4-week load balance\n(aerobic low/high, anaerobic vs. targets) and VO2max for running and cycling.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "Date"
+    }
+   },
+   "type": "object",
+   "title": "get_training_statusArguments"
+  },
+  "name": "get_training_status",
+  "title": "Training status"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Workout detail"
+  },
+  "description": "One saved workout with its steps (type, duration/distance, target; for a strength workout the\nexercises with sets, reps or seconds, weight in kg, rest and note) and its Garmin Connect URL.",
+  "inputSchema": {
+   "properties": {
+    "workout_id": {
+     "description": "Workout id from list_workouts.",
+     "exclusiveMinimum": 0,
+     "title": "Workout Id",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "workout_id"
+   ],
+   "type": "object",
+   "title": "get_workoutArguments"
+  },
+  "name": "get_workout",
+  "title": "Workout detail"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "List activities"
+  },
+  "description": "Recorded activities, newest first: id, start time, type, name, duration, distance,\nelevation, average/max HR, pace (run/walk/hike) or speed (bike), power, cadence, aerobic/\nanaerobic training effect, training load, calories. Default: the last 7 days.",
+  "inputSchema": {
+   "properties": {
+    "days": {
+     "default": 7,
+     "description": "Days back from end_date (ignored if start_date is set).",
+     "maximum": 366,
+     "minimum": 1,
+     "title": "Days",
+     "type": "integer"
+    },
+    "start_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD; optional.",
+     "title": "Start Date"
+    },
+    "end_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD in local time; omit for today.",
+     "title": "End Date"
+    },
+    "activity_type": {
+     "anyOf": [
+      {
+       "enum": [
+        "running",
+        "cycling",
+        "swimming",
+        "walking",
+        "hiking",
+        "fitness_equipment",
+        "multi_sport",
+        "other"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional filter.",
+     "title": "Activity Type"
+    },
+    "limit": {
+     "default": 50,
+     "description": "Maximum activities returned (newest first).",
+     "maximum": 100,
+     "minimum": 1,
+     "title": "Limit",
+     "type": "integer"
+    }
+   },
+   "type": "object",
+   "title": "list_activitiesArguments"
+  },
+  "name": "list_activities",
+  "title": "List activities"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "Scheduled workouts"
+  },
+  "description": "Workouts on the Garmin calendar in a date range (schedule_id, date, workout, sport,\ncompleted or not, training plan).",
+  "inputSchema": {
+   "properties": {
+    "start_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD; default today.",
+     "title": "Start Date"
+    },
+    "end_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD; default start_date + 13 days (max 62 days).",
+     "title": "End Date"
+    }
+   },
+   "type": "object",
+   "title": "list_scheduled_workoutsArguments"
+  },
+  "name": "list_scheduled_workouts",
+  "title": "Scheduled workouts"
+ },
+ {
+  "annotations": {
+   "openWorldHint": true,
+   "readOnlyHint": true,
+   "title": "List workouts"
+  },
+  "description": "Workouts saved in the athlete's Garmin Connect workout library (id, name, sport,\nestimated duration/distance, last update).",
+  "inputSchema": {
+   "properties": {
+    "limit": {
+     "default": 20,
+     "description": "Maximum workouts returned.",
+     "maximum": 100,
+     "minimum": 1,
+     "title": "Limit",
+     "type": "integer"
+    }
+   },
+   "type": "object",
+   "title": "list_workoutsArguments"
+  },
+  "name": "list_workouts",
+  "title": "List workouts"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true,
+   "readOnlyHint": false,
+   "title": "Log weight"
+  },
+  "description": "Store a manual weigh-in in Garmin Connect for an athlete without a Garmin scale, and\nreport the stored entry. Call it only after the athlete confirmed the value. Non-destructive\nbut not idempotent: logging twice stores two weigh-ins, so check get_body_composition\nbefore retrying after an error. Garmin is the place of record for weight: do not write the\nsame measurement to Hevy as well.",
+  "inputSchema": {
+   "properties": {
+    "weight_kg": {
+     "description": "Body weight in kg (20-300).",
+     "maximum": 300,
+     "minimum": 20,
+     "title": "Weight Kg",
+     "type": "number"
+    },
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "YYYY-MM-DD, today or earlier; omit for today.",
+     "title": "Date"
+    }
+   },
+   "required": [
+    "weight_kg"
+   ],
+   "type": "object",
+   "title": "log_weightArguments"
+  },
+  "name": "log_weight",
+  "title": "Log weight"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true,
+   "readOnlyHint": false,
+   "title": "Schedule workout"
+  },
+  "description": "Put an existing workout on the Garmin calendar for a date; it reaches the watch on the\nnext sync. Idempotent: an identical existing entry is reported instead of duplicated.",
+  "inputSchema": {
+   "properties": {
+    "workout_id": {
+     "description": "Workout id (list_workouts / create_workout).",
+     "exclusiveMinimum": 0,
+     "title": "Workout Id",
+     "type": "integer"
+    },
+    "date": {
+     "description": "YYYY-MM-DD (today up to one year ahead).",
+     "title": "Date",
+     "type": "string"
+    }
+   },
+   "required": [
+    "workout_id",
+    "date"
+   ],
+   "type": "object",
+   "title": "schedule_workoutArguments"
+  },
+  "name": "schedule_workout",
+  "title": "Schedule workout"
+ },
+ {
+  "annotations": {
+   "destructiveHint": true,
+   "idempotentHint": true,
+   "openWorldHint": true,
+   "readOnlyHint": false,
+   "title": "Remove workout from calendar"
+  },
+  "description": "Remove one calendar entry (the workout itself stays in the library). Only after the\nathlete confirmed.",
+  "inputSchema": {
+   "properties": {
+    "schedule_id": {
+     "description": "schedule_id from list_scheduled_workouts.",
+     "exclusiveMinimum": 0,
+     "title": "Schedule Id",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "schedule_id"
+   ],
+   "type": "object",
+   "title": "unschedule_workoutArguments"
+  },
+  "name": "unschedule_workout",
+  "title": "Remove workout from calendar"
+ }
+]

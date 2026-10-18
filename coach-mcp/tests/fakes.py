@@ -211,14 +211,20 @@ def fake_garmin_app(
     activities: Any = None,
     predictions: Any = None,
     device: Any = DEVICE_STATUS,
+    results: dict[str, CallToolResult] | None = None,
 ) -> tuple[BearerAuthMiddleware, list[tuple[str, dict[str, Any]]]]:
-    """A garmin-mcp look-alike (Streamable HTTP + /healthz behind the bearer check) and its call log."""
+    """A garmin-mcp look-alike (Streamable HTTP + /healthz behind the bearer check) and its call log.
+
+    ``results`` answers a tool with a ready result (an error with `_meta`, or a golden answer) instead of the
+    payload argument."""
     errors = errors or {}
     calls: list[tuple[str, dict[str, Any]]] = []
     server = MCPServer("fake-garmin")
 
-    async def respond(name: str, arguments: dict[str, Any], payload: Any) -> str:
+    async def respond(name: str, arguments: dict[str, Any], payload: Any) -> Any:
         calls.append((name, {k: v for k, v in arguments.items() if v is not None}))
+        if results and name in results:
+            return results[name]
         if name in hang:
             # Every awaitable injected into a lifespan test ends by raising, so a missing cancel is red, not a hang.
             await anyio.sleep(5)

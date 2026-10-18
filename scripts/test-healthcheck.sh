@@ -80,7 +80,7 @@ case "$svc" in
     elif [[ "$*" == *"status --json"* ]]; then
       if [[ -f "$FAKE/ts_json" ]]; then cat "$FAKE/ts_json"
       elif [[ -f "$FAKE/ts_bad" ]]; then echo '{"BackendState":"Stopped"}'
-      else echo '{"BackendState":"Running","Self":{"DNSName":"fitness-mcp.example.ts.net."}}'; fi
+      else echo '{"BackendState":"Running","Self":{"DNSName":"fitness-mcp.example.ts.net.","TailscaleIPs":["100.64.0.1","fd7a:115c:a1e0::1"]}}'; fi
     else unexpected "compose exec ts $*"; fi
     exit 0 ;;
   garmin-mcp)
@@ -137,6 +137,17 @@ if (( resolve )); then
     */authorize) if [[ -f "$FAKE/authz_bad" ]]; then printf 200; else printf 403; fi; exit 0 ;;
   esac
 fi
+if [[ "$url" =~ ^http://100\.64\.0\.1:(8080|9002)/$ ]]; then
+  mode=refused
+  [[ ! -f "$FAKE/direct_${BASH_REMATCH[1]}" ]] || mode="$(cat "$FAKE/direct_${BASH_REMATCH[1]}")"
+  case "$mode" in
+    refused) printf '0.000000 7'; exit 7 ;;
+    blocked) printf '0.000000 28'; exit 28 ;;
+    accept) printf '0.000150 0'; exit 0 ;;
+    silent) printf '0.000150 28'; exit 28 ;;
+    odd) printf '0.000000 6'; exit 6 ;;
+  esac
+fi
 case "$url" in
   */.well-known/oauth-authorization-server)
     if [[ -f "$FAKE/meta_bad" ]]; then echo '{}'; else echo '{"issuer":"https://fitness-mcp.example.ts.net"}'; fi; exit 0 ;;
@@ -182,7 +193,7 @@ fake_reset() {
   local f
   for f in down ts_bad funnel_off garmin_bad coach_db_bad scheduler history inbound meta_bad challenge_bad dns_bad \
            disc_bad authz_bad hevy_bad tg_code tg_reply health-ts health-gateway health-hevy-mcp \
-           health-garmin-mcp health-coach-mcp ts_json; do
+           health-garmin-mcp health-coach-mcp ts_json direct_8080 direct_9002; do
     rm -f "$FAKE/$f"
   done
 }
@@ -648,6 +659,38 @@ run_hc --quiet --notify
 check "public path keys" '[[ $RC == 1 && "$(state_keys)" == "funnel-discovery,funnel-login" ]]'
 check "exactly one CIMD call site (static)" '[[ "$(grep -c "report_fail \"cimd:" "$SRC/scripts/healthcheck.sh")" == 1 ]]'
 check "no call passes its text as the key (static)" '! grep -qE "report_fail \"[^\"]* " "$SRC/scripts/healthcheck.sh"'
+
+# --- H28: ports of the node outside tailscale serve ----------------------------------------------------------
+echo "[H28: ports of the node outside tailscale serve]"
+begin h28a
+run_hc
+check "(a) refused on both ports: exit 0 and both ok lines" '[[ $RC == 0 ]] && out_has "✔ tailnet: port 8080 of the node does not accept connections (refused)" && out_has "✔ tailnet: port 9002 of the node does not accept connections (refused)"'
+check "(a) the probes went to the node address on both ports" 'grep -qF "http://100.64.0.1:8080/" "$FAKE/curl.log" && grep -qF "http://100.64.0.1:9002/" "$FAKE/curl.log"'
+begin h28b
+fake direct_9002 blocked
+run_hc
+check "(b) a blocked probe (policy drop) is ok, with its own wording" '[[ $RC == 0 ]] && out_has "✔ tailnet: port 9002 of the node does not accept connections (no answer)" && out_has "✔ tailnet: port 8080 of the node does not accept connections (refused)"'
+begin h28c
+fake direct_8080 accept
+run_hc --quiet --notify
+check "(c) an accepting port 8080 is a failure with its own key" '[[ $RC == 1 && "$(state_keys)" == "tailnet-direct-8080" ]] && out_has "✘ tailnet: port 8080 of the node accepts connections that bypass tailscale serve → scripts/check-ingress.py; README, Security model"'
+check "(c) the node address is not in the output or the message" '! grep -q "100\.64\.0\.1" "$WORK/out" "$WORK/err" && [[ "$(sent_text)" != *100.64.0.1* ]]'
+begin h28d
+fake direct_9002 silent
+run_hc --quiet --notify
+check "(d) a connect that never answers is a failure, port 9002 key" '[[ $RC == 1 && "$(state_keys)" == "tailnet-direct-9002" ]]'
+begin h28e
+fake direct_8080 odd
+run_hc
+check "(e) any other curl exit is a warning, not a failure" '[[ $RC == 0 ]] && out_has "! tailnet: probe of port 8080 inconclusive (curl exit 6)"'
+begin h28f
+printf '%s\n' '{"BackendState":"Running","Self":{"DNSName":"fitness-mcp.example.ts.net.","TailscaleIPs":["fd7a:115c:a1e0::1"]}}' > "$FAKE/ts_json"
+run_hc
+check "(f) no IPv4 address: a warning and no probe" '[[ $RC == 0 ]] && out_has "! tailnet: no IPv4 address of the node, port probe skipped" && ! grep -q ":8080/" "$FAKE/curl.log"'
+begin h28g
+printf '%s\n' '{"BackendState":"Stopped","Self":{"DNSName":"fitness-mcp.example.ts.net.","TailscaleIPs":["100.64.0.1"]}}' > "$FAKE/ts_json"
+run_hc
+check "(g) a node that is not running is not probed" '! grep -q ":8080/" "$FAKE/curl.log" && ! grep -q ":9002/" "$FAKE/curl.log" && ! grep -q "no IPv4 address" "$WORK/out"'
 
 # --- H21, H22: secrets in no output, no unexpected call -----------------------------------------------------
 echo "[H21: no token and no chat id on any command line or in any output]"

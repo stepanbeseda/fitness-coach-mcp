@@ -1,4 +1,4 @@
-from conftest import BASE, FUNNEL_PUBLIC, TAILNET
+from conftest import BASE, FUNNEL_ANTHROPIC, FUNNEL_PUBLIC, TAILNET
 
 
 def test_authorization_server_metadata(h):
@@ -16,6 +16,15 @@ def test_authorization_server_metadata(h):
     assert "registration_endpoint" not in meta
 
 
+def test_authorization_server_metadata_lists_only_implemented_features(h):
+    meta = h.client.get("/.well-known/oauth-authorization-server", headers=FUNNEL_PUBLIC).json()
+    assert meta["revocation_endpoint"] == f"{BASE}/revoke"
+    assert meta["response_types_supported"] == ["code"]
+    assert meta["grant_types_supported"] == ["authorization_code", "refresh_token"]
+    assert meta["token_endpoint_auth_methods_supported"] == ["none"]
+    assert meta["revocation_endpoint_auth_methods_supported"] == ["none"]
+
+
 def test_protected_resource_metadata_per_backend(h):
     for name in ("hevy", "garmin"):
         r = h.client.get(f"/.well-known/oauth-protected-resource/{name}/mcp", headers=FUNNEL_PUBLIC)
@@ -28,6 +37,14 @@ def test_protected_resource_metadata_per_backend(h):
 
 def test_root_protected_resource_metadata_is_not_served(h):
     assert h.client.get("/.well-known/oauth-protected-resource").status_code == 404
+
+
+def test_no_dynamic_client_registration(h):
+    # No RFC 7591 endpoint: clients are pinned in config.toml (docs/gateway-design.md, non-goals).
+    for headers in (FUNNEL_ANTHROPIC, TAILNET):
+        r = h.client.post("/register", json={"redirect_uris": ["https://evil.example/cb"]}, headers=headers)
+        assert r.status_code == 404
+    assert h.start(client_id="https://evil.example/client.json").status_code == 400
 
 
 def test_unauthenticated_mcp_gets_challenge_from_anywhere(h):

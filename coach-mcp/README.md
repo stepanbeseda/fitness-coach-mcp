@@ -322,7 +322,15 @@ most once a day.
 From `garmin-mcp` the server may call only six read tools (`get_device_status`, `get_recovery_snapshot`,
 `get_hrv_trend`, `list_scheduled_workouts`, `list_activities`, `get_race_predictions`). The coach code does not call
 its write tools, and `garmin-mcp` rejects them with the coach's read-only token before they run. From `hevy-mcp` it
-may call only `get-workout-events` and `get-exercise-template`. For each run the log has one line for Garmin:
+may call only `get-workout-events` and `get-exercise-template`. It tells a Garmin rate limit and a missing
+Garmin login from other errors by `garmin-mcp`'s error kind (`rate_limited`, `garmin_auth`; in `_meta` of a failed
+call, as `error_kind` in an error section); only an answer without a kind (an older `garmin-mcp`) is read by its
+text (`HTTP 429`, `scripts/garmin-login.sh`). `tests/test_garmin_contract.py` feeds the coach's readers the
+answers `garmin-mcp` records for its canned payloads (`tests/contract/garmin_answers.json`, the same file as
+`garmin-mcp/tests/contract/garmin_answers.json`). A snapshot section in a shape the coach does not know (an object
+with keys, none of them known) counts as a section in error: it is stored as missing, repaired like one, and the
+run logs `history status=contract_warning sections=…` (section names only).
+For each run the log has one line for Garmin:
 `history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=…`
 (`repaired` = days whose missing sections loaded in a repair call of this run; `reconcile=error kind=…` when plan
 reconciliation fails; the history run does not fail because of it), one for the race predictions
@@ -389,6 +397,12 @@ in one transaction). An older image refuses to open a newer database so that it 
 
 Run `scripts/backup.sh` before moving to an older version.
 
+**Deploying an older version.** When its images are still kept (`scripts/deploy.sh --status` lists them),
+`scripts/deploy.sh --rollback <version>`; it refuses while the database is newer than that version's `coach-mcp`
+and names the procedure below. Every version these procedures go back to is older than `scripts/deploy.sh`:
+check out that commit (`git checkout <commit>`) and start it the way it was started then,
+`docker compose up -d --build --no-deps coach-mcp`. Come back with `git checkout main` and `scripts/deploy.sh`.
+
 **Going back to a version without two-way Telegram** (schema 9 → 8). An older image refuses a database with
 schema 9 (`database schema version 9 is newer`). Before deploying the older version, drop the table
 `telegram_inbound`; every goal, plan, note (those that came from Telegram included), briefing state and history
@@ -397,14 +411,13 @@ it ignores what Telegram holds at that moment. The service must be stopped; run 
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 9 or sys.exit(f"schema version {v}, expected 9: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE telegram_inbound; PRAGMA user_version = 8; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 9 or sys.exit(f"schema version {v}, expected 9: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE telegram_inbound; PRAGMA user_version = 8; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-The second command must print `schema version 8`. Then deploy the older version (`git checkout <commit before
-PR 22>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
-does not have schema 9 and nothing changed. On an empty volume it ends with the error `unable to open database
-file` and creates nothing. To go back to an even older version, run this 9 → 8 procedure first and then the ones
-below.
+The second command must print `schema version 8`. Then deploy the older version (the commit before PR 22; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 9 and
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+back to an even older version, run this 9 → 8 procedure first and then the ones below.
 
 **Going back to a version without goal progress** (schema 8 → 7). An older image refuses a database with
 schema 8 (`database schema version 8 is newer`). Before deploying the older version, drop the three new tables
@@ -416,14 +429,13 @@ one at a time:
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 8 or sys.exit(f"schema version {v}, expected 8: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE weekly_reports; DROP TABLE prediction_sync; DROP TABLE race_predictions; ALTER TABLE goals DROP COLUMN target_value; ALTER TABLE goals DROP COLUMN metric; PRAGMA user_version = 7; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 8 or sys.exit(f"schema version {v}, expected 8: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE weekly_reports; DROP TABLE prediction_sync; DROP TABLE race_predictions; ALTER TABLE goals DROP COLUMN target_value; ALTER TABLE goals DROP COLUMN metric; PRAGMA user_version = 7; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-The second command must print `schema version 7`. Then deploy the older version (`git checkout <commit before
-PR 14>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
-does not have schema 8 and nothing changed. On an empty volume it ends with the error `unable to open database
-file` and creates nothing. To go back to an even older version, run this 8 → 7 procedure first and then the ones
-below.
+The second command must print `schema version 7`. Then deploy the older version (the commit before PR 14; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 8 and
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+back to an even older version, run this 8 → 7 procedure first and then the ones below.
 
 **Going back to a version without history repair** (schema 7 → 6). An older image refuses a database with
 schema 7 (`database schema version 7 is newer`). Before deploying the older version, drop only the three repair
@@ -432,15 +444,14 @@ including those a repair filled in. The service must be stopped; run the command
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 7 or sys.exit(f"schema version {v}, expected 7: nothing changed"); c.executescript("BEGIN IMMEDIATE; ALTER TABLE history_days DROP COLUMN recovery_repaired_on; ALTER TABLE history_days DROP COLUMN recovery_repairs; ALTER TABLE history_days DROP COLUMN recovery_missing; PRAGMA user_version = 6; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 7 or sys.exit(f"schema version {v}, expected 7: nothing changed"); c.executescript("BEGIN IMMEDIATE; ALTER TABLE history_days DROP COLUMN recovery_repaired_on; ALTER TABLE history_days DROP COLUMN recovery_repairs; ALTER TABLE history_days DROP COLUMN recovery_missing; PRAGMA user_version = 6; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-The second command must print `schema version 6`. Then deploy the older version (`git checkout <commit before
-PR 18>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
-does not have schema 7 and nothing changed. On an empty volume it ends with the error `unable to open database
-file` and creates nothing. To go back to an even older version, run the 8 → 7 procedure above, then this 7 → 6
-one, then the ones below. When the newer version is deployed again, its migration marks the missing sections
-anew (see "Nightly history").
+The second command must print `schema version 6`. Then deploy the older version (the commit before PR 18; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 7 and
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+back to an even older version, run the 8 → 7 procedure above, then this 7 → 6 one, then the ones below. When the newer
+version is deployed again, its migration marks the missing sections anew (see "Nightly history").
 
 **Going back to a version without note search** (schema 6 → 5). An older image refuses a database with schema 6
 (`database schema version 6 is newer`). Before deploying the older version, drop only the full-text index of the
@@ -450,14 +461,13 @@ must be stopped; run the commands one at a time:
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 6 or sys.exit(f"schema version {v}, expected 6: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TRIGGER notes_fts_insert; DROP TABLE notes_fts; PRAGMA user_version = 5; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 6 or sys.exit(f"schema version {v}, expected 6: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TRIGGER notes_fts_insert; DROP TABLE notes_fts; PRAGMA user_version = 5; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-The second command must print `schema version 5`. Then deploy the older version (`git checkout <commit before
-PR 15>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
-does not have schema 6 and nothing changed. On an empty volume it ends with the error `unable to open database
-file` and creates nothing. To go back to an even older version, run this 6 → 5 procedure first and then the ones
-below.
+The second command must print `schema version 5`. Then deploy the older version (the commit before PR 15; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 6 and
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+back to an even older version, run this 6 → 5 procedure first and then the ones below.
 
 **Going back to a version without strength history** (schema 5 → 4). An older image refuses a database with
 schema 5 (`database schema version 5 is newer`). Before deploying the older version, drop only the strength
@@ -467,13 +477,13 @@ commands one at a time:
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 5 or sys.exit(f"schema version {v}, expected 5: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE strength_workouts; DROP TABLE hevy_templates; DROP TABLE hevy_sync; PRAGMA user_version = 4; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 5 or sys.exit(f"schema version {v}, expected 5: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE strength_workouts; DROP TABLE hevy_templates; DROP TABLE hevy_sync; PRAGMA user_version = 4; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-The second command must print `schema version 4`. Then deploy the older version (`git checkout <commit before
-PR 09>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
-does not have schema 5 and nothing changed. On an empty volume it ends with the error `unable to open database
-file` and creates nothing. To go back further, run this 5 → 4 procedure first and then the following ones.
+The second command must print `schema version 4`. Then deploy the older version (the commit before PR 09; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 5 and
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+back further, run this 5 → 4 procedure first and then the following ones.
 
 **Going back to a version without plan reconciliation** (schema 4 → 3). An older image refuses a database with
 schema 4 (`database schema version 4 is newer`). Before deploying the older version, drop only the suggestions
@@ -483,14 +493,13 @@ after the newer version is deployed. The service must be stopped; run the comman
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 4 or sys.exit(f"schema version {v}, expected 4: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE session_suggestions; PRAGMA user_version = 3; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 4 or sys.exit(f"schema version {v}, expected 4: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE session_suggestions; PRAGMA user_version = 3; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-The second command must print `schema version 3`. Then deploy the older version (`git checkout <commit before
-PR 13>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
-does not have schema 4 and nothing changed. On an empty volume it ends with the error `unable to open database
-file` and creates nothing. To go back to an even older version, run this 4 → 3 procedure first and then the
-following ones.
+The second command must print `schema version 3`. Then deploy the older version (the commit before PR 13; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 4 and
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+back to an even older version, run this 4 → 3 procedure first and then the following ones.
 
 **Going back to a version without history** (schema 3 → 2). An older image refuses a database with schema 3
 (`database schema version 3 is newer`). Before deploying the older version, drop only the history table; goals,
@@ -499,14 +508,14 @@ version is deployed again). The service must be stopped; run the commands one at
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 3 or sys.exit(f"schema version {v}, expected 3: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE history_days; PRAGMA user_version = 2; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 3 or sys.exit(f"schema version {v}, expected 3: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE history_days; PRAGMA user_version = 2; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-The second command must print `schema version 2`. Then deploy the older version (`git checkout <commit before
-PR 05>` and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database
-does not have schema 3 and nothing changed. On an empty volume it ends with the error `unable to open database
-file` and creates nothing. To go all the way back to the version without the briefing (schema 1), run this 3 → 2
-procedure first and then the following 2 → 1.
+The second command must print `schema version 2`. Then deploy the older version (the commit before PR 05; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 3 and
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+all the way back to the version without the briefing (schema 1), run this 3 → 2 procedure first and then the following
+2 → 1.
 
 **Going back to a version without the morning briefing** (schema 2 → 1). An older image refuses a database with
 schema 2 (`database schema version 2 is newer`). Before deploying the older version, drop only the briefing
@@ -514,13 +523,12 @@ tables; goals, constraints, plan and notes stay. The service must be stopped; ru
 
 ```bash
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint python fitness-coach-mcp/coach-mcp:0.1.0 -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 2 or sys.exit(f"schema version {v}, expected 2: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE alert_state; DROP TABLE briefing_runs; PRAGMA user_version = 1; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 2 or sys.exit(f"schema version {v}, expected 2: nothing changed"); c.executescript("BEGIN IMMEDIATE; DROP TABLE alert_state; DROP TABLE briefing_runs; PRAGMA user_version = 1; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
 ```
 
-The second command must print `schema version 1`. Then deploy the older version (`git checkout <older commit>`
-and `docker compose up -d --build --no-deps coach-mcp`). When it prints `… nothing changed`, the database does not
-have schema 2 and nothing changed. On an empty volume it ends with the error `unable to open database file` and
-creates nothing.
+The second command must print `schema version 1`. Then deploy the older version (the older commit; see "Deploying an
+older version" above). When it prints `… nothing changed`, the database does not have schema 2 and nothing changed. On
+an empty volume it ends with the error `unable to open database file` and creates nothing.
 
 ## Weather
 

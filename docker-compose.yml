@@ -3,8 +3,11 @@
 # claude.ai, plain tailnet for Claude Code / Claude Desktop).
 #
 # - No service publishes a host port. The gateway shares the network namespace of
-#   the Tailscale sidecar and listens on 127.0.0.1 only, so tailscaled is the only
-#   way in. The MCP backends are reachable only from the private "mcp" network.
+#   the Tailscale sidecar and listens on 127.0.0.2 only. In userspace mode tailscaled
+#   forwards tailnet connections for ports without a serve handler to 127.0.0.1, so
+#   nothing listens there and `tailscale serve` on :443 is the only way in
+#   (scripts/check-ingress.py checks the wiring). The MCP backends are reachable only
+#   from the private "mcp" network.
 # - Secrets are Docker secrets read from ./secrets (scripts/setup-secrets.sh);
 #   SECRETS_DIR overrides the directory (used by scripts/e2e-test.sh).
 # - Every container runs as an unprivileged UID, read-only, without capabilities.
@@ -26,6 +29,13 @@ x-hardening: &hardening
     options:
       max-size: "10m"
       max-file: "3"
+
+# Image labels, set by scripts/deploy.sh at build time (empty for a plain `docker compose build`): the
+# version, the commit and the build time of the image. scripts/deploy.sh --status and its clean-up read them.
+x-build-labels: &build_labels
+  org.opencontainers.image.version: "${FCM_VERSION:-local}"
+  org.opencontainers.image.revision: "${FCM_REVISION:-}"
+  org.opencontainers.image.created: "${FCM_CREATED:-}"
 
 x-build-args: &build_args
   APP_UID: "${APP_UID:-10001}"
@@ -51,7 +61,8 @@ services:
       TS_SOCKET: /tmp/tailscaled.sock
       TS_SERVE_CONFIG: /config/serve.json
       TS_ENABLE_HEALTH_CHECK: "true"
-      TS_LOCAL_ADDR_PORT: 127.0.0.1:9002
+      # Health endpoint for the healthcheck below; 127.0.0.2, never 127.0.0.1 (see the header).
+      TS_LOCAL_ADDR_PORT: 127.0.0.2:9002
       HOME: /tmp
     volumes:
       - ts-state:/var/lib/tailscale
@@ -65,7 +76,7 @@ services:
     mem_limit: 256m
     pids_limit: 128
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9002/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.2:9002/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -76,8 +87,10 @@ services:
     build:
       context: ./gateway
       args: *build_args
-    image: fitness-coach-mcp/gateway:0.1.0
-    # Share the sidecar's network namespace: tailscale serve proxies to 127.0.0.1:8080.
+      labels: *build_labels
+    # FCM_VERSION: the commit tag that scripts/deploy.sh writes to .env; without it the tag is "local".
+    image: fitness-coach-mcp/gateway:${FCM_VERSION:-local}
+    # Share the sidecar's network namespace: tailscale serve proxies to 127.0.0.2:8080.
     network_mode: service:ts
     depends_on:
       - ts
@@ -89,7 +102,6 @@ services:
       REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-}
     volumes:
       - gateway-data:/data
-      - ./gateway/config.toml:/app/config.toml:ro
     tmpfs:
       - /tmp:size=16m
     secrets:
@@ -101,7 +113,7 @@ services:
     mem_limit: 256m
     pids_limit: 128
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.2:8080/healthz', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -136,7 +148,8 @@ services:
     build:
       context: ./garmin-mcp
       args: *build_args
-    image: fitness-coach-mcp/garmin-mcp:0.1.0
+      labels: *build_labels
+    image: fitness-coach-mcp/garmin-mcp:${FCM_VERSION:-local}
     environment:
       HOME: /tmp
       GARMINTOKENS: /data/garmin
@@ -165,7 +178,8 @@ services:
     build:
       context: ./coach-mcp
       args: *build_args
-    image: fitness-coach-mcp/coach-mcp:0.1.0
+      labels: *build_labels
+    image: fitness-coach-mcp/coach-mcp:${FCM_VERSION:-local}
     environment:
       HOME: /tmp
       # The athlete's local time zone: what "today" means, and when the briefing and history jobs run.

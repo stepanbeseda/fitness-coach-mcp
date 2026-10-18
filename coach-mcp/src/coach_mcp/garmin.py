@@ -39,9 +39,14 @@ ALLOWED_TOOLS = (
     "list_activities",
     "get_race_predictions",
 )
-# garmin-mcp's garmin_client.py: "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry."
+# garmin-mcp's error kinds (garmin-mcp/src/garmin_coach_mcp/errors.py): a tool error carries its kind in `_meta`
+# under this key, an error section next to its text as "error_kind". The coach reads two of them.
+ERROR_KIND_KEY = "local.garmin-coach-mcp/error_kind"
+RATE_LIMITED_KIND = "rate_limited"
+GARMIN_AUTH_KIND = "garmin_auth"
+# The fallback for an answer without a kind (a garmin-mcp older than PR 31): garmin-mcp's RATE_LIMIT text, and
+# NOT_LOGGED_IN and SESSION_EXPIRED in its garmin_client.py contain these hints.
 RATE_LIMIT_HINT = "HTTP 429"
-# Both NOT_LOGGED_IN and SESSION_EXPIRED in garmin-mcp's garmin_client.py contain this hint.
 GARMIN_LOGIN_HINT = "scripts/garmin-login.sh"
 MIN_TOKEN_LENGTH = 16
 AUTH_VALUES = ("ok", "missing", "error")
@@ -113,15 +118,37 @@ class HistorySource(Protocol):
     async def history_call(self, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]: ...
 
 
+def error_outcome(result: mcp.types.CallToolResult) -> str:
+    """rate_limited, auth_error or error for an error result: by its kind, by its text when it has none."""
+    meta = result.meta if isinstance(result.meta, Mapping) else {}
+    kind = meta.get(ERROR_KIND_KEY)
+    if isinstance(kind, str):
+        return {RATE_LIMITED_KIND: "rate_limited", GARMIN_AUTH_KIND: "auth_error"}.get(kind, "error")
+    text = "".join(c.text for c in result.content if isinstance(c, mcp.types.TextContent))
+    if RATE_LIMIT_HINT in text:
+        return "rate_limited"
+    return "auth_error" if GARMIN_LOGIN_HINT in text else "error"
+
+
+def section_rate_limited(section: Any) -> bool:
+    """An error section of a 429: by its kind, by its text when it has none."""
+    if not isinstance(section, Mapping) or "error" not in section:
+        return False
+    kind = section.get("error_kind")
+    if isinstance(kind, str):
+        return kind == RATE_LIMITED_KIND
+    return RATE_LIMIT_HINT in str(section.get("error", ""))
+
+
 async def _call(client: Client, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
     """One allowlisted tool call -> (outcome, payload); the payload is a dict only for ``ok``."""
     if name not in ALLOWED_TOOLS:
         raise ValueError(f"tool {name!r} is not allowed")
     try:
         result = await client.call_tool(name, args)
-        text = "".join(c.text for c in result.content if isinstance(c, mcp.types.TextContent))
         if result.is_error:
-            return ("auth_error" if GARMIN_LOGIN_HINT in text else "error"), None
+            return ("auth_error" if error_outcome(result) == "auth_error" else "error"), None
+        text = "".join(c.text for c in result.content if isinstance(c, mcp.types.TextContent))
         payload = json.loads(text)
     except Exception:
         return "error", None
@@ -179,11 +206,9 @@ class GarminReader:
                         result = await client.call_tool(name, args)
         except Exception:  # never BaseException: a cancel (shutdown) must propagate
             return "unreachable", None
-        text = "".join(c.text for c in result.content if isinstance(c, mcp.types.TextContent))
         if result.is_error:
-            if RATE_LIMIT_HINT in text:
-                return "rate_limited", None
-            return ("auth_error" if GARMIN_LOGIN_HINT in text else "error"), None
+            return error_outcome(result), None
+        text = "".join(c.text for c in result.content if isinstance(c, mcp.types.TextContent))
         try:
             payload = json.loads(text)
         except ValueError:
@@ -191,9 +216,8 @@ class GarminReader:
         if not isinstance(payload, dict):
             return "error", None
         # garmin-mcp turns a 429 of one library call into an error section while the tool itself succeeds.
-        for value in payload.values():
-            if isinstance(value, dict) and RATE_LIMIT_HINT in str(value.get("error", "")):
-                return "rate_limited", None
+        if any(section_rate_limited(value) for value in payload.values()):
+            return "rate_limited", None
         return "ok", payload
 
     async def fetch(self, day: date) -> GarminData:

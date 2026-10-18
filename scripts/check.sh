@@ -81,6 +81,15 @@ tree="$(tree_id)"
 info "Check tree=$tree tag=$tag, logs: $LOG_DIR"
 declare -A result=([garmin]=skip [gateway]=skip [coach]=skip [e2e]=skip)
 
+# garmin-mcp's answers that coach-mcp reads are kept twice, because each service builds from its own directory:
+# the two copies must be the same file (scripts/record-garmin-contract.sh writes both).
+if wanted garmin || wanted coach; then
+  log="$LOG_DIR/contract.log"
+  cmp garmin-mcp/tests/contract/garmin_answers.json coach-mcp/tests/contract/garmin_answers.json >"$log" 2>&1 \
+    || { echo "The copies differ: run scripts/record-garmin-contract.sh." >>"$log"; fail contract "$log"; }
+  info "[contract] garmin-mcp and coach-mcp hold the same garmin_answers.json"
+fi
+
 # Test stage of one service (ruff, mypy, pytest). --no-cache-filter test re-runs it even for an unchanged tree.
 for pair in garmin:garmin-mcp gateway:gateway coach:coach-mcp; do
   name="${pair%%:*}" dir="${pair#*:}"

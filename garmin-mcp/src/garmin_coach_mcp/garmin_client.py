@@ -30,6 +30,7 @@ from garminconnect.exceptions import GarminConnectNotFoundError
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .config import Settings
+from .errors import GARMIN_AUTH, GARMIN_UNAVAILABLE, INVALID_REQUEST, NOT_FOUND, RATE_LIMITED, GarminError, kind_of
 
 log = logging.getLogger("garmin_coach_mcp.garmin")
 
@@ -45,6 +46,9 @@ SESSION_EXPIRED = (
     "Garmin rejected the stored session (expired or revoked). On the server run "
     "`scripts/garmin-login.sh` to log in again, then retry."
 )
+# The kind (errors.py) is what coach-mcp reads. It falls back to "scripts/garmin-login.sh" in the two texts above
+# and to "HTTP 429" in this one for an error without a kind (tests/test_error_kinds.py pins the texts).
+RATE_LIMIT = "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry."
 
 
 class GarminNotLoggedIn(Exception):
@@ -149,20 +153,21 @@ class GarminService:
         except ToolError:
             raise
         except GarminNotLoggedIn as exc:
-            raise ToolError(str(exc)) from exc
+            raise GarminError(str(exc), GARMIN_AUTH) from exc
         except GarminConnectAuthenticationError as exc:
             self._mark_auth_failure()
-            raise ToolError(SESSION_EXPIRED) from exc
+            raise GarminError(SESSION_EXPIRED, GARMIN_AUTH) from exc
         except GarminConnectTooManyRequestsError as exc:
-            raise ToolError("Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.") from exc
+            raise GarminError(RATE_LIMIT, RATE_LIMITED) from exc
         except GarminConnectNotFoundError as exc:
-            raise ToolError(f"Not found in Garmin Connect ({_short(exc)}).") from exc
+            raise GarminError(f"Not found in Garmin Connect ({_short(exc)}).", NOT_FOUND) from exc
         except GarminConnectConnectionError as exc:
-            raise ToolError(f"Garmin Connect request failed: {_short(exc)}") from exc
+            raise GarminError(f"Garmin Connect request failed: {_short(exc)}", GARMIN_UNAVAILABLE) from exc
         except (requests.RequestException, OSError) as exc:
-            raise ToolError(f"Network error talking to Garmin Connect ({type(exc).__name__}).") from exc
+            message = f"Network error talking to Garmin Connect ({type(exc).__name__})."
+            raise GarminError(message, GARMIN_UNAVAILABLE) from exc
         except ValueError as exc:  # library input validation
-            raise ToolError(str(exc)) from exc
+            raise GarminError(str(exc), INVALID_REQUEST) from exc
         return result
 
     async def call(self, func: Callable[[Any], T]) -> T:
@@ -180,15 +185,15 @@ class GarminService:
             try:
                 out[key] = await self.call(fn)
             except ToolError as exc:
-                out[key] = _SectionError(str(exc))
+                out[key] = _SectionError(str(exc), kind_of(exc))
 
         results: dict[str, Any] = {}
         async with anyio.create_task_group() as tg:
             for key, fn in funcs.items():
                 tg.start_soon(one, key, fn, results)
         for value in results.values():
-            if isinstance(value, _SectionError) and value.message in (NOT_LOGGED_IN, SESSION_EXPIRED):
-                raise ToolError(value.message)
+            if isinstance(value, _SectionError) and value.kind == GARMIN_AUTH:
+                raise GarminError(value.message, GARMIN_AUTH)
         return results
 
     # -------------------------------------------------------------- keepalive
@@ -211,10 +216,11 @@ class GarminService:
 
 
 class _SectionError:
-    __slots__ = ("message",)
+    __slots__ = ("kind", "message")
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, kind: str) -> None:
         self.message = message
+        self.kind = kind
 
 
 def is_section_error(value: Any) -> bool:
@@ -222,7 +228,13 @@ def is_section_error(value: Any) -> bool:
 
 
 def section_error(value: Any) -> dict[str, str]:
-    return {"error": value.message}
+    """The value of a section whose call failed: the text and its kind."""
+    return {"error": value.message, "error_kind": value.kind}
+
+
+def section_failure(value: Any) -> GarminError:
+    """The failed call of a required section, raised as the error of the whole tool."""
+    return GarminError(value.message, value.kind)
 
 
 def _short(exc: BaseException, limit: int = 200) -> str:

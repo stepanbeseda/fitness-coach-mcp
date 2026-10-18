@@ -23,6 +23,7 @@ from . import __version__, activities, body, exercises, health, performance, wor
 from .access import ReadOnlyGuard
 from .auth import BackendToken, BearerAuthMiddleware
 from .config import Settings
+from .errors import ErrorKinds, record_kind
 from .formatting import to_json
 from .garmin_client import GarminService
 
@@ -64,7 +65,7 @@ def _write(title: str, *, destructive: bool, idempotent: bool = False) -> ToolAn
 
 
 def _logged(name: str, fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[str]]:
-    """Log tool name, outcome and duration only (never arguments or results)."""
+    """Log tool name, outcome and duration only (never arguments or results); record the error's kind."""
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> str:
@@ -73,6 +74,7 @@ def _logged(name: str, fn: Callable[..., Awaitable[Any]]) -> Callable[..., Await
             result = await fn(*args, **kwargs)
         except Exception as exc:
             log.info("tool=%s status=error kind=%s ms=%.0f", name, type(exc).__name__, (time.monotonic() - started) * 1000)
+            record_kind(exc)
             raise
         log.info("tool=%s status=ok ms=%.0f", name, (time.monotonic() - started) * 1000)
         return to_json(result)
@@ -105,7 +107,7 @@ def build_server(service: GarminService, settings: Settings) -> MCPServer:
             if settings.log_level in ("DEBUG", "INFO", "WARNING", "ERROR")
             else "INFO"
         ),
-        extensions=[guard],
+        extensions=[guard, ErrorKinds()],  # the guard first: its refusal carries its own kind
     )
 
     def tool(name: str, annotations: ToolAnnotations) -> Callable[[Callable[..., Awaitable[Any]]], Any]:

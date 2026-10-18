@@ -6,6 +6,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -34,11 +35,14 @@ GARMIN = f"{BASE}/garmin/mcp"
 TAILNET = {"Tailscale-User-Login": OWNER, "X-Forwarded-For": "100.101.102.103"}
 FUNNEL_ANTHROPIC = {"Tailscale-Funnel-Request": "?1", "X-Forwarded-For": ANTHROPIC_IP}
 FUNNEL_PUBLIC = {"Tailscale-Funnel-Request": "?1", "X-Forwarded-For": PUBLIC_IP}
+# A client-supplied entry in front of the one tailscale serve sets: only the right-most entry counts.
+FUNNEL_SPOOFED = {"Tailscale-Funnel-Request": "?1", "X-Forwarded-For": f"{ANTHROPIC_IP}, {PUBLIC_IP}"}
+FUNNEL_CHAINED = {"Tailscale-Funnel-Request": "?1", "X-Forwarded-For": f"{PUBLIC_IP}, {ANTHROPIC_IP}"}
 
 CONFIG = """
 [server]
 public_base_url = "{base}"
-listen_host = "127.0.0.1"
+listen_host = "127.0.0.2"
 listen_port = 8080
 db_path = "{db}"
 
@@ -261,7 +265,8 @@ def make_harness(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     clients: list[TestClient] = []
 
-    def factory(*, mcp_rate: int = 6000, mcp_burst: int = 1000, sse: bool = False) -> Harness:
+    def factory(*, mcp_rate: int = 6000, mcp_burst: int = 1000, sse: bool = False,
+                audit_path: Path | None = None) -> Harness:
         secrets_dir = tmp_path / "secrets"
         secrets_dir.mkdir(exist_ok=True)
         hasher = PasswordHasher(time_cost=1, memory_cost=8192, parallelism=1)
@@ -280,7 +285,7 @@ def make_harness(tmp_path, monkeypatch):
 
         upstream = httpx.AsyncClient(transport=httpx.MockTransport(dispatch))
         store = Store(settings.db_path)
-        app = create_app(settings, upstream_client=upstream, store=store, audit=Audit(None))
+        app = create_app(settings, upstream_client=upstream, store=store, audit=Audit(str(audit_path) if audit_path else None))
         client = TestClient(app, base_url=BASE)
         client.__enter__()
         clients.append(client)

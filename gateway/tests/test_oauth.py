@@ -1,3 +1,4 @@
+from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
 from conftest import (
@@ -6,10 +7,13 @@ from conftest import (
     CLAUDE_CB,
     CLAUDE_CODE,
     FUNNEL_ANTHROPIC,
+    FUNNEL_CHAINED,
     FUNNEL_PUBLIC,
+    FUNNEL_SPOOFED,
     GARMIN,
     HEVY,
     OWNER,
+    PUBLIC_IP,
     TAILNET,
     pkce_pair,
 )
@@ -163,6 +167,53 @@ def test_token_endpoint_network_restrictions(h):
     assert h.exchange(code, verifier, headers=TAILNET).status_code == 200
 
 
+def test_token_endpoint_uses_the_right_most_forwarded_address(h):
+    code, verifier = h.authorize()
+    # The origin check comes before the code is used, so the 403 leaves the code valid.
+    assert h.exchange(code, verifier, headers=FUNNEL_SPOOFED).status_code == 403
+    assert h.exchange(code, verifier, headers=FUNNEL_CHAINED).status_code == 200
+
+
+def test_funnel_request_with_forged_owner_login_is_not_the_owner(h):
+    forged = {"Tailscale-Funnel-Request": "?1", "Tailscale-User-Login": OWNER, "X-Forwarded-For": PUBLIC_IP}
+    assert h.start(headers=forged).status_code == 403
+    assert h.client.get("/healthz", headers=forged).status_code == 404
+    code, verifier = h.authorize()
+    assert h.exchange(code, verifier, headers=forged).status_code == 403
+    token = h.exchange(code, verifier, headers=TAILNET)
+    assert token.status_code == 200
+    assert h.mcp(token.json()["access_token"], headers=forged).status_code == 403
+
+
+def test_csrf_cookie_flags(h):
+    def flags(response):
+        jar = SimpleCookie()
+        jar.load(response.headers["set-cookie"])
+        assert len(jar) == 1
+        (morsel,) = jar.values()
+        return morsel
+
+    page = h.start()
+    morsel = flags(page)
+    assert morsel.key.startswith("__Host-fcm-csrf-")
+    assert morsel["secure"] is True
+    assert morsel["httponly"] is True
+    assert morsel["samesite"].lower() == "strict"
+    assert morsel["path"] == "/"
+    assert morsel["domain"] == ""
+    assert morsel["max-age"] == "600"  # auth_request_ttl of the test config
+
+    done = h.submit(h.txn(page))
+    assert done.status_code == 303
+    deleted = flags(done)
+    assert deleted.key == morsel.key
+    assert deleted["max-age"] == "0"
+    assert deleted["secure"] is True
+    assert deleted["httponly"] is True
+    assert deleted["samesite"].lower() == "strict"
+    assert deleted["path"] == "/"
+
+
 def test_token_endpoint_rejects_wrong_verifier_and_reuse(h):
     code, verifier = h.authorize()
     bad = h.exchange(code, pkce_pair()[0])
@@ -273,6 +324,75 @@ def test_revocation(h):
     # unknown tokens are accepted silently (RFC 7009)
     assert h.client.post("/revoke", data={"token": "nope", "client_id": CLAUDE},
                          headers=FUNNEL_ANTHROPIC).status_code == 200
+
+
+def test_exactly_one_resource_is_required(h):
+    for resources in ([HEVY, GARMIN], [HEVY, HEVY]):
+        r = h.start(resource=resources)
+        assert r.status_code == 302
+        assert query(r)["error"] == ["invalid_target"]
+
+
+def test_revoking_an_access_token_keeps_the_grant(h):
+    tokens = h.tokens()
+    r = h.client.post("/revoke", data={"token": tokens["access_token"], "client_id": CLAUDE}, headers=FUNNEL_ANTHROPIC)
+    assert r.status_code == 200
+    assert h.mcp(tokens["access_token"]).status_code == 401
+    assert h.refresh(tokens["refresh_token"]).status_code == 200
+
+
+def test_revocation_by_another_client_changes_nothing(h):
+    # RFC 7009 2.1 says such a request is refused; the gateway answers 200 and revokes nothing
+    # (docs/gateway-design.md, known limitations).
+    tokens = h.tokens()
+    r = h.client.post("/revoke", data={"token": tokens["refresh_token"], "client_id": CLAUDE_CODE},
+                      headers=FUNNEL_ANTHROPIC)
+    assert r.status_code == 200
+    assert h.mcp(tokens["access_token"]).status_code == 200
+    assert h.refresh(tokens["refresh_token"]).status_code == 200
+
+
+def test_refresh_retry_inside_grace_window_forks_the_grant(h):
+    # Pins a known limitation (docs/gateway-design.md): a retry inside refresh_reuse_grace mints a second
+    # live chain. When that is fixed, this test turns red; update the design note with it.
+    first = h.tokens()
+    second = h.refresh(first["refresh_token"]).json()
+    forked = h.refresh(first["refresh_token"]).json()
+    assert second["refresh_token"] != forked["refresh_token"]
+    for chain in (second, forked):
+        renewed = h.refresh(chain["refresh_token"])
+        assert renewed.status_code == 200
+        assert h.mcp(renewed.json()["access_token"]).status_code == 200
+
+
+def test_pkce_parameters_are_required(h):
+    # Each omission alone must be refused; the other parameter would pass its own check.
+    for omitted in ({"code_challenge_method": None}, {"code_challenge": None},
+                    {"code_challenge_method": None, "code_challenge": None}):
+        r = h.start(**omitted)
+        assert r.status_code == 302, omitted
+        assert query(r)["error"] == ["invalid_request"], omitted
+
+
+def test_refresh_grace_window_is_120_seconds(h):
+    # A retry 110 s after the rotation is inside the grace window, one 121 s after it is a reuse.
+    # (docs/gateway-design.md, conformance matrix, refresh rotation.)
+    for age, expected in ((110, 200), (121, 400)):
+        first = h.tokens()
+        h.refresh(first["refresh_token"])
+        h.store._conn.execute("UPDATE tokens SET rotated_at = rotated_at - ? WHERE rotated_at IS NOT NULL", (age,))
+        retry = h.refresh(first["refresh_token"])
+        assert retry.status_code == expected, age
+        if expected == 400:
+            assert retry.json()["error"] == "invalid_grant"
+
+
+def test_revocation_is_refused_outside_the_token_networks(h):
+    tokens = h.tokens()
+    r = h.client.post("/revoke", data={"token": tokens["refresh_token"], "client_id": CLAUDE}, headers=FUNNEL_PUBLIC)
+    assert r.status_code == 403
+    assert h.mcp(tokens["access_token"]).status_code == 200
+    assert h.refresh(tokens["refresh_token"]).status_code == 200
 
 
 def test_expired_access_token(h):

@@ -4,7 +4,7 @@ Memory shared across PRs and worktrees of this project. Agent `memory:` is
 stored per worktree, which is why this is a file in the repo. The
 orchestrator adds findings whose shape repeats at the end of a run. All
 agents read it before working; general lessons are in
-`~/.claude/skills/mao/references/lessons-general.md`.
+[lessons-general.md](https://github.com/stepanbeseda/skills/blob/main/skills/mao/references/lessons-general.md).
 
 ## Error shapes that repeated
 
@@ -205,6 +205,15 @@ agents read it before working; general lessons are in
   so in the live-step warning, and run no compose command that creates `coach-mcp` before the backup. (PR 04,
   review 1, N6) Since 2026-10-09 the e2e test builds `fcm-e2e/*:test` tags and no longer retags the live ones;
   the image-ID check before a deploy stays, because a plain `docker compose build` in a worktree still does.
+  *Update 2026-10-18:* the live stack showed the problem is real and lasts. A read-only `docker inspect` found the
+  `ts` and `hevy-mcp` containers running image ids that no longer exist locally: the tag `hevy-mcp:6.1.16` held a
+  build of 2026-10-04 labelled `fcm-e2e` and `tailscale:1.102.5` one of 2026-09-30, so any compose command on the live
+  project would have recreated both (consistent with the retag described here, which the e2e change of 2026-10-09 stopped). PR 33
+  fixes the class for the three images built from this repo: `gateway`, `garmin-mcp` and `coach-mcp` are tagged
+  `${FCM_VERSION:-local}` with a commit per deploy, `scripts/deploy.sh` is the one deploy path and no other build can
+  repoint what runs. `ts` and `hevy-mcp` keep their pinned tags (byte-identical compose lines,
+  `scripts/check-pins.sh`); the first `deploy.sh` run recreates all five services once, and `--status` shows
+  `DIFFERENT:` for those two until then. (PR 33 spec check, B2; `DEPLOY-2026-10-18.md`)
 - **A recreate of one service under a changed compose file.** Same shape as the PR 04 retag entry.
   `setup-secrets.sh backend-tokens` and `telegram-token` recreate `coach-mcp` from the existing image without
   `--build`; run after `git pull` but before the deploy of PR 12 they start the old image under the new compose
@@ -541,3 +550,82 @@ second one for the rebase), review one round each (PR 26 two, the second a delta
   pre-existing or equivalent). The survivors of the reviewers' own mutants were each classified as equivalent,
   unreachable, pre-existing or a finding in the review file, which is what made the four approvals cheap to trust.
   (reviews of PR 23 to 26; PR 22 mutation entry above)
+
+## Batch of 2026-10-18 (PR 30 to 35)
+
+Six chapters from the high and medium findings of the architecture review of 2026-10-18, composed in the run itself
+(plan PR #49, `0a1f3a4`), `--merge`, merge order 32, 30, 33, 31, 34, 35 (#50, #53 to #57, schema stays 9). Every PR was
+designed in one attempt (spec checks: 3, 1, 0, 2, 2 and 0 blocking items for PR 30 to 35), implemented in one attempt
+(PR 34 two rounds), reviewed in one round except PR 34 (CHANGES, then APPROVED) and PR 35 (a delta review after the
+rebase); no escalation. A usage limit interrupted the run twice.
+
+- **A shared session scratchpad is not yours to clean.** An agent of the batch emptied the session scratchpad that all
+  agents wrote to; the review reports, the mutant results (`result.json`), a generator script, a scan tool and
+  designer-31's first prototype were lost and had to be rebuilt. Every agent creates its own temp dir with `mktemp -d`
+  and removes only that; prototypes and harnesses that a later agent needs live in `ROOT/.claude/mao-log/<PR>-proto/`;
+  nothing in a directory the agent did not create is deleted, and "clean up the scratchpad" is never an instruction.
+  From then on every agent of the batch was given this rule. (BATCH-2026-10-18, INCIDENT note)
+- **A claim table needs one predicate mutant per claim, and a guard enforced in two layers needs a boundary assertion
+  per layer.** PR 34's conformance matrix said "each line names the test that proves it"; the reviewer mutated one
+  predicate per row and three rows were not proved by the tests they cited: RFC 7636 "required" (a request without
+  `code_challenge_method` got the login page; no test sent one), the 120 s refresh grace (a 240 s grace survived
+  because the only test moved `rotated_at` back by 3600 s) and `response_type=code` (killed only by a test the row did
+  not cite). The spec's own mutation table had the removal of each guard but not these predicates, and the implementer
+  copied the rows byte for byte (B1). The repair was test-only cases and a corrected cell, but a "this line is proved
+  by that test" document must have its mutants run before it is approved: one predicate mutant per row, and a row
+  whose mutant survives is reworded or gets a case. The same PR showed the second half: the 121 s boundary case
+  asserts `invalid_grant` but not that the grant was revoked, so the mutant that refuses without revoking (`<=
+  grace_start - 5`) survives; when a boundary has two effects (refuse and revoke, or reject and log), the test asserts
+  the effect each layer owns. (PR 34 review 1, B1; review 2, O-new-1; checklist items on mutation tables)
+- **A "must be empty" grep fails on a correct tree when the plan chapter quotes the old wording; exclude the plan.**
+  Three times in the batch a negative grep of the spec could not be empty: PR 32 G1 (`PYTHON_IMAGE`, `ARG`) and PR 35
+  D10 (`official image`, `770 test`) matched the chapter in `docs/development-plan.md` that quotes the phrase it
+  replaces, and PR 31 B1 (`RATE_LIMIT_HINT in text`) matched the two lines inside `error_outcome` the new design
+  keeps. Chapters are never rewritten, so the first two are certain for any chapter that names what it removes. This
+  is the shape of PR 23 B1 (a substring of a catalogue field) with a different cause. Every such grep in a spec is run
+  on the reference patch, shows its positive hit on the base tree, and carries the exclusion `--
+  ':!docs/development-plan.md'` (or names the sites it expects); the PR body names the exclusion as a deviation so the
+  reviewer does not read it as a weakened check. (PR 31 spec check B1; PR 32 spec G1; PR 35 D10)
+- **A mutant list for a "dropping any one rule turns it red" claim is run with exactly one rule dropped.** PR 30's
+  spec claimed that dropping any rule of `check-ingress.py` turns `--self-test` red and listed 17 mutants. The spec
+  check dropped each rule from the checker and four survived (the listen-address predicate, both branches of the
+  `TS_LOCAL_ADDR_PORT` rule, and "at least one Proxy"), because every listed mutant also tripped a second rule: a
+  `listen_host` mutant was caught by the serve-proxy comparison, a `TS_LOCAL_ADDR_PORT` mutant by the healthcheck
+  rule. A mutant killed by a second rule proves nothing about the first. The fix was four consistent mutants (the
+  whole gateway side on `127.0.0.1`, a bad host, a bad format, empty `Handlers`) that the other rules accept. The same
+  shape one level down: a healthcheck row that stubbed a stopped node without a tailnet address could not tell whether
+  the state guard ran (B2). For every rule, the mutant keeps the rest of the input consistent so that only this rule
+  can notice. (PR 30 spec check, B2 and B3)
+- **A test that captures stdout discards what the harness already printed.** PR 30's `test_mint_token_clamps_ttl_...`
+  read the minted token as `capsys.readouterr().out.strip()`, but `make_harness()` starts the app, which prints the
+  `gateway.started` audit record to the same `sys.stdout`; the "token" was two lines and the test died with
+  `'NoneType' object has no attribute 'expires_at'` on the first pass. A test that parses captured output calls
+  `capsys.readouterr()` once right after the setup and before the call under test, or takes the last line. The spec
+  check caught it only because it wrote and ran every prescribed test in a scratch copy. (PR 30 spec check, B1)
+- **Image tags that other builds can repoint are not a deploy record; see the update to the retag entry in
+  "Operational lessons".** The batch found two live containers whose images were gone because their tags had been
+  rebuilt (LIVE FACT of `BATCH-2026-10-18.md`). The lesson for a spec: when a chapter says an image is "unchanged",
+  define unchanged as the image id before and after (`docker image inspect -f '{{.Id}}' <tag>`), not the tag, and say
+  what a first deploy over containers with missing ids does (recreates them). PR 33 checks criterion 8 as the ids the
+  two tags point to, before and after. (PR 33 spec check, B2)
+- **Independent PRs merge in readiness order, and a branch is rebased onto the new `main` before its review, so
+  reviews stay on the final tree.** The batch proposed 30, 31, 32, 33, 34, 35. PR 32 was ready first and depends on
+  nothing, so it merged first, and the others followed as they were ready (32, 30, 33, 31, 34, 35); only PR 34 (builds
+  on PR 30) and PR 35 (restates numbers and the diagram) waited. Each branch was rebased onto the current `main`
+  before review round 1 where it could be (PR 30 onto PR 32, PR 31 onto PR 30), so the reviewer's check was the check
+  of the tree that merged. When a later merge forced a rebase after approval, it was clean (PR 31 onto PR 33; PR 34
+  onto PR 33 and PR 31) and the full check on the final tree stood in for a delta review; only PR 35, whose rebase
+  conflicted in the diagram files and brought an addendum, got a delta review. The owner is told when the order
+  differs from the proposal. (PR 32, PR 31 and PR 34 journals; BATCH-2026-10-18)
+- **A usage-limit cut-off is resumed with the same agent, which first reads the git and docker state.** The limit hit
+  reviewer-30, implementer-31 and implementer-33 mid-run, and again before PR 34's second review. The orchestrator
+  resumed each one, the same agent with the same scope, and told it to look at what exists before doing anything:
+  commits and the working tree (`git log`, `git status`), the finished check output and its tree hash, scratch images,
+  containers and the machine lock a cut-off run may have left. A finished check on an unchanged tree was reused (PR 30
+  review). A fresh agent would have started without that context. (BATCH-2026-10-18; PR 30, PR 31, PR 33 journals)
+- **A Dependabot title names the first directory only; read the files.** With `group-by: dependency-name` the python
+  digest update arrived as #51, "Bump python in /coach-mcp", which changes the Dockerfiles of `coach-mcp`,
+  `garmin-mcp` and `gateway`. A reader (or a check of PR 32 criterion 8, "one PR that moves all three") who goes by
+  the title would count one directory. Verify with `gh pr list --author "app/dependabot" --json number,title,files`
+  and compare the file list. The same batch showed the guard working: the hevy-mcp PR #52 failed `check-pins.sh` as
+  designed until its compose tag is bumped by hand. (PR 32 journal, criterion 8)

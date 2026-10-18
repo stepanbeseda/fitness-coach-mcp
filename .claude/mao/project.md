@@ -1,12 +1,21 @@
 # MAO — project configuration fitness-coach-mcp
 
-Project layer of the `/mao` skill (`~/.claude/skills/mao/`). Whatever stands here
-takes precedence over the skill's general procedure. Do not copy the repo's
-own rules (`README.md`) here — only link to them.
+MAO (multi-agent orchestration) is the process this repository is built with:
+for each plan chapter a designer agent writes a spec, a worker checks it
+against the repository, an implementer writes code and tests in its own git
+worktree, and an independent reviewer accepts it only with a green
+`scripts/check.sh` run for the reviewed tree. The skill is public:
+https://github.com/stepanbeseda/skills/tree/main/skills/mao (background:
+`docs/how-this-was-built.md`).
+
+This file is the skill's project layer. Whatever stands here takes precedence
+over the skill's general procedure. Do not copy the repo's own rules
+(`README.md`) here — only link to them.
 
 Stack: Python >= 3.13 MCP servers in Docker (`garmin-mcp/`, `gateway/`,
-`hevy-mcp/`, `coach-mcp/`), hash-locked dependencies, no UI. The host has only Python 3.12,
-no pytest/ruff/uv/just/make — tests run inside Docker.
+`hevy-mcp/`, `coach-mcp/`), hash-locked dependencies, no UI. Do not rely on the
+host's Python or tools (no pytest/ruff/uv/just/make there) — tests run inside
+Docker.
 
 ## Files
 
@@ -28,15 +37,15 @@ no pytest/ruff/uv/just/make — tests run inside Docker.
 
 ## Commands
 
-All commands run from ROOT (`/home/ubuntu/dev/fitness-coach-mcp`), or from the
+All commands run from ROOT (the repository root), or from the
 PR's worktree where noted.
 
 - `docker-compose.yml` fixes `name: fitness-coach-mcp`, so `docker compose`
   without `-p` targets the live project from any directory. When a PR's code
   lives in a separate worktree, run only `scripts/check.sh`, `docker build`,
   `docker run`, `scripts/lock-deps.sh` and `scripts/e2e-test.sh` there (from
-  the worktree); `scripts/setup-secrets.sh`, `healthcheck.sh`, `smoke-test.sh`,
-  `admin.sh` and `garmin-login.sh` run only in the live checkout.
+  the worktree); `scripts/setup-secrets.sh`, `deploy.sh`, `healthcheck.sh`,
+  `smoke-test.sh`, `admin.sh` and `garmin-login.sh` run only in the live checkout.
 
 - Check (must be green before the PR), one command, from the PR's worktree:
   `scripts/check.sh --tag pr<NN>` (~3 min on an idle host). It runs, in order,
@@ -72,6 +81,7 @@ PR's worktree where noted.
     and the gateway DB);
   - `scripts/setup-secrets.sh`, `scripts/garmin-login.sh`,
     `scripts/admin.sh grants revoke`, `docker compose run ... login`;
+  - `scripts/deploy.sh` in any mode (even `--status` reads `.env`);
   - reading or printing `.env`, `secrets/*`, `data/*`.
   `scripts/check.sh` and `scripts/e2e-test.sh` are safe (own projects
   `fcm-e2e*`; `E2E_PROJECT` must be `fcm-e2e` or `fcm-e2e-<suffix>`).
@@ -81,7 +91,7 @@ PR's worktree where noted.
 Several PRs may be implemented at once in separate worktrees (background:
 `.claude/mao/lessons.md`, "Parallel runs").
 
-- At most 2 concurrent implementers on this machine (2 CPUs, 11 GB).
+- At most 2 concurrent implementers on this machine.
 - Every `docker build` and every e2e run holds `flock /tmp/fcm-docker.lock`
   (`scripts/check.sh` does it itself; `CHECK_LOCK=0` only for a deliberate
   parallel test). Waiting for the lock is normal; never kill another PR's build.
@@ -130,9 +140,9 @@ Profile `live` = the live docker compose stack on this machine (project
 - The worker verifies the profile is up: `docker compose ps` in ROOT shows
   `ts`, `gateway`, `hevy-mcp`, `garmin-mcp`, `coach-mcp` all healthy, and the garmin
   `/healthz` returns `{"status":"ok","garmin_auth":"ok"}`.
-- EVERY deploy to the host (`docker compose up -d --build <svc>` or anything
-  that restarts live services) is stop-and-ask; smoke-test criteria are
-  checked only after the user approves the deploy.
+- EVERY deploy to the host (`scripts/deploy.sh` or anything that restarts
+  live services) is stop-and-ask; smoke-test criteria are checked only after
+  the user approves the deploy.
 - Without the profile (not requested or not up), integration criteria are
   marked "requires test host".
 
@@ -167,7 +177,8 @@ sections 1 and 2; `README.md` (architecture, security model, installation); `doc
   English docstring = description, fail-soft sections, library calls through
   `GarminService.call` for one strict call, `sections.fetch_sections` for a tool with sections).
 - A tool-list change touches `garmin-mcp/tests/test_http.py` (`EXPECTED_TOOLS`,
-  `WRITE_TOOLS`), `garmin-mcp/README.md` tool table, `README.md`,
+  `WRITE_TOOLS`), `garmin-mcp/tests/tools_list.json` (re-record with
+  `scripts/record-garmin-contract.sh --tools-list`), `garmin-mcp/README.md` tool table, `README.md`,
   `docs/coach-instructions.md` and the `INSTRUCTIONS` string in `server.py`;
   for coach-mcp: `coach-mcp/tests/test_http.py` (`EXPECTED_TOOLS`,
   `WRITE_TOOLS`), `coach-mcp/README.md`, `INSTRUCTIONS` in

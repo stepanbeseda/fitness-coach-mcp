@@ -20,6 +20,9 @@ chapter and a table row; existing chapters are never rewritten, only the
   PR 08 is sent to the owner's Telegram chat and kept there by Telegram, and,
   since PR 22, what the owner writes to that bot, which passes through
   Telegram before `coach-mcp` fetches it.
+  *Superseded on 2026-10-18 (PR 35):* three MCP backends, `hevy-mcp/`,
+  `garmin-mcp/` and `coach-mcp/` (the coach memory server since PR 03),
+  sit behind the gateway.
 - **One way in.** Every MCP backend is reachable only through the gateway. A
   new backend means: a `[[backends]]` entry in `gateway/config.toml`, its own
   internal token secret, a hardened service in `docker-compose.yml` (the
@@ -144,12 +147,12 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 27 | Nightly history run in parts | 24, 26 | planned |
 | 28 | Garmin tool definitions next to their code | 25 | planned |
 | 29 | Recovery snapshot parsed once | 24, 27 | planned |
-| 30 | Gateway reachable only through tailscale serve | — | **in progress** (branch `mao/pr30-gateway-serve-only`) |
-| 31 | Garmin answer and error contract | 25 | **in progress** (branch `mao/pr31-garmin-contract`) |
-| 32 | Automated dependency updates and audit | — | **in progress** (branch `mao/pr32-dependency-updates`) |
-| 33 | Versioned images and rollback | — | **in progress** (branch `mao/pr33-versioned-images-rollback`) |
-| 34 | Security model and gateway design note | 30 | **in progress** (branch `mao/pr34-security-model-design-note`) |
-| 35 | Accurate showcase docs and a readable diagram | 30, 31, 32, 33, 34 | **in progress** (branch `mao/pr35-showcase-docs-diagram`) |
+| 30 | Gateway reachable only through tailscale serve | — | done |
+| 31 | Garmin answer and error contract | 25 | done |
+| 32 | Automated dependency updates and audit | — | done |
+| 33 | Versioned images and rollback | — | done |
+| 34 | Security model and gateway design note | 30 | done |
+| 35 | Accurate showcase docs and a readable diagram | 30, 31, 32, 33, 34 | done |
 
 Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
 10, 11, 12, 13, 14, 09, 07, 15, 16, 17, 18, then 19, 20, 21 and last 22 (the
@@ -2409,6 +2412,46 @@ schema, secret or dependency change.
 **Requested:** 2026-10-18, via `/mao` from a user request (fix the high and medium findings of the
 architecture review of 2026-10-18; this chapter: gateway-01, tests-01); no questions round.
 
+**Delivered:** 2026-10-18, PR #53 (`mao/pr30-gateway-serve-only`),
+squash-merged into `main` as `ba0acf3`, the second PR to merge (merge order
+below, PR 32 block); implemented on `0a1f3a4` and rebased once onto `c354dfa`
+(PR 32), one README conflict in the repository layout block resolved by
+keeping both sides, full check rerun. The gateway listens on `127.0.0.2:8080`
+and tailscaled's health endpoint on `127.0.0.2:9002` (`TS_LOCAL_ADDR_PORT`);
+nothing in the sidecar's namespace accepts TCP on `127.0.0.1` or `::1`.
+`gateway.config.listen_address_problem` and `DEFAULT_LISTEN_HOST` make the
+gateway exit 2 on a forwarded address (`127.0.0.1`, `::1`, `0.0.0.0`, any
+non-loopback or non-IPv4 value); `tailscale/serve.json`, both compose
+healthchecks, `scripts/e2e_flow.py` (asserts `127.0.0.1:8080` and `[::1]:8080`
+refused) and the diagram label follow. New `scripts/check-ingress.py` with
+`--self-test` (20 mutants and one control) runs from `scripts/e2e-test.sh`;
+`scripts/healthcheck.sh` probes ports 8080 and 9002 of the node over the
+tailnet (keys `tailnet-direct-8080` and `tailnet-direct-9002`, test case H28).
+New gateway tests pin the trust boundary (`net_context`, right-most
+`X-Forwarded-For`, a forged owner login on Funnel, CSRF cookie flags, busy
+503, `tests/test_audit.py`, `tests/test_cli.py`). README Network row and
+install step 1 now require the tcp:443-only grant. Criteria 1 to 7 met offline
+(`CHECK OK tree=37ee827d1e7d garmin=449 gateway=123 coach=1673 e2e=OK`,
+reviewer on the same tree; gateway 91 to 123); the reviewer killed 27 of 27
+gateway mutants, 12 of 12 ingress rule drops and 6 of 6 probe mutants, and
+listed the TCP listeners of the pinned `ts` image and the gateway in one
+scratch namespace: only `127.0.0.2:8080` and `127.0.0.2:9002`. Deviations: the
+self-test prints 20 mutants plus 1 control, the spec said 21 (it miscounted);
+the README sentence "the default policy of a new tailnet has one" was not
+verified and dropped; criterion 1 is delivered for TCP only, tailscaled's own
+UDP sockets stay on wildcard addresses (spec D7, accepted in review). Review
+took one round: APPROVED (0 blocking, 6 non-blocking), interrupted once by a
+usage limit and resumed. Spec check: 3 blocking (the mint-token test read the
+start-up audit line, a healthcheck mutant survived, every self-test mutant
+also tripped a second rule), 9 non-blocking, fixed in the spec before
+implementation. Open non-blocking: O4, section 5. Needs the test host:
+criterion 8 (`netstat -ltn` in the `ts` namespace after the owner's deploy,
+healthcheck and smoke test, a Funnel call in the audit log) and U1 to U3 of
+the PR body; the owner applied the tcp:443-only tailnet policy before the
+deploy, and a probe from the host to the node's tailnet address showed :8080
+and :9002 time out and :443 connect. Deploy: `ts` and `gateway` are recreated
+together by `scripts/deploy.sh` (`DEPLOY-2026-10-18.md`).
+
 ### PR 31 — Garmin answer and error contract
 
 `coach-mcp` reads six `garmin-mcp` tools (`ALLOWED_TOOLS` in `coach-mcp/src/coach_mcp/garmin.py`), and the
@@ -2482,6 +2525,43 @@ arguments or metrics; a top-level shared directory read by both Docker builds; a
 **Requested:** 2026-10-18, via `/mao` from a user request (fix the high and medium findings of the architecture
 review of 2026-10-18; this chapter: system-01, garmin-03, quality-03); no questions round.
 
+**Delivered:** 2026-10-18, PR #55 (`mao/pr31-garmin-contract`), squash-merged
+into `main` as `a856231`, the fourth PR to merge; implemented on `c354dfa`,
+rebased clean onto `ba0acf3` (PR 30) before review and clean onto `f3e1071`
+(PR 33) after it. Every garmin-mcp tool error and error section carries one of
+8 documented kinds (`error_kind` key in a section, `_meta` key
+`local.garmin-coach-mcp/error_kind` on the tool result); the message wording,
+`tools/list` and `initialize` are unchanged. coach-mcp's `_call`,
+`history_call` and error sections classify `rate_limited` and `auth_error` by
+the kind first and keep the old text match as the fallback for a garmin-mcp
+without kinds, so both deploy orders work. A snapshot section holding keys but
+none of `SNAPSHOT_KEYS` counts as a section in error (columns kept, one
+`history status=contract_warning sections=<names>` line per run, repaired
+through the PR 18 path); schema stays 9. New:
+`tests/contract/garmin_answers.json` (33 recorded scenarios of the six tools
+the coach reads) with a byte-identical coach copy, `tests/tools_list.json`
+(recorded on the base before any change), `scripts/record-garmin-contract.sh`
+(regenerates all three) and a `[contract]` step in `scripts/check.sh` that
+stops at `step=contract` when the copies differ. All 8 criteria met offline
+(`CHECK OK tree=8809de4668fa garmin=472 gateway=123 coach=1760 e2e=OK`, the
+check on the final tree after the last rebase; garmin 449 to 472, coach 1673
+to 1760); the spec's 37 mutants all killed, the reviewer's own 12 of 15.
+Deviations (accepted in review): criterion 6 compares `section_answers.json`
+after dropping every `error_kind` instead of about 150 `CHANGED` rows (N3);
+criterion 5 uses all keys of garmin-mcp's shapers (`SNAPSHOT_KEYS`) instead of
+"none of the fields the history reads", because the narrower rule would flag
+legitimate partial sections every night (N4); the garmin-mcp log line
+`tool=... status=error kind=...` now shows `kind=GarminError` instead of
+`kind=ToolError` (review O4); commits 5 and 6 are swapped against the spec.
+Review took one round: APPROVED (0 blocking, 11 non-blocking). The rebase onto
+PR 33 was clean, so there was no delta review; the full check on the final
+tree stands in. Spec check: 1 blocking (the "must be empty" greps hit the
+sites the new design keeps), 5 non-blocking, fixed in the spec. Open
+non-blocking: O1 to O3, section 5. Nothing needs the test host; what claude.ai
+does with `_meta`, and a real 429 or lost login recognised by kind after the
+deploy, are not verifiable offline. Deploy: rebuild `garmin-mcp` and
+`coach-mcp`, in either order (`DEPLOY-2026-10-18.md`).
+
 ### PR 32 — Automated dependency updates and audit
 
 Every dependency is pinned (Actions by SHA, base images by digest, Python packages by hash in six locks), but
@@ -2547,6 +2627,45 @@ compose service, secret or schema changes. No deploy.
 
 **Requested:** 2026-10-18, via `/mao` from a user request (fix the high and medium findings of the architecture
 review of 2026-10-18: tests-04 and ops-06); questions and answers round 1 (owner: every default).
+
+**Delivered:** 2026-10-18, PR #50 (`mao/pr32-dependency-updates`),
+squash-merged into `main` as `c354dfa`, the first PR to merge, without a
+rebase. Merge order: the batch proposed 30, 31, 32, 33, 34, 35, but the
+independent PRs merged in readiness order, 32, 30, 33, 31, 34, 35 (#50, #53,
+#54, #55, #56, #57); only PR 34 (builds on PR 30) and PR 35 (restates numbers
+and the diagram) had to wait for others. `.github/dependabot.yml` (GitHub
+Actions and the five Docker directories, monthly),
+`.github/workflows/audit.yml` (weekly `pip-audit` of all seven locks with
+`--require-hashes --disable-pip`, also on pull requests that touch a lock) and
+`.github/audit/requirements.lock` (CI-only, 28 hash-locked packages,
+owner-approved in Q1) are new. `garmin-mcp/Dockerfile` and
+`coach-mcp/Dockerfile` spell `FROM python:3.13-slim@sha256:7c61056e... AS
+deps` literally like the gateway (same digest, identical built images). New
+`scripts/check-pins.sh` (the three python digests agree, the tailscale and
+hevy-mcp compose tags match their Dockerfile pins) with
+`scripts/test-check-pins.sh` (12 cases) and `scripts/test-check-updates.sh`
+(23 checks), both in the `scripts` job; `scripts/check-updates.sh` reports a
+python row per Dockerfile and the uv image. Criteria 1 to 7a met offline
+(`CHECK OK tree=b4a0df89ae78 garmin=449 gateway=91 coach=1673 e2e=OK`,
+reviewer on the same tree; counts unchanged, config-only PR); mutation table
+21 of 23 killed (the two controls survive by design), P1 to P13 and U1 to U8
+killed. Deviations (spec section 9, accepted in review): D1 one Docker PR per
+image through `group-by: dependency-name`, so the three python pins move in
+one PR and `check-pins.sh` turns split PRs red; D2 python minor and major
+bumps ignored (the locks are compiled for CPython 3.13); D3 a 7-day cooldown,
+which also delays digest-only refreshes; D4 seven locks audited, the CI tool
+lock included; G1 excludes `docs/development-plan.md` because the chapter
+quotes `PYTHON_IMAGE`. Review took one round: APPROVED (0 blocking, 4
+non-blocking, kept with the PR body: two guards of `check-pins.sh` without a
+test row of their own, a layout-line wording and the audit concurrency group).
+Spec check: 0 blocking, 3 non-blocking. Criterion 8 after the merge, measured
+2026-10-18: Dependabot opened #51 "Bump python in /coach-mcp", which changes
+the `coach-mcp`, `garmin-mcp` and `gateway` Dockerfiles in one PR (CI green;
+the title names only the first directory), and #52 for hevy-mcp, which fails
+the `scripts` job as designed (`check-pins.sh`: the compose tag must be bumped
+with the Dockerfile). Both stay unmerged until the batch deploy has run. Still
+pending: the manual `gh workflow run audit.yml --ref main` on `main` (its run
+on the PR was green). Nothing to deploy: the images are identical.
 
 ### PR 33 — Versioned images and rollback
 
@@ -2684,6 +2803,50 @@ Explicitly not:
 architecture review of 2026-10-18; this chapter: ops-01); questions and answers round 1 (owner accepted
 every default).
 
+**Delivered:** 2026-10-18, PR #54 (`mao/pr33-versioned-images-rollback`),
+squash-merged into `main` as `f3e1071`, the third PR to merge; implemented on
+`0a1f3a4`, then rebased onto `ba0acf3` (PR 32 and PR 30) with 6 conflicts
+resolved keeping both sides and the chapter's after-rebase section applied,
+full check rerun. `gateway`, `garmin-mcp` and `coach-mcp` are tagged
+`${FCM_VERSION:-local}` and carry version, revision and created labels; the
+`gateway/config.toml` bind mount is gone (the file ships inside the gateway
+image); the `ts` and `hevy-mcp` image lines are byte-identical
+(`check-pins.sh` reads them). New `scripts/deploy.sh` is the one deploy path:
+deploy, `--no-backup`, `--status`, `--rollback [VERSION]` with guards (compose
+or serve.json change, newer database schema, mixed or unknown commit, missing
+images), keeps the running version and two older ones and removes only images
+it built itself. A legacy rollback runs only when named (`--rollback 0.1.0`,
+with a warning); after PR 30 it is refused. New `scripts/test-deploy.sh` (190
+rows, fake `docker`, real read-only `git`) runs in the CI `scripts` job and in
+`scripts/e2e-test.sh`. `CHANGELOG.md` and version `0.2.0` in the three
+`pyproject.toml` and both `__init__.py`. All criteria but 8 met offline
+(`CHECK OK tree=741436902ba5 garmin=449 gateway=123 coach=1673 e2e=OK`,
+reviewer on the same tree; gateway 91 to 123 comes from PR 30); the
+implementer turned 38 of 38 deploy.sh mutants red; the real-Docker rehearsal A
+to B to rollback A to C (`REHEARSAL OK`) ran in isolated scratch projects
+behind a refusing docker wrapper, twice (implementer 82 PASS, reviewer 124
+PASS, the latter also over a legacy `:0.1.0` stack). Deviations (accepted in
+review): 7 listed in the PR body, among them rehearsal step 6 refuses a
+rollback to A not B, a missing `.env` is refused, and a previous-version rule
+that skips a tag equal to the new version; "no git command" is read as no
+command that changes the checkout or history (N10). Review took one round:
+APPROVED (0 blocking, 10 non-blocking). Spec check: 2 blocking (the rehearsal
+backup needed a seeded Garmin token; the live `ts` and `hevy-mcp` containers
+run image ids that no longer exist locally, because their tags were repointed
+after they were created, so the first deploy recreates both), 12 non-blocking,
+fixed in the spec. Open non-blocking: O1 and O4, section 5; O5 (the
+legacy-rollback warning says "go on only if ..." but the script has already
+gone on), O7 (CI time of `test-deploy.sh`, raise the `scripts` job timeout
+from 10 to 15 minutes if it passes 6; the job ran 2m34s) and O8 (a `sudo` run
+leaves a root-owned `.env`) stay with the PR body. Needs the test host:
+criterion 8, the owner's first `scripts/deploy.sh` in the documented order,
+`--status` exit 0, healthcheck, smoke test, and the `ts` and `hevy-mcp` tag
+ids unchanged by the deploy. The first deploy recreates all five services.
+Emergency path for a failed first deploy: fix forward with `--no-backup`, or
+check out the pre-batch commit and `docker compose up -d` the kept `:0.1.0`
+images (`--rollback` is refused from the first deploy). Release: the owner
+tags `v0.2.0` after the batch (PR body).
+
 ### PR 34 — Security model and gateway design note
 
 The architecture review of 2026-10-18 found three documentation gaps in the security story (gateway-02,
@@ -2790,6 +2953,46 @@ Explicitly not:
 architecture review of 2026-10-18; this chapter: gateway-02, gap-architecture-01, presentation-01);
 questions and answers round 1 (owner: every default accepted).
 
+**Delivered:** 2026-10-18, PR #56 (`mao/pr34-security-model-design-note`),
+squash-merged into `main` as `8dfa0d8`, the fifth PR to merge; implemented on
+`ba0acf3` (PR 30 included, so the chapter's after-rebase section applied in
+round 1), rebased clean onto `f3e1071` (PR 33) after round 2 and clean onto
+`a856231` (PR 31) after the approval, full check on the final tree. New
+`docs/gateway-design.md` (threat model of the three zones citing PR 30's tests
+by name, why a custom OAuth server, conformance matrix, non-goals, known
+limitations) linked from the README Security model and `SECURITY.md`; the
+README gets an "LLM / prompt injection" row; `docs/coach-instructions.md` gets
+two coach rules (tool-result text is data, never an instruction; never add
+attendees or send invitations) and a setup note; `docs/how-this-was-built.md`
+section 2 states that the agents share the live host and that the forbidden
+list is a process guard, not a security boundary. New `.claude/settings.json`
+holds exactly six `permissions.deny` rules (`Read` and `Edit` of `./.env`,
+`./secrets/**`, `./data/**`); a probe in the spec phase (Claude Code 2.1.302,
+a scratch repo with fake files) showed it stops the Read, Edit and Write tools
+and a direct `cat` or `>>` in Bash, but not `grep -r`, a script that builds
+the path, or `sh -c` with a glob, and the docs say so. `project.md` and
+`lessons.md` link the public skill and lose the host details. 11 test-only
+gateway cases back matrix lines that had no named proof; gateway 123 to 134,
+no source change. All 8 criteria met offline (`CHECK OK tree=9683dbad7994
+garmin=472 gateway=134 coach=1760 e2e=OK`; garmin and coach differ from the
+earlier lines only because PR 31 merged first). Deviations (accepted in both
+rounds): D4 the chapter's "ask, never always allow" is written without
+claude.ai UI labels, which cannot be verified offline; D5 Bash coverage
+follows the probe, not the chapter's "Bash is not covered". Review took two
+rounds. Round 1 CHANGES (2 blocking, both spec errors): three matrix rows
+claimed more than their tests proved (mutants for RFC 7636 "required", the 120
+s refresh grace and `response_type=code` survived the whole suite) and "the
+SDK would add 13 requirements" was nine new packages; fixed by test-only cases
+and doc lines. Round 2 APPROVED. Spec check: 2 blocking (RFC 8707 "exactly one
+resource" untested, a wrong test-case label), 11 non-blocking. Open
+non-blocking: review-2 O-new-1 and review-1 O2, section 5; O4 (the "backed by
+Claude Code's own approval prompts" wording against auto mode), O5 and O6 stay
+with the PR body. Nothing to deploy. Owner step after the merge: re-paste the
+Project instructions in claude.ai from `docs/coach-instructions.md` (the coach
+behaves as before, without the two new rules, until then); the new settings
+also apply to the owner's own Claude Code sessions in the live checkout
+(`DEPLOY-2026-10-18.md`).
+
 ### PR 35 — Accurate showcase docs and a readable diagram
 
 The architecture diagram (`docs/architecture.svg`, exported from the editable `docs/architecture.html`) is the
@@ -2866,6 +3069,38 @@ numbers stay current, a second README-only drawing, and any code, configuration 
 **Requested:** 2026-10-18, via `/mao` from a user request (fix the high and medium findings of the
 architecture review of 2026-10-18: system-03 and presentation-03); questions and answers round 1 (owner:
 "Default" to every question).
+
+**Delivered:** 2026-10-18, PR #57 (`mao/pr35-showcase-docs-diagram`),
+squash-merged into `main` as `02e5a57`, the last PR to merge; implemented on
+`0a1f3a4`, rebased onto `8dfa0d8` (PR 30 to 34 merged) with a conflict only in
+the two diagram files (PR 35's side taken, then re-copied from the regenerated
+prototype). `docs/architecture.svg` and `docs/architecture.html` are redrawn
+top to bottom in five bands (viewBox 900 x 1072, 75 texts, none below 12 px,
+0.931 scale in the measured 838 px README column): background jobs strip, four
+volumes, optional host cron, hevy-mcp labelled as the pinned upstream, the
+`127.0.0.2:8080` label above the Tailscale-to-gateway line, five edge styles
+with a legend entry each; the `<svg>` block is byte-identical in both files.
+README, `docs/how-this-was-built.md` and two dated notes in this plan (section
+1 "What it is", section 5 "Not planned yet") are corrected: "more than 1,200
+test functions" (1253 counted), 32 delivered PRs (22 features and 10 refactors
+and fixes) and 3 planned, 43 checklist items, "80+" lessons entries, 25 Garmin
+tools, no more "official image" for hevy-mcp; every number is listed with the
+command that produced it in the PR body. Only the five files change; the plan
+diff only adds lines. All 8 criteria met offline (`CHECK OK tree=d90ec526439d
+garmin=472 gateway=134 coach=1760 e2e=OK`, reviewer on the same tree).
+Deviations (accepted): D10 the negative greps of criteria 4 and 5 exclude
+`docs/development-plan.md`, because the chapter quotes "official image" and
+"about 770 test functions"; the diagram is about 2.4 times taller in the
+README than the old one (four columns of 12 px labels do not fit in 900 px);
+the measured column is 838 px, not the review's roughly 880 px. Review took
+two rounds: round 1 APPROVED (0 blocking, 3 non-blocking: the
+Tailscale-to-gateway edge hidden under its label, geometry drift between the
+HTML and the SVG not caught, legend showed only a dashed box), all three fixed
+at the rebase (Addendum 1); round 2 a delta review of the rebase and the
+addendum, APPROVED. Spec check: 0 blocking, 5 non-blocking. Open non-blocking:
+the cosmetic points in section 5. The counts "32 delivered" and "43 checklist
+items" hold once this docs PR sets rows 30 to 35 to `done`. Nothing needs the
+test host; Firefox and Safari were not measured. No deploy.
 
 ## 5. Open items
 
@@ -3231,9 +3466,77 @@ architecture review of 2026-10-18: system-03 and presentation-03); questions and
   `pip-audit` covers the Python packages. If wanted later: the Trivy binary
   pinned by version and checksum (or an image digest), weekly, report-only,
   HIGH and CRITICAL with a fix only.
+- **Tested down-migration CLI, postponed from PR 33 (ops-01 item 4).** The
+  eight SQL one-liners in `coach-mcp/README.md` ("Going back to a version
+  without …") stay the way back across a schema change; since PR 33 they run
+  through `docker compose run`, and `scripts/deploy.sh --rollback` refuses
+  while the database is newer than the target image and points to them. A
+  `python -m coach_mcp downgrade --to N` with a test per step 9 → 1 would
+  replace them.
+- **PR 30 gateway serve-only, non-blocking review finding (round 1,
+  2026-10-18).** O4: `scripts/check-ingress.py` knows only the listeners that
+  exist today (the gateway, `TS_LOCAL_ADDR_PORT`, advertised routes, the exit
+  node). A new loopback listener added through `TS_SOCKS5_SERVER`,
+  `TS_OUTBOUND_HTTP_PROXY_LISTEN`, the deprecated `TS_HEALTHCHECK_ADDR_PORT`,
+  a `TCP` or `TCPForward` handler in `serve.json` or `--advertise-connector`
+  would not turn it red; none is set today, and the healthcheck probe and the
+  `netstat` step of criterion 8 would still catch a real listener on 8080 or
+  9002. One rule per variable would close it.
+- **PR 31 Garmin contract, non-blocking review findings (round 1,
+  2026-10-18).** O1: `run.drifted |= drifted_sections(payload)` in
+  `history.py` can become `=` and the suite stays green (mutant R13); a row
+  for day 1 with HRV drifted and day 2 clean, expecting the `contract_warning`
+  line, closes it. O2: the kind in the error dicts of the write tools
+  (`log_weight` read-back, the scheduling failure in `workouts.py`) is pinned
+  only for a 500; a 429 row in each test would pin it (the coach never reads
+  these). O3: two assertions in
+  `test_a_snapshot_with_every_section_drifted_is_logged` are weak (`all(...)`
+  over no rows passes, the `service_error` outcome is not asserted).
+- **PR 33 versioned images, non-blocking review findings (round 1,
+  2026-10-18).** O1: three guards of `scripts/deploy.sh` have no row in
+  `scripts/test-deploy.sh` and their mutants survive: the `.env` guard on the
+  `--rollback` path (a symlinked `.env` and two `FCM_VERSION` lines), a
+  rollback target where only some images lack a revision label (treated as
+  legacy by the mutant), and the re-check after the build (a stub flag that
+  makes `build` write no revision label); also the tag-pattern check, the
+  `s_target` integer check and the `running_tag != version` condition of
+  previous-version rule 3. O4: `--status` prints `running, commit ...` and
+  exits 0 for a container that is unhealthy (seen with a crash-looping
+  coach-mcp), because it compares image ids only, as specified; the docs pair
+  it with `scripts/healthcheck.sh`, a health suffix could follow.
+- **PR 34 security model, non-blocking review findings (2026-10-18).** Review
+  round 2, O-new-1: the 121 s case of
+  `test_refresh_grace_window_is_120_seconds` checks `invalid_grant` but not
+  that the grant was revoked (the newer access token must answer 401); the
+  mutant `token.rotated_at <= grace_start - 5` survives, and revocation is
+  proved only at 3600 s. Round 1, O2: `docs/gateway-design.md` states that the
+  login page refuses every Funnel request, and that it answers only for
+  `OWNER_TAILSCALE_LOGIN`, as absolute facts; they hold because of
+  `login_tailnet_only = true` in `gateway/config.toml`, which the code reads
+  as a setting (default true, not enforced); "with the shipped `config.toml`"
+  would make it exact.
+- **PR 35 showcase docs, cosmetic findings (2026-10-18).** The HTML page draws
+  the diagram about 1.4 times larger on wide screens (it is sized for the 900
+  px README column). The sentence "about two weeks" in the docs is unchanged,
+  while the git history now spans 2026-09-30 to 2026-10-18. Firefox and Safari
+  were not measured.
+- **GitHub settings at the moment the repository goes public (owner, findings
+  presentation-02 and ops-02 of the review, 2026-10-18).** Not code, so no
+  chapter. Right after the visibility change: private vulnerability reporting
+  (`SECURITY.md` points reporters to Security, Report a vulnerability, which
+  does not exist until it is on), Dependabot alerts, secret scanning and push
+  protection, a ruleset on `main` that requires the checks `garmin-mcp`,
+  `gateway`, `coach-mcp`, `scripts` and `check` and blocks force pushes and
+  deletion (with an owner bypass or without "require a pull request", because
+  the owner also pushes straight to `main`), and "Automatically delete head
+  branches". Then open the Security tab in a logged-out browser and confirm
+  the button is there. Branch protection and rulesets return 403 while the
+  repository is private.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between
   `garmin-mcp` and `coach-mcp`); creating a Hevy workout from a strength
   session recorded on the watch (after PR 19). The weekly report push is part
   of PR 14 since 2026-10-09.
+  *Resolved on 2026-10-18 (PR 35):* the English README came with the
+  open-source release on 2026-10-09 (section 1, "Language").

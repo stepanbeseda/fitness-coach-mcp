@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .formatting import as_dict, as_list, clean, date_prefix, num, resolve_date, resolve_range, today
+from .errors import NOT_FOUND, kind_of
 from .garmin_client import GarminService
 from .sections import UNAVAILABLE, Call, Section, fetch_sections
 
@@ -277,9 +278,12 @@ async def log_weight(service: GarminService, weight_kg: float, date_arg: str | N
     try:
         raw = await service.call(lambda c: c.get_daily_weigh_ins(d))
     except ToolError as exc:
-        out["entry"] = {"error": f"stored, but reading the day back failed: {exc}"}
+        out["entry"] = {"error": f"stored, but reading the day back failed: {exc}", "error_kind": kind_of(exc)}
         return out
     entries = [shape_weigh_in(e) for e in _weigh_ins(raw)]
     match = next((e for e in reversed(entries) if e.get("weight_kg") == w), None)
-    out["entry"] = match or {"error": "stored, but the new weigh-in is not in Garmin's day view yet"}
+    out["entry"] = match or {
+        "error": "stored, but the new weigh-in is not in Garmin's day view yet",
+        "error_kind": NOT_FOUND,
+    }
     return out

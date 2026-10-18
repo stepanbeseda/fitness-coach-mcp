@@ -22,6 +22,7 @@ weather, Garmin token renewal, updates, backups and fixes for common problems. S
 | Backup | `scripts/backup.sh` (for cron: `--quiet`, exit 1 = no archive was created) |
 | Telegram bot | `scripts/setup-secrets.sh telegram-token` (token from @BotFather, prints the chat id), `scripts/setup-secrets.sh telegram-chat-id` (the chat id again) |
 | New versions | Dependabot pull requests and `scripts/check-updates.sh` (see "Updates") |
+| Deploy / roll back | `scripts/deploy.sh` / `scripts/deploy.sh --rollback` (`scripts/deploy.sh --status` shows what runs) |
 | Known vulnerabilities | `gh workflow run audit.yml` (runs every Monday by itself) |
 | Test without touching production | `scripts/e2e-test.sh` (separate Compose project, no internet, no Tailscale) |
 | Full check (tests + e2e) | `scripts/check.sh --tag <tag>` (ends with the line `CHECK OK tree=…`) |
@@ -90,7 +91,7 @@ To turn it on:
    `coach-mcp`. An empty `secrets/telegram_bot_token` is already created by `scripts/setup-secrets.sh`;
    `coach-mcp` does not start without it.
 3. Add `COACH_TELEGRAM_CHAT_ID=` with that number to `.env` (the time and other options are in `.env.example`).
-4. `docker compose up -d --build coach-mcp`
+4. `docker compose up -d coach-mcp`: only `.env` changed, so the configured image is recreated.
 
 The message is plain text; the first line is the verdict with a coloured circle and the date (`🟡 YELLOW ·
 morning briefing 7 Oct`, with `⚠️` when there are new alerts). To turn the briefing off, remove
@@ -220,7 +221,9 @@ The log (`docker compose logs coach-mcp`) has one Garmin line per run, `history 
 paused|rate_limited|service_error|auth|unreachable|no_credentials fetched=… failed=… pending=… given_up=…
 ms=… repaired=…`, never data or values (`repaired` = days whose missing sections loaded in a repair call). With
 `COACH_HISTORY_TIME` inside the briefing window there is also one
-`history status=config_warning` line after startup. `healthcheck.sh` reports the job state (`on` / `off` /
+`history status=config_warning` line after startup. A `history status=contract_warning sections=…` line means
+`garmin-mcp` answered snapshot sections in a shape this `coach-mcp` does not know: deploy both from the same
+commit. `healthcheck.sh` reports the job state (`on` / `off` /
 `stopped`).
 
 ## Weather
@@ -295,7 +298,8 @@ Three things watch the pins; none of them deploys anything.
   Python minor is not proposed, because the locks are compiled for 3.13. CI runs on every such PR. A `tailscale`
   or `hevy-mcp` PR stays red in the `scripts` job (`scripts/check-pins.sh`) until you add a commit to it that
   sets the same version in that service's `image:` tag in `docker-compose.yml`. Merge a green PR, then deploy
-  it with steps 3 to 5 below.
+  it with steps 3 to 5 below: for a `tailscale` or `hevy-mcp` bump the new tag in `docker-compose.yml` makes
+  `scripts/deploy.sh` build that image, because it is missing.
 - **The audit** (`.github/workflows/audit.yml`) runs `pip-audit` on every `requirements*.lock` each Monday, on
   demand (`gh workflow run audit.yml`) and on pull requests that change a lock or a `pyproject.toml`. GitHub
   mails you when the scheduled run fails. A red run names the package and the fixed version: raise it (step 2)
@@ -311,25 +315,74 @@ The procedure by hand (Python packages, or a pin without a Dependabot PR):
    the `image:` tag in `docker-compose.yml`; or `pyproject.toml`). `scripts/check-pins.sh` checks the pins.
    For Python, run `scripts/lock-deps.sh` (optionally `--upgrade`). `ruff` and `mypy` are pinned to exact
    versions in the `test` / `dev` extra of each `pyproject.toml`, because a newer version can report new
-   findings; `scripts/check-updates.sh` does not list them.
+   findings; `scripts/check-updates.sh` does not list them. The deploy needs a committed tree, so the change is
+   committed (a PR) before the deploy.
 3. `scripts/check.sh` (tests of all services + e2e: build and the whole OAuth/MCP flow without touching
    production).
 4. `scripts/setup-secrets.sh` adds the secrets a new version is missing (e.g. `secrets/garmin_readonly_token`
    or an empty `secrets/telegram_bot_token`). Without them the service that reads them does not start. On a
    complete installation it changes nothing.
-5. `docker compose up -d --build` → `scripts/smoke-test.sh` → commit.
+5. `scripts/deploy.sh` → `scripts/smoke-test.sh`.
 
 The Garmin read-only token (`secrets/garmin_readonly_token`): when you move to the version that introduces it,
 step 4 creates it and restarts nothing. It takes effect only in step 5. `garmin-mcp` and `coach-mcp` must be
-deployed together (`docker compose up -d --build garmin-mcp coach-mcp` is enough): an older `garmin-mcp` image
+deployed together (`scripts/deploy.sh` deploys every service together): an older `garmin-mcp` image
 does not know the new token, and an older `coach-mcp` image looks for a token the new `docker-compose.yml` no
 longer mounts for it. A second run of `setup-secrets.sh` changes nothing.
 
 Digest for a new tag: `docker buildx imagetools inspect <image:tag>` (the `Digest` line).
 
+### Versions and rollback
+
+- `scripts/deploy.sh` deploys the commit the checkout is on: it refuses uncommitted changes and missing secret
+  files, backs up (when `BACKUP_DIR` is set and the stack runs; `--no-backup` skips it), builds the three images
+  of this repo tagged with `git describe` (the test stage runs inside the build; nothing is rebuilt when the
+  images of this commit exist), writes `FCM_VERSION` and `FCM_PREVIOUS_VERSION` to `.env`, starts the stack and
+  waits until every service is healthy. Every new commit recreates `gateway`, `garmin-mcp` and `coach-mcp` (a few
+  seconds without connectors); `ts` and `hevy-mcp` restart only when their pin or settings change.
+- It keeps the running version and two older ones of each image and removes older images it built itself; it
+  never removes tags it did not create.
+- `scripts/deploy.sh --status` compares what runs with what is configured (it replaces comparing image IDs by
+  hand) and lists the kept versions; it changes nothing.
+- `scripts/deploy.sh --rollback` switches to `FCM_PREVIOUS_VERSION` (or `--rollback <version>`) without a build;
+  run it again to switch forward. It refuses when the images are gone, when `docker-compose.yml` or a file it
+  mounts from the checkout changed between the two commits (then: a revert PR and `scripts/deploy.sh`), and when
+  the coach database is newer than the old `coach-mcp` (then the down-migrations in `coach-mcp/README.md` first).
+  Images not built by the script (the `0.1.0` ones) are reached only by naming them, and only while the
+  `gateway/config.toml` inside the old gateway image equals the checkout's. Otherwise the old gateway would listen
+  where the current `tailscale/serve.json` and the ingress rules do not expect it.
+- A build by hand in the live checkout (`docker compose build`, or `up` with `--build`) overwrites the image of the
+  configured version with the current tree; `--status` then reports `not built by scripts/deploy.sh`. Deploy with
+  the script only.
+- Do not deploy while a batch of agents builds on the same machine: `scripts/deploy.sh` does not take the build
+  lock.
+
+### First deploy with scripts/deploy.sh
+
+Moving from the `0.1.0` images, once:
+
+1. `git status --short` is empty. (`scripts/deploy.sh --status` does not exist in the old tree.)
+2. `git pull --ff-only`.
+3. Nothing in between: no `docker compose up|run|create|build`, no `scripts/setup-secrets.sh` (its gateway image now
+   comes from Compose) and no `scripts/garmin-login.sh`. `scripts/deploy.sh --status` is allowed: it is read-only,
+   exits 1 and shows `image missing` for the three images of this repo.
+4. `scripts/deploy.sh`. It backs up (when `BACKUP_DIR` is set), then builds the three images; the connectors stay up
+   during the build. It writes `FCM_VERSION=<commit>` and `FCM_PREVIOUS_VERSION=0.1.0`, starts the stack and
+   recreates the services once.
+5. `scripts/deploy.sh --status` exits 0; then `scripts/healthcheck.sh` and `scripts/smoke-test.sh`.
+6. Only after that, if wanted, `docker image ls 'fitness-coach-mcp/*'` and remove the old tags with `docker rmi`.
+
+- After `git pull` and before `scripts/deploy.sh`, `.env` has no `FCM_VERSION`: any command that creates a
+  container would build the new code under the tag `local` and start it without a backup.
+- On this first deploy `ts` and `hevy-mcp` may restart too: Compose recreates a container whose tag was rebuilt
+  after it started (`--status` shows them as `DIFFERENT` before the deploy). Their images are not rebuilt.
+- Do not roll back to `0.1.0` afterwards: from this version on, the gateway listens on another address, and
+  `scripts/deploy.sh --rollback 0.1.0` refuses because the old gateway's `config.toml` differs. The way back is a
+  revert PR and `scripts/deploy.sh`.
+
 ## Backups
 
-`fitness-coach-mcp_coach-data` is the **only copy** of the coach's goals, constraints, plan and notes, and no
+The `coach-data` volume is the **only copy** of the coach's goals, constraints, plan and notes, and no
 script can recreate it. The gateway database (grants and refresh tokens) and the Garmin tokens can be recreated
 (reconnect the connectors, `scripts/garmin-login.sh`), but a backup saves that work. Not included:
 `audit.jsonl` (a log, not state), `ts-state` (a new auth key recreates the Tailscale node) and `secrets/`
@@ -354,15 +407,17 @@ script can recreate it. The gateway database (grants and refresh tokens) and the
 Setup: add `BACKUP_DIR=` (an absolute path outside the repository) and optionally `BACKUP_KEEP=` to `.env` with an
 editor, run `scripts/backup.sh` once and add the cron line from [Routine tasks](#routine-tasks). The `backup`, `restore`,
 `backup-db` and `restore-db` commands inside the containers exist only in images built from this version.
-After an update, rebuild and restart the stack first ([Updates](#updates), `docker compose up -d --build`). Older images
+After an update, deploy first ([Updates](#updates), `scripts/deploy.sh`). Older images
 answer `restore` with a usage line only (exit 2) and change nothing.
 
 **Where to keep them.** The archives contain personal training data and Garmin login tokens: keep them out of
 the repository and out of public storage. Copying them off this machine (encrypted) is up to you; the script
 does not do it.
 
-**Restore** one part at a time, always with that part's service stopped, one command at a time. First set the
-archive path (the name contains the time in UTC; use your own archive):
+**Restore** one part at a time, always with that part's service stopped, one command at a time.
+`docker compose run` starts a one-off container of the configured version with the service's volumes; for the
+gateway, `ts` must be running (the gateway uses its network). First set the archive path (the name contains the
+time in UTC; use your own archive):
 
 ```bash
 ARCHIVE=/srv/backups/fitness-coach-mcp/fitness-coach-backup-20261009T004700Z.tgz
@@ -372,7 +427,7 @@ Coach memory:
 
 ```bash
 docker compose stop coach-mcp
-tar -xzOf "$ARCHIVE" coach.db | docker run --rm -i --network none -v fitness-coach-mcp_coach-data:/data/coach fitness-coach-mcp/coach-mcp:0.1.0 restore
+tar -xzOf "$ARCHIVE" coach.db | docker compose run --rm --no-deps -T coach-mcp restore
 docker compose start coach-mcp
 ```
 
@@ -380,7 +435,7 @@ Gateway (grants):
 
 ```bash
 docker compose stop gateway
-tar -xzOf "$ARCHIVE" gateway.sqlite3 | docker run --rm -i --network none -v fitness-coach-mcp_gateway-data:/data --entrypoint python fitness-coach-mcp/gateway:0.1.0 -m gateway.cli restore-db
+tar -xzOf "$ARCHIVE" gateway.sqlite3 | docker compose run --rm --no-deps -T --entrypoint python gateway -m gateway.cli restore-db
 docker compose start gateway
 ```
 
@@ -388,7 +443,7 @@ Garmin tokens:
 
 ```bash
 docker compose stop garmin-mcp
-tar -xzOf "$ARCHIVE" garmin_tokens.json | docker run --rm -i --network none -v fitness-coach-mcp_garmin-tokens:/data/garmin --entrypoint python fitness-coach-mcp/garmin-mcp:0.1.0 -m garmin_coach_mcp.login --tokens-dir /data/garmin --import-file - --no-verify
+tar -xzOf "$ARCHIVE" garmin_tokens.json | docker compose run --rm --no-deps -T --entrypoint python garmin-mcp -m garmin_coach_mcp.login --tokens-dir /data/garmin --import-file - --no-verify
 docker compose start garmin-mcp
 scripts/garmin-login.sh --check
 ```
@@ -396,7 +451,7 @@ scripts/garmin-login.sh --check
 A restore first verifies the file: SQLite integrity, the expected tables, and that the coach database schema is
 not newer than the image.
 - On any error, coach and gateway end with a line `… nothing changed`. The Garmin token import rejects an
-  invalid file with `The file does not look like garmin_tokens.json …`. In all cases the volume stays as it
+  invalid file with `The file does not look like a garmin_tokens.json …`. In all cases the volume stays as it
   was.
 - On success, the previous files in the volume stay as `<file>.before-restore-<UTC time>`. That includes any
   leftover `-journal` / `-wal`, which SQLite would otherwise replay into the restored file.
@@ -404,8 +459,8 @@ not newer than the image.
   image).
 - The Garmin tokens are replaced without a side copy (they can be recreated with `scripts/garmin-login.sh`);
   `--check` shows an expired token from the archive.
-- On a new host, first start the stack according to the [README](../README.md#installation) (`docker compose up -d --build`) so that
-  Compose creates the volumes, and only then restore.
+- On a new host, first start the stack according to the [README](../README.md#installation) (`scripts/deploy.sh`)
+  so that Compose creates the volumes, and only then restore.
 - When a command ends with an error, do not continue with the next one; after `docker compose start` the
   service runs with its existing data.
 
@@ -417,22 +472,22 @@ side copy and consumes the `-journal` / `-wal` / `-shm` of the chosen copy, beca
 reading it; the copy itself stays.
 
 ```bash
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint ls fitness-coach-mcp/coach-mcp:0.1.0 -l /data/coach
+docker compose run --rm --no-deps -T --entrypoint ls coach-mcp -l /data/coach
 docker compose stop coach-mcp
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach fitness-coach-mcp/coach-mcp:0.1.0 restore /data/coach/coach.db.before-restore-20261009T101500Z
+docker compose run --rm --no-deps -T coach-mcp restore /data/coach/coach.db.before-restore-20261009T101500Z
 docker compose start coach-mcp
 ```
 
 Delete side copies you no longer need:
 
 ```bash
-docker run --rm --network none -v fitness-coach-mcp_coach-data:/data/coach --entrypoint sh fitness-coach-mcp/coach-mcp:0.1.0 -c 'rm -f /data/coach/coach.db.before-restore-*'
+docker compose run --rm --no-deps -T --entrypoint sh coach-mcp -c 'rm -f /data/coach/coach.db.before-restore-*'
 ```
 
 The same for the gateway:
 
 ```bash
-docker run --rm --network none -v fitness-coach-mcp_gateway-data:/data --entrypoint sh fitness-coach-mcp/gateway:0.1.0 -c 'rm -f /data/gateway.sqlite3.before-restore-*'
+docker compose run --rm --no-deps -T --entrypoint sh gateway -c 'rm -f /data/gateway.sqlite3.before-restore-*'
 ```
 
 The pattern also deletes the `-journal` / `-wal` / `-shm` helper files and the copy you just went back from.
@@ -480,17 +535,19 @@ the newest backup.
 | A connector stops working after a while and asks for login | The refresh token expired or the grant was revoked (`scripts/admin.sh grants list --all` shows the reason, e.g. `refresh token reuse`). Reconnect from the tailnet. |
 | MCP calls return 403 | The token came through Funnel from an IP outside `160.79.104.0/21`. For claude.ai this means Anthropic changed the range: check the [docs](https://platform.claude.com/docs/en/api/ip-addresses) and adjust `FUNNEL_TOKEN_CIDRS` in `.env`. |
 | MCP calls return 502 `backend_misconfigured` | The gateway ↔ backend internal token does not match → `scripts/setup-secrets.sh backend-tokens`. |
-| The gateway does not start after an update: `cannot read secret /run/secrets/coach_backend_token` | `scripts/setup-secrets.sh` (adds the missing internal token), then `docker compose up -d --build coach-mcp gateway`. |
-| `coach-mcp` unhealthy, log says `database schema version N is newer` | An older image is running than the data: deploy the newer version again; do not delete the `coach-data` volume. |
+| The gateway does not start after an update: `cannot read secret /run/secrets/coach_backend_token` | `scripts/setup-secrets.sh` (adds the missing internal token), then `scripts/deploy.sh`. |
+| `coach-mcp` unhealthy, log says `database schema version N is newer` | An older image is running than the data: `scripts/deploy.sh --rollback` back to the newer version, or `scripts/deploy.sh`; do not delete the `coach-data` volume. |
+| `scripts/deploy.sh` refuses: … | The line says why; nothing was changed. `--status` shows what runs. |
 | `scripts/backup.sh` ends with `No backup written` | The lines above name the part: `is not running` (Compose message) = the service is not running (`docker compose ps`); `Garmin tokens missing` = `scripts/garmin-login.sh`; `database is larger than 32 MiB` / `stayed locked` = report it (the limit is raised in a PR). No archive was created and older ones stay. |
 | `healthcheck.sh` says `backup: newest archive is … h old` or `no archive in BACKUP_DIR` | The nightly `scripts/backup.sh` failed or did not run: run it by hand and read its lines (row above), then check its cron line and `BACKUP_DIR` in `.env`. Weekly backups need a larger `BACKUP_MAX_AGE_HOURS` (for example 192). |
+| `healthcheck.sh` says `tailnet: port 8080 of the node accepts connections that bypass tailscale serve` (or 9002) | Something in the `ts` namespace listens on `127.0.0.1` again (an edited `TS_LOCAL_ADDR_PORT` or a changed image), and the tailnet policy lets the host through on that port. Run `scripts/check-ingress.py`, restore `127.0.0.2`, recreate `ts` and `gateway` together (`scripts/deploy.sh` recreates both), and check the policy rule of README install step 1. |
 | `healthcheck.sh --notify` ends with `Notify failed: COACH_TELEGRAM_CHAT_ID …` or `… secrets/telegram_bot_token …` | The chat id is missing from `.env`, or the token file is missing, unreadable for the cron user or not a bot token → Morning briefing, steps 2 and 3 (`scripts/setup-secrets.sh telegram-token`, `scripts/setup-secrets.sh telegram-chat-id`). The problems are still printed and the exit code is 1. |
 | `Notify failed: Telegram did not accept the message (HTTP …)` | Telegram rejected the message (token, chat id, bot blocked or nobody has written to it yet) or did not respond (`HTTP 000`). Nothing is lost: the next run sends it again. |
 | `Notify failed: another healthcheck.sh --notify run is in progress` | Two runs overlapped (for example a manual run during the cron run); the other run sends the message. |
 | `Notify failed: the message could not be composed` | The state file `~/.local/state/fitness-coach-mcp/healthcheck-notify.state` cannot be read (it is a directory or the file system fails). Fix or delete it; the next run sends the current problems. |
 | `Notify failed: cannot create a temporary directory` | `/tmp` (or `$TMPDIR` of the cron user) is full or not writable. The problems are still on stderr; the next run tries again. |
 | `coach-mcp` does not start: `bind source path does not exist: …/secrets/telegram_bot_token` | The bot token file is missing (an empty one is enough) → `scripts/setup-secrets.sh` and `docker compose up -d coach-mcp`. |
-| `garmin-mcp` or `coach-mcp` does not start: `bind source path does not exist: …/secrets/garmin_readonly_token` | The coach's read-only token is missing → `scripts/setup-secrets.sh` and `docker compose up -d --build garmin-mcp coach-mcp`. |
+| `garmin-mcp` or `coach-mcp` does not start: `bind source path does not exist: …/secrets/garmin_readonly_token` | The coach's read-only token is missing → `scripts/setup-secrets.sh` and `scripts/deploy.sh`. |
 | The briefing and history have no Garmin data, the `garmin-mcp` log says `read-only token file missing or too short` | `secrets/garmin_readonly_token` is empty → `scripts/setup-secrets.sh` fills it; running services pick up the new token by themselves. |
 | `coach-mcp` keeps restarting, log says `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | `.env` has a chat id but the token is missing or corrupt → `scripts/setup-secrets.sh telegram-token`, or delete the chat id from `.env` (briefing off). |
 | `get_trends` / `get_weekly_report` have no data, `get_correlations` returns `too_few_pairs` | The history is still loading (first run ~30 min, outside the briefing window) or Garmin is not logged in: `docker compose logs coach-mcp`, lines `history status=…` (`rate_limited` = Garmin limited the calls, next attempt in 1 to 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect or the internet did not work, next attempt in 1 to 8 h, the days do not count; `given_up` > 0 = days that failed three times although Garmin returned other days). |

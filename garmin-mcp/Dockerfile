@@ -1,7 +1,7 @@
 # garmin-coach-mcp: curated Garmin Connect MCP server (Streamable HTTP, stateless).
 # Dependencies are installed from hash-locked files (see README.md to regenerate).
 # The base image is a literal pin (no ARG), so Dependabot and scripts/check-pins.sh see it.
-FROM python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b AS deps
+FROM python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS deps
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -11,11 +11,14 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-deps --require-hashes -r requirements.lock
 
-# Test stage: runs during every build (the runtime stage depends on its marker). Static checks first
-# (ruff, then mypy; both configured in pyproject.toml), then the tests.
-FROM deps AS test
+# Dev stage: the test tools, without the code (scripts/record-garmin-contract.sh runs the tests of a mounted tree).
+FROM deps AS dev
 COPY requirements-dev.lock .
 RUN pip install --no-deps --require-hashes -r requirements-dev.lock
+
+# Test stage: runs during every build (the runtime stage depends on its marker). Static checks first
+# (ruff, then mypy; both configured in pyproject.toml), then the tests.
+FROM dev AS test
 COPY pyproject.toml ./
 COPY src/ src/
 COPY tests/ tests/

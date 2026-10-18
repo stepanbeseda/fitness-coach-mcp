@@ -68,7 +68,7 @@ async def test_s2_404_is_empty_only_when_declared(service, fake):
     assert out["strict"] == {"payload": fake.responses["get_user_summary"]}
     fake.fail["get_user_summary"] = NOT_FOUND
     out = await fetch_sections(service, {"strict": summary_call()}, {"strict": Section("strict", seen)})
-    assert out == {"strict": {"error": "Not found in Garmin Connect (API Error 404)."}}
+    assert out == {"strict": {"error": "Not found in Garmin Connect (API Error 404).", "error_kind": "not_found"}}
 
 
 @pytest.mark.anyio
@@ -77,7 +77,7 @@ async def test_s2_only_a_404_is_swallowed_by_missing_is_empty(service, fake):
     out = await fetch_sections(
         service, {"sleep": sleep_call(missing_is_empty=True)}, {"sleep": Section("sleep", seen)}
     )
-    assert out == {"sleep": {"error": FAILED}}
+    assert out == {"sleep": {"error": FAILED, "error_kind": "garmin_unavailable"}}
 
 
 # S3 ------------------------------------------------------------------------------ section in error
@@ -94,7 +94,12 @@ async def test_s3_failed_call_is_the_section_error_and_the_others_survive(servic
             "summary": Section("summary", lambda raw: "ok"),
         },
     )
-    assert out == {"sleep": {"error": FAILED}, "sleep_laps": {"laps_error": FAILED}, "omitted": None, "summary": "ok"}
+    assert out == {
+        "sleep": {"error": FAILED, "error_kind": "garmin_unavailable"},
+        "sleep_laps": {"laps_error": FAILED},
+        "omitted": None,
+        "summary": "ok",
+    }
 
 
 # S4 ---------------------------------------------------------------------------- shaper exception
@@ -112,7 +117,7 @@ async def test_s4_shaper_exception_degrades_the_section_and_logs_no_data(service
         },
     )
     assert out == {
-        "sleep": {"error": "unexpected Garmin response for sleep"},
+        "sleep": {"error": "unexpected Garmin response for sleep", "error_kind": "unexpected_answer"},
         "custom": {"laps_error": "unexpected Garmin response for sleep"},
         "summary": "ok",
     }

@@ -17,6 +17,11 @@ from urllib.parse import urlsplit
 DEFAULT_CONFIG_PATH = "/app/config.toml"
 DEFAULT_DB_PATH = "/data/gateway.sqlite3"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# tailscaled in userspace mode (the ts sidecar, whose network namespace the gateway shares) forwards a tailnet TCP
+# connection to a port without a serve handler to 127.0.0.1:<port> (wgengine/netstack acceptTCP, v1.102.5). The
+# gateway therefore listens on another IPv4 loopback address, which only `tailscale serve` connects to.
+DEFAULT_LISTEN_HOST = "127.0.0.2"
+NETSTACK_FORWARD_TARGET = ipaddress.IPv4Address("127.0.0.1")
 SCOPE = "mcp"
 
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -238,9 +243,13 @@ def load_settings(path: str | None = None, *, allow_http: bool = False) -> Setti
     if not backends:
         raise ConfigError("no backends configured")
 
+    listen_host = str(server.get("listen_host", DEFAULT_LISTEN_HOST))
+    if (problem := listen_address_problem(listen_host)) is not None:
+        raise ConfigError(f"listen_host: {problem}")
+
     return Settings(
         public_base_url=base_url,
-        listen_host=str(server.get("listen_host", "127.0.0.1")),
+        listen_host=listen_host,
         listen_port=_int(server, "listen_port"),
         db_path=str(server.get("db_path", DEFAULT_DB_PATH)),
         audit_log_path=str(server["audit_log_path"]) if server.get("audit_log_path") else None,
@@ -265,6 +274,22 @@ def load_settings(path: str | None = None, *, allow_http: bool = False) -> Setti
         clients=clients,
         backends=tuple(backends),
     )
+
+
+def listen_address_problem(host: str) -> str | None:
+    """Why `host` must not be a listen address in the sidecar's namespace, or None when it is fine."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return f"{host!r} is not an IP address"
+    if not isinstance(address, ipaddress.IPv4Address) or not address.is_loopback:
+        return f"{host} is not an IPv4 loopback address"
+    if address == NETSTACK_FORWARD_TARGET:
+        return (
+            f"{host} is where tailscaled forwards tailnet connections around tailscale serve; "
+            f"use another loopback address such as {DEFAULT_LISTEN_HOST}"
+        )
+    return None
 
 
 def read_secret(path: str) -> str:

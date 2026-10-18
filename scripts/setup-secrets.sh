@@ -16,7 +16,7 @@
 # logged or passed on a command line.
 source "$(dirname "$0")/lib.sh"
 
-GATEWAY_IMAGE="fitness-coach-mcp/gateway:0.1.0"
+GATEWAY_IMAGE=""
 
 ensure_dir() {
   if [[ ! -d "$SECRETS_DIR" ]]; then
@@ -52,6 +52,7 @@ read_hidden() {
 }
 
 ensure_gateway_image() {
+  GATEWAY_IMAGE="$(compose_image gateway)" || die "Cannot read the gateway image from docker-compose.yml."
   if ! docker image inspect "$GATEWAY_IMAGE" >/dev/null 2>&1; then
     info "Building the gateway image (the first build takes a while)..."
     dc build gateway >&2
@@ -167,7 +168,7 @@ ensure_backend_tokens() {
 ensure_garmin_readonly_token() {
   if ! has_secret garmin_readonly_token; then
     new_backend_token garmin_readonly_token
-    info "The new read-only token for coach-mcp takes effect after a deploy: docker compose up -d --build garmin-mcp coach-mcp"
+    info "The new read-only token for coach-mcp takes effect after a deploy: scripts/deploy.sh"
   fi
   return 0
 }

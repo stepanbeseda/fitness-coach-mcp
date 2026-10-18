@@ -1,5 +1,5 @@
 """End-to-end OAuth + MCP flow, executed inside the gateway container by
-scripts/e2e-test.sh. It talks to the gateway on 127.0.0.1:8080 and simulates the
+scripts/e2e-test.sh. It talks to the gateway on 127.0.0.2:8080 and simulates the
 headers `tailscale serve` adds (tailnet identity / Funnel + client IP)."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pyotp
 
-GW = "http://127.0.0.1:8080"
+GW = "http://127.0.0.2:8080"
 BASE = os.environ["PUBLIC_BASE_URL"]
 OWNER = os.environ["OWNER_TAILSCALE_LOGIN"]
 PASSWORD = os.environ["E2E_PASSWORD"]
@@ -54,7 +54,7 @@ def oauth(client: httpx.Client, resource: str) -> dict:
     check(page.status_code == 200, f"authorize page for {resource}")
     txn = re.search(r'name="txn" value="([^"]+)"', page.text).group(1)
     # The CSRF cookie is Secure (browsers reach the gateway over https via tailscale
-    # serve); this client speaks plain http to 127.0.0.1, so send it like a browser would.
+    # serve); this client speaks plain http to 127.0.0.2, so send it like a browser would.
     cookie = page.headers["set-cookie"].split(";", 1)[0]
     client.cookies.clear()
     done = client.post(f"{GW}/authorize", headers={**TAILNET, "cookie": cookie}, data={
@@ -262,7 +262,20 @@ def exercise_weather(client: httpx.Client, token: str) -> None:
     check(ok, "coach still answers after the weather error")
 
 
+def check_forward_targets_closed() -> None:
+    """Nothing may listen where tailscaled forwards tailnet connections for ports without a serve handler."""
+    for host in ("127.0.0.1", "[::1]"):
+        label = f"nothing answers on {host}:8080 (tailscaled forwards tailnet connections there)"
+        try:
+            httpx.get(f"http://{host}:8080/healthz", timeout=3)
+        except httpx.ConnectError:
+            check(True, label)
+        else:
+            check(False, label)
+
+
 def main() -> int:
+    check_forward_targets_closed()
     with httpx.Client(timeout=60, follow_redirects=False) as client:
         public = client.get(f"{GW}/authorize", headers=FUNNEL)
         check(public.status_code == 403, "login page refused through Funnel")

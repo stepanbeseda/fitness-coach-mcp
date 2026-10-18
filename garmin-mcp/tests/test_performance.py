@@ -231,7 +231,7 @@ async def test_performance_metrics_odd_payload_is_section_error(service, fake):
         {"generic": {"calendarDate": "not-a-date", "vo2MaxPreciseValue": 50}}
     ]
     out = await performance.performance_metrics(service, 12, end=END)
-    assert out["vo2max"] == {"error": "unexpected Garmin response for vo2max"}
+    assert out["vo2max"] == {"error": "unexpected Garmin response for vo2max", "error_kind": "unexpected_answer"}
     assert out["race_predictions"]["5k"]["time"] == "21:30"
 
 

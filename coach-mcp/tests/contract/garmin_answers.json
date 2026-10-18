@@ -1,0 +1,928 @@
+{
+ "get_device_status ok": {
+  "tool": "get_device_status",
+  "arguments": {},
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "last_upload": {
+    "device": "Example Watch 1",
+    "time_utc": "2026-09-30T04:58:12Z",
+    "time_local": "2026-09-30T06:58"
+   },
+   "primary_device": {
+    "name": "Example Watch 1",
+    "status": "active",
+    "primary_activity_tracker": true,
+    "registered_devices": 1
+   }
+  }
+ },
+ "get_device_status rate_limited": {
+  "tool": "get_device_status",
+  "arguments": {},
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "last_upload": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   },
+   "primary_device": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   }
+  }
+ },
+ "get_device_status garmin_unavailable": {
+  "tool": "get_device_status",
+  "arguments": {},
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "last_upload": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   },
+   "primary_device": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   }
+  }
+ },
+ "get_device_status not_logged_in": {
+  "tool": "get_device_status",
+  "arguments": {},
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool get_device_status: Garmin Connect is not connected yet. On the server run `scripts/garmin-login.sh` (one-time interactive login incl. MFA), then retry.",
+  "answer": null
+ },
+ "get_device_status session_expired": {
+  "tool": "get_device_status",
+  "arguments": {},
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool get_device_status: Garmin rejected the stored session (expired or revoked). On the server run `scripts/garmin-login.sh` to log in again, then retry.",
+  "answer": null
+ },
+ "get_recovery_snapshot ok": {
+  "tool": "get_recovery_snapshot",
+  "arguments": {
+   "date": "2026-09-30"
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "date": "2026-09-30",
+   "readiness": {
+    "score": 58,
+    "level": "MODERATE",
+    "feedback": "READY_FOR_MODERATE",
+    "time_local": "2026-09-30T14:05",
+    "recovery_time_h": 9.0,
+    "factors": {
+     "sleep": {
+      "percent": 68,
+      "feedback": "MODERATE",
+      "sleep_score": 71
+     },
+     "sleep_history": {
+      "percent": 74,
+      "feedback": "GOOD"
+     },
+     "recovery_time": {
+      "percent": 55,
+      "feedback": "MODERATE"
+     },
+     "acute_load": {
+      "percent": 80,
+      "feedback": "GOOD",
+      "acute_load": 612
+     },
+     "hrv": {
+      "percent": 70,
+      "feedback": "GOOD",
+      "hrv_weekly_avg_ms": 52
+     },
+     "stress_history": {
+      "percent": 64,
+      "feedback": "MODERATE"
+     }
+    },
+    "morning_score": 76,
+    "morning_level": "HIGH"
+   },
+   "hrv": {
+    "last_night_avg_ms": 48,
+    "last_night_5min_high_ms": 71,
+    "weekly_avg_ms": 52,
+    "status": "BALANCED",
+    "feedback": "HRV_BALANCED_1",
+    "baseline_balanced_ms": [
+     47,
+     60
+    ],
+    "baseline_low_upper_ms": 44
+   },
+   "sleep": {
+    "score": 79,
+    "quality": "FAIR",
+    "duration_h": 7.05,
+    "deep_min": 90,
+    "light_min": 230,
+    "rem_min": 93,
+    "awake_min": 10,
+    "start_local": "2025-09-29T22:40",
+    "end_local": "2025-09-30T05:50",
+    "avg_overnight_hrv_ms": 48,
+    "resting_hr": 49
+   },
+   "body_battery": {
+    "latest": 40,
+    "at_wake": 85,
+    "high": 88,
+    "low": 27,
+    "charged": 61,
+    "drained": 48
+   },
+   "resting_hr": {
+    "today": 49,
+    "avg_7d": 50
+   },
+   "stress": {
+    "avg": 27,
+    "max": 91
+   },
+   "training_status": {
+    "status": "PRODUCTIVE",
+    "acute": 612,
+    "chronic": 540,
+    "acwr_ratio": 1.13,
+    "acwr_status": "OPTIMAL",
+    "vo2max_running": 53.4,
+    "vo2max_cycling": 55.1
+   }
+  }
+ },
+ "get_recovery_snapshot rate_limited": {
+  "tool": "get_recovery_snapshot",
+  "arguments": {
+   "date": "2026-09-30"
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "date": "2026-09-30",
+   "readiness": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   },
+   "hrv": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   },
+   "sleep": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   },
+   "body_battery": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   },
+   "resting_hr": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   },
+   "stress": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   },
+   "training_status": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   }
+  }
+ },
+ "get_recovery_snapshot garmin_unavailable": {
+  "tool": "get_recovery_snapshot",
+  "arguments": {
+   "date": "2026-09-30"
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "date": "2026-09-30",
+   "readiness": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   },
+   "hrv": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   },
+   "sleep": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   },
+   "body_battery": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   },
+   "resting_hr": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   },
+   "stress": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   },
+   "training_status": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   }
+  }
+ },
+ "get_recovery_snapshot not_logged_in": {
+  "tool": "get_recovery_snapshot",
+  "arguments": {
+   "date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool get_recovery_snapshot: Garmin Connect is not connected yet. On the server run `scripts/garmin-login.sh` (one-time interactive login incl. MFA), then retry.",
+  "answer": null
+ },
+ "get_recovery_snapshot session_expired": {
+  "tool": "get_recovery_snapshot",
+  "arguments": {
+   "date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool get_recovery_snapshot: Garmin rejected the stored session (expired or revoked). On the server run `scripts/garmin-login.sh` to log in again, then retry.",
+  "answer": null
+ },
+ "get_hrv_trend ok": {
+  "tool": "get_hrv_trend",
+  "arguments": {
+   "days": 7,
+   "end_date": "2026-09-30"
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "start": "2026-09-24",
+   "end": "2026-09-30",
+   "days": [
+    {
+     "date": "2026-09-17",
+     "last_night_avg_ms": 48,
+     "weekly_avg_ms": 52,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-18",
+     "last_night_avg_ms": 49,
+     "weekly_avg_ms": 50,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-19",
+     "last_night_avg_ms": 50,
+     "weekly_avg_ms": 51,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-20",
+     "last_night_avg_ms": 51,
+     "weekly_avg_ms": 52,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-21",
+     "last_night_avg_ms": 45,
+     "weekly_avg_ms": 50,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-22",
+     "last_night_avg_ms": 46,
+     "weekly_avg_ms": 51,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-23",
+     "last_night_avg_ms": 47,
+     "weekly_avg_ms": 52,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-24",
+     "last_night_avg_ms": 48,
+     "weekly_avg_ms": 50,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-25",
+     "last_night_avg_ms": 49,
+     "weekly_avg_ms": 51,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-26",
+     "last_night_avg_ms": 50,
+     "weekly_avg_ms": 52,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-27",
+     "last_night_avg_ms": 51,
+     "weekly_avg_ms": 50,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-28",
+     "last_night_avg_ms": 45,
+     "weekly_avg_ms": 51,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-29",
+     "last_night_avg_ms": 46,
+     "weekly_avg_ms": 52,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    },
+    {
+     "date": "2026-09-30",
+     "last_night_avg_ms": 47,
+     "weekly_avg_ms": 50,
+     "status": "BALANCED",
+     "baseline_balanced_ms": [
+      47,
+      60
+     ]
+    }
+   ],
+   "summary": {
+    "days_with_data": 14,
+    "mean_last_night_ms": 48,
+    "min_ms": 45,
+    "max_ms": 51,
+    "latest_weekly_avg_ms": 50,
+    "latest_status": "BALANCED",
+    "first_half_mean_ms": 48,
+    "second_half_mean_ms": 48,
+    "change_pct": 0.0
+   }
+  }
+ },
+ "get_hrv_trend rate_limited": {
+  "tool": "get_hrv_trend",
+  "arguments": {
+   "days": 7,
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "rate_limited"
+  },
+  "text": "Error executing tool get_hrv_trend: Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+  "answer": null
+ },
+ "get_hrv_trend garmin_unavailable": {
+  "tool": "get_hrv_trend",
+  "arguments": {
+   "days": 7,
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_unavailable"
+  },
+  "text": "Error executing tool get_hrv_trend: Garmin Connect request failed: API Error 500 - boom",
+  "answer": null
+ },
+ "get_hrv_trend not_logged_in": {
+  "tool": "get_hrv_trend",
+  "arguments": {
+   "days": 7,
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool get_hrv_trend: Garmin Connect is not connected yet. On the server run `scripts/garmin-login.sh` (one-time interactive login incl. MFA), then retry.",
+  "answer": null
+ },
+ "get_hrv_trend session_expired": {
+  "tool": "get_hrv_trend",
+  "arguments": {
+   "days": 7,
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool get_hrv_trend: Garmin rejected the stored session (expired or revoked). On the server run `scripts/garmin-login.sh` to log in again, then retry.",
+  "answer": null
+ },
+ "list_scheduled_workouts ok": {
+  "tool": "list_scheduled_workouts",
+  "arguments": {
+   "start_date": "2026-09-29",
+   "end_date": "2026-09-30"
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "start": "2026-09-29",
+   "end": "2026-09-30",
+   "count": 2,
+   "scheduled": [
+    {
+     "schedule_id": 778,
+     "date": "2026-09-30",
+     "workout_id": 9002,
+     "name": "Z2 kolo",
+     "sport": "cycling",
+     "completed": true,
+     "activity_id": 20009
+    },
+    {
+     "schedule_id": 777,
+     "date": "2026-10-02",
+     "workout_id": 9001,
+     "name": "Intervaly 5x3",
+     "sport": "running",
+     "completed": false,
+     "estimated_duration_min": 50
+    }
+   ]
+  }
+ },
+ "list_scheduled_workouts rate_limited": {
+  "tool": "list_scheduled_workouts",
+  "arguments": {
+   "start_date": "2026-09-29",
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "rate_limited"
+  },
+  "text": "Error executing tool list_scheduled_workouts: Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+  "answer": null
+ },
+ "list_scheduled_workouts garmin_unavailable": {
+  "tool": "list_scheduled_workouts",
+  "arguments": {
+   "start_date": "2026-09-29",
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_unavailable"
+  },
+  "text": "Error executing tool list_scheduled_workouts: Garmin Connect request failed: API Error 500 - boom",
+  "answer": null
+ },
+ "list_scheduled_workouts not_logged_in": {
+  "tool": "list_scheduled_workouts",
+  "arguments": {
+   "start_date": "2026-09-29",
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool list_scheduled_workouts: Garmin Connect is not connected yet. On the server run `scripts/garmin-login.sh` (one-time interactive login incl. MFA), then retry.",
+  "answer": null
+ },
+ "list_scheduled_workouts session_expired": {
+  "tool": "list_scheduled_workouts",
+  "arguments": {
+   "start_date": "2026-09-29",
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool list_scheduled_workouts: Garmin rejected the stored session (expired or revoked). On the server run `scripts/garmin-login.sh` to log in again, then retry.",
+  "answer": null
+ },
+ "list_activities ok": {
+  "tool": "list_activities",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30",
+   "limit": 100
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "start": "2026-09-24",
+   "end": "2026-09-30",
+   "count": 3,
+   "activities": [
+    {
+     "id": 20001,
+     "start_local": "2026-09-29T18:02",
+     "type": "running",
+     "name": "Praha Běh",
+     "duration_min": 50.1,
+     "distance_km": 10.02,
+     "elevation_gain_m": 64,
+     "avg_hr": 151,
+     "max_hr": 176,
+     "avg_pace_min_per_km": "5:00",
+     "avg_cadence_spm": 172,
+     "aerobic_te": 3.6,
+     "anaerobic_te": 1.2,
+     "te_label": "TEMPO",
+     "training_load": 143,
+     "calories": 702
+    },
+    {
+     "id": 20003,
+     "start_local": "2026-09-28T07:00",
+     "type": "strength_training",
+     "name": "Síla",
+     "duration_min": 55.0,
+     "avg_hr": 101,
+     "sets": 18,
+     "reps": 164
+    },
+    {
+     "id": 20002,
+     "start_local": "2026-09-27T09:15",
+     "type": "gravel_cycling",
+     "name": "Gravel",
+     "duration_min": 135.0,
+     "distance_km": 61.5,
+     "avg_hr": 132,
+     "avg_speed_kmh": 27.4,
+     "avg_power_w": 188,
+     "norm_power_w": 205,
+     "training_load": 160
+    }
+   ]
+  }
+ },
+ "list_activities rate_limited": {
+  "tool": "list_activities",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30",
+   "limit": 100
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "rate_limited"
+  },
+  "text": "Error executing tool list_activities: Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+  "answer": null
+ },
+ "list_activities garmin_unavailable": {
+  "tool": "list_activities",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30",
+   "limit": 100
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_unavailable"
+  },
+  "text": "Error executing tool list_activities: Garmin Connect request failed: API Error 500 - boom",
+  "answer": null
+ },
+ "list_activities not_logged_in": {
+  "tool": "list_activities",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30",
+   "limit": 100
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool list_activities: Garmin Connect is not connected yet. On the server run `scripts/garmin-login.sh` (one-time interactive login incl. MFA), then retry.",
+  "answer": null
+ },
+ "list_activities session_expired": {
+  "tool": "list_activities",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30",
+   "limit": 100
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool list_activities: Garmin rejected the stored session (expired or revoked). On the server run `scripts/garmin-login.sh` to log in again, then retry.",
+  "answer": null
+ },
+ "get_race_predictions ok": {
+  "tool": "get_race_predictions",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30"
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "start": "2026-09-24",
+   "end": "2026-09-30",
+   "count": 1,
+   "days": [
+    {
+     "date": "2026-09-30",
+     "5k_seconds": 1290,
+     "10k_seconds": 2700,
+     "half_marathon_seconds": 5970,
+     "marathon_seconds": 12310
+    }
+   ]
+  }
+ },
+ "get_race_predictions rate_limited": {
+  "tool": "get_race_predictions",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "rate_limited"
+  },
+  "text": "Error executing tool get_race_predictions: Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+  "answer": null
+ },
+ "get_race_predictions garmin_unavailable": {
+  "tool": "get_race_predictions",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_unavailable"
+  },
+  "text": "Error executing tool get_race_predictions: Garmin Connect request failed: API Error 500 - boom",
+  "answer": null
+ },
+ "get_race_predictions not_logged_in": {
+  "tool": "get_race_predictions",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool get_race_predictions: Garmin Connect is not connected yet. On the server run `scripts/garmin-login.sh` (one-time interactive login incl. MFA), then retry.",
+  "answer": null
+ },
+ "get_race_predictions session_expired": {
+  "tool": "get_race_predictions",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30"
+  },
+  "is_error": true,
+  "meta": {
+   "local.garmin-coach-mcp/error_kind": "garmin_auth"
+  },
+  "text": "Error executing tool get_race_predictions: Garmin rejected the stored session (expired or revoked). On the server run `scripts/garmin-login.sh` to log in again, then retry.",
+  "answer": null
+ },
+ "get_recovery_snapshot degraded": {
+  "tool": "get_recovery_snapshot",
+  "arguments": {
+   "date": "2026-09-30"
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "date": "2026-09-30",
+   "readiness": {
+    "score": 58,
+    "level": "MODERATE",
+    "feedback": "READY_FOR_MODERATE",
+    "time_local": "2026-09-30T14:05",
+    "recovery_time_h": 9.0,
+    "factors": {
+     "sleep": {
+      "percent": 68,
+      "feedback": "MODERATE",
+      "sleep_score": 71
+     },
+     "sleep_history": {
+      "percent": 74,
+      "feedback": "GOOD"
+     },
+     "recovery_time": {
+      "percent": 55,
+      "feedback": "MODERATE"
+     },
+     "acute_load": {
+      "percent": 80,
+      "feedback": "GOOD",
+      "acute_load": 612
+     },
+     "hrv": {
+      "percent": 70,
+      "feedback": "GOOD",
+      "hrv_weekly_avg_ms": 52
+     },
+     "stress_history": {
+      "percent": 64,
+      "feedback": "MODERATE"
+     }
+    },
+    "morning_score": 76,
+    "morning_level": "HIGH"
+   },
+   "hrv": {
+    "error": "Garmin Connect rate limit (HTTP 429). Wait a few minutes and retry.",
+    "error_kind": "rate_limited"
+   },
+   "sleep": {
+    "error": "Garmin Connect request failed: API Error 500 - boom",
+    "error_kind": "garmin_unavailable"
+   },
+   "body_battery": {
+    "available": false
+   },
+   "resting_hr": {
+    "available": false
+   },
+   "stress": {
+    "available": false
+   },
+   "training_status": {
+    "error": "Not found in Garmin Connect (API Error 404).",
+    "error_kind": "not_found"
+   }
+  }
+ },
+ "get_recovery_snapshot no_data": {
+  "tool": "get_recovery_snapshot",
+  "arguments": {
+   "date": "2026-09-30"
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "date": "2026-09-30",
+   "readiness": {
+    "available": false
+   },
+   "hrv": {
+    "available": false
+   },
+   "sleep": {
+    "available": false
+   },
+   "body_battery": {
+    "available": false
+   },
+   "resting_hr": {
+    "available": false
+   },
+   "stress": {
+    "available": false
+   },
+   "training_status": {
+    "available": false
+   }
+  }
+ },
+ "list_activities truncated": {
+  "tool": "list_activities",
+  "arguments": {
+   "start_date": "2026-09-24",
+   "end_date": "2026-09-30",
+   "limit": 2
+  },
+  "is_error": false,
+  "meta": null,
+  "text": null,
+  "answer": {
+   "start": "2026-09-24",
+   "end": "2026-09-30",
+   "count": 3,
+   "activities": [
+    {
+     "id": 20001,
+     "start_local": "2026-09-29T18:02",
+     "type": "running",
+     "name": "Praha Běh",
+     "duration_min": 50.1,
+     "distance_km": 10.02,
+     "elevation_gain_m": 64,
+     "avg_hr": 151,
+     "max_hr": 176,
+     "avg_pace_min_per_km": "5:00",
+     "avg_cadence_spm": 172,
+     "aerobic_te": 3.6,
+     "anaerobic_te": 1.2,
+     "te_label": "TEMPO",
+     "training_load": 143,
+     "calories": 702
+    },
+    {
+     "id": 20003,
+     "start_local": "2026-09-28T07:00",
+     "type": "strength_training",
+     "name": "Síla",
+     "duration_min": 55.0,
+     "avg_hr": 101,
+     "sets": 18,
+     "reps": 164
+    }
+   ],
+   "truncated": true
+  }
+ }
+}

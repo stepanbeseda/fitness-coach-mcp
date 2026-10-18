@@ -144,17 +144,20 @@ The parts most relevant to building LLM agents that act on real, personal data:
 - **Memory outside the model.** Goals, constraints, the plan and notes live in SQLite with FTS5 search. The
   coach is told to search its memory before asking the athlete again. Nothing is hard-deleted: goals end as
   achieved or abandoned, constraints as resolved, replaced sessions as superseded.
-- **Human in the loop for every write.** Every tool that changes Garmin, Hevy or coach state says so in its
-  MCP annotations and description. The [coach instructions](docs/coach-instructions.md) require showing the
-  proposal and getting explicit confirmation first. Plan reconciliation only *suggests* a session status from
-  recorded activities, and the athlete confirms it.
+- **Human confirmation for every write (instructed, plus claude.ai tool permissions).** Every tool that changes
+  Garmin, Hevy or coach state says so in its MCP annotations and description. The
+  [coach instructions](docs/coach-instructions.md) require showing the proposal and getting explicit
+  confirmation first, and claude.ai by default asks before it runs a tool that is not marked read-only. No server
+  enforces the confirmation; what limits a wrong write is described in the Security model below (LLM / prompt
+  injection). Plan reconciliation only *suggests* a session status from recorded activities, and the athlete
+  confirms it.
 - **Least privilege between components.** The coach server reads Garmin with a separate read-only token, so
   `garmin-mcp` rejects its write tools before they run. It may call only two read tools on Hevy. The client's
   OAuth token is never forwarded to a backend.
 - **Honest statistics.** `get_correlations` returns Pearson and Spearman with the number of paired days, refuses
   below 14 pairs, and carries a "correlation is not a cause" caveat that the instructions require the coach
   to repeat.
-- **Tested offline.** About 770 test functions run against fakes and canned payloads, with no network. An
+- **Tested offline.** More than 1,200 test functions run against fakes and canned payloads, with no network. An
   end-to-end test runs the full OAuth + MCP flow in a throwaway Compose project (`scripts/check.sh`).
 - **Statically checked.** Every image build lints the three Python services with `ruff` and type-checks their
   `src/` with `mypy` in strict mode before the tests run; a finding fails the build.
@@ -164,13 +167,15 @@ The parts most relevant to building LLM agents that act on real, personal data:
 
 ## Architecture
 
-![Architecture: clients reach a Tailscale node and the OAuth gateway, which routes to the hevy, coach and garmin MCP backends and their external APIs](docs/architecture.svg)
+![Architecture: Claude clients reach a Tailscale node and the OAuth gateway, which routes to the hevy, coach and garmin MCP backends; coach-mcp runs background jobs and reads garmin-mcp and hevy-mcp read-only; a host cron runs the healthcheck with Telegram alerts and the backup](docs/architecture.svg)
 
 Editable source: [`docs/architecture.html`](docs/architecture.html).
 
 The `ts` sidecar runs `tailscale/tailscale` v1.102.5 in userspace mode as the node `fitness-mcp` (tag
-`tag:fitness-mcp`). The backends make only the outbound calls shown; nothing on the server accepts inbound
-connections except through `tailscale serve`.
+`tag:fitness-mcp`). In userspace mode tailscaled forwards a tailnet connection to any port without a
+`tailscale serve` handler to `127.0.0.1` on the same port, so nothing in the sidecar's namespace listens there:
+the gateway listens on `127.0.0.2:8080` and tailscaled's health endpoint on `127.0.0.2:9002`. `tailscale serve`
+on :443 is the only way to the gateway. The backends make only the outbound calls shown.
 
 Connector URLs (the same from claude.ai and from the tailnet; inside the tailnet MagicDNS returns the 100.x
 address). `<tailnet>` is your tailnet's DNS suffix: `tailscale status --json | jq -r .MagicDNSSuffix`, e.g.
@@ -188,7 +193,7 @@ tailnet-only) untouched, and the gateway does not have to publish any port on th
 
 | Layer | What it does |
 |---|---|
-| Network | No published port on the host. The gateway listens only on 127.0.0.1 in the sidecar's namespace, so the only way in is `tailscale serve`. Backends are only on a private Docker network. They call out only to their own APIs (Hevy, Garmin Connect). `coach-mcp` optionally calls the Telegram Bot API (`api.telegram.org`) for the morning briefing and to fetch what you write to the bot (long polling, an outbound call too; see [Morning briefing](docs/operations.md#morning-briefing-telegram) and [Two-way Telegram](docs/operations.md#two-way-telegram)) and Open-Meteo (`api.open-meteo.com`, no key) for the weather forecast, which receives only rounded coordinates (see [Weather](docs/operations.md#weather)). Other host services and the host's own `tailscale serve` are not changed. |
+| Network | No published port on the host. The gateway listens on 127.0.0.2 in the sidecar's namespace, not on 127.0.0.1, where tailscaled in userspace mode forwards tailnet connections for ports without a serve handler; `tailscale serve` on :443 is the only way in, the tailnet policy allows only tcp:443 to the node (install step 1), and `healthcheck.sh` checks that ports 8080 and 9002 of the node accept no tailnet connection. Backends are only on a private Docker network. They call out only to their own APIs (Hevy, Garmin Connect). `coach-mcp` optionally calls the Telegram Bot API (`api.telegram.org`) for the morning briefing and to fetch what you write to the bot (long polling, an outbound call too; see [Morning briefing](docs/operations.md#morning-briefing-telegram) and [Two-way Telegram](docs/operations.md#two-way-telegram)) and Open-Meteo (`api.open-meteo.com`, no key) for the weather forecast, which receives only rounded coordinates (see [Weather](docs/operations.md#weather)). Other host services and the host's own `tailscale serve` are not changed. |
 | Funnel | Only discovery (`/.well-known/*`), the 401 response and `/token` are public. Anything carrying a token, and `/token` itself, passes through Funnel only from `160.79.104.0/21` (Anthropic's published outbound range for MCP connectors). |
 | Login | `/authorize` (argon2id password + TOTP) only from your own tailnet devices (`Tailscale-User-Login` = `OWNER_TAILSCALE_LOGIN`, never through Funnel). Lockout with exponential backoff, TOTP code reuse protection, CSRF cookie. |
 | OAuth | MCP auth spec 2025-11-25: PKCE S256 required. `resource` (RFC 8707) makes each token valid for one endpoint only (a Hevy token does not work on Garmin). `iss` (RFC 9207). Access token 1 h, refresh token 90 days, rotation with reuse detection (with a 120 s retry window). Revocation (RFC 7009). |
@@ -198,6 +203,10 @@ tailnet-only) untouched, and the gateway does not have to publish any port on th
 | Containers | Non-root (uid 10001), `read_only`, `cap_drop: ALL`, `no-new-privileges`, memory and process limits, healthchecks, log rotation. Images pinned by `tag@sha256`, Python dependencies hash-locked. |
 | Secrets | `secrets/` (0700, files 0640 with group 10001), Docker secrets. Never in git, env or logs. |
 | Audit | `/data/audit.jsonl` + stdout: logins, token issue/refresh/revocation, every MCP call (method, tool, outcome, duration). Never arguments, results, tokens or passwords. |
+| LLM / prompt injection | Tool results carry text that third parties can write: Garmin activity and workout names and descriptions, Hevy titles and notes, and calendar events and invites when Google Calendar is enabled. The [coach instructions](docs/coach-instructions.md) tell the model to treat that text as data, never as instructions, and never to add attendees to calendar events; that is a prompt rule, not enforcement. What limits the damage is in code: `coach-mcp` reads Garmin with the read-only token and may call only two read tools on Hevy, and the write tools of this stack change only your own Garmin, Hevy and coach data. Keep claude.ai asking before each write tool runs; do not let write tools run without approval. What remains: with Google Calendar or web tools enabled in the claude.ai Project, an injected instruction could send data out, for example as an event invitation to an outside address. Telegram messages are not third-party text: `coach-mcp` accepts only your own chat and sender id. |
+
+Why the gateway is a custom OAuth server, its threat model, a conformance matrix that names the test behind each
+standard, its non-goals and its known limitations: [Gateway design note](docs/gateway-design.md).
 
 ## Installation
 
@@ -232,8 +241,20 @@ the explicit `nodeAttrs`:
 ]
 ```
 
-If your policy does not allow everything to everyone, also allow access from your devices:
-`{"src": ["autogroup:member"], "dst": ["tag:fitness-mcp"], "ip": ["tcp:443"]}` in `grants`.
+Allow your devices to reach the node on tcp:443 only. This is required, not optional:
+
+```jsonc
+"grants": [
+  // ...your other grants; none of them may cover tag:fitness-mcp...
+  { "src": ["autogroup:member"], "dst": ["tag:fitness-mcp"], "ip": ["tcp:443"] }
+]
+```
+
+The sidecar runs tailscaled in userspace mode, which forwards a tailnet connection to any port without a
+`tailscale serve` handler to `127.0.0.1` inside the container. The stack keeps nothing listening there (the gateway
+is on `127.0.0.2`, see [Security model](#security-model)); the rule above keeps every other port of the node closed
+to the tailnet as well. A rule whose `dst` includes `*` also covers tagged nodes: narrow its `dst` so that it no
+longer includes `tag:fitness-mcp`, and preview the change in the admin console.
 
 ### 2. Auth key
 
@@ -277,9 +298,12 @@ to read `garmin-mcp`.
 ### 5. Start
 
 ```bash
-docker compose up -d --build
+scripts/deploy.sh
 docker compose ps          # all services healthy
 ```
+
+`scripts/deploy.sh` builds the images (the tests run inside the build), tags them with the commit and starts the
+stack; versions and rollback: [docs/operations.md](docs/operations.md#updates).
 
 The `fitness-mcp` node appears in the admin console with the `tag:fitness-mcp` tag. Funnel turns on by
 itself from `tailscale/serve.json` (`AllowFunnel`).
@@ -294,7 +318,7 @@ scripts/garmin-login.sh --check
 ### 7. Verification
 
 ```bash
-scripts/healthcheck.sh             # containers, node, Funnel, discovery, tailnet-only login, Garmin, Hevy, coach database
+scripts/healthcheck.sh             # containers, node, Funnel, discovery, tailnet-only login, closed direct ports, Garmin, Hevy, coach database
 scripts/smoke-test.sh              # tools/list on all three endpoints, coach memory summary, last 3 Hevy workouts, today's HRV/sleep, race predictions and HR zones, running tolerance, strength sets and activity weather, strength exercise catalogue
 ```
 
@@ -402,20 +426,23 @@ the pinned Actions and base images, and [`.github/workflows/audit.yml`](.github/
 docker-compose.yml       services, hardening, networks, volumes, secrets
 compose.test.yml         overlay for the e2e test (no Tailscale login, no internet)
 .env.example             non-secret configuration (hostname, owner, UID/GID, briefing and Telegram, weather location)
+CHANGELOG.md             release notes: schema version, secrets, new settings per version
 tailscale/               sidecar image (non-root) + serve.json with Funnel
 gateway/                 OAuth 2.1 gateway (Python, Starlette), tests, config.toml
-hevy-mcp/                wrapper around the official image (secrets from files, telemetry off)
+hevy-mcp/                wrapper around upstream chrisdoc/hevy-mcp, pinned (secrets from files, telemetry off)
 garmin-mcp/              Garmin MCP server (Python, python-garminconnect + MCP SDK), tests
 coach-mcp/               coach memory (Python, MCP SDK, SQLite), tests
-scripts/                 setup-secrets, garmin-login, healthcheck, backup, smoke-test, admin, check-updates,
-                         lock-deps; tests: check (the full check), e2e-test, check-pins
+scripts/                 setup-secrets, deploy, garmin-login, healthcheck, backup, smoke-test, admin,
+                         check-updates, lock-deps; tests: check (the full check), e2e-test, check-pins, check-ingress
 .github/workflows/       CI: per-service ruff, mypy and pytest, script tests, scripts/check.sh; weekly pip-audit
 .github/dependabot.yml   monthly update PRs for the Actions and base images
 docs/coach-instructions.md   Custom Instructions for the "Fitness coach" Claude project
 docs/operations.md       running the stack: Telegram features, history, backups, updates, troubleshooting
+docs/gateway-design.md   gateway threat model, why it is custom, conformance matrix, known limitations
 docs/how-this-was-built.md   the development process in short
 docs/development-plan.md the full development plan: decisions, boundaries and one brief per PR
 .claude/mao/             project configuration, review checklist and lessons for the coding agents
+.claude/settings.json    Claude Code deny rules for .env, secrets/ and data/ (defence in depth, not a boundary)
 ```
 
 ## License
