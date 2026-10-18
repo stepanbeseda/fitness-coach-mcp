@@ -168,7 +168,8 @@ sections 1 and 2; `README.md` (architecture, security model, installation); `doc
   English docstring = description, fail-soft sections, library calls through
   `GarminService.call` for one strict call, `sections.fetch_sections` for a tool with sections).
 - A tool-list change touches `garmin-mcp/tests/test_http.py` (`EXPECTED_TOOLS`,
-  `WRITE_TOOLS`), `garmin-mcp/README.md` tool table, `README.md`,
+  `WRITE_TOOLS`), `garmin-mcp/tests/tools_list.json` (re-record with
+  `scripts/record-garmin-contract.sh --tools-list`), `garmin-mcp/README.md` tool table, `README.md`,
   `docs/coach-instructions.md` and the `INSTRUCTIONS` string in `server.py`;
   for coach-mcp: `coach-mcp/tests/test_http.py` (`EXPECTED_TOOLS`,
   `WRITE_TOOLS`), `coach-mcp/README.md`, `INSTRUCTIONS` in

@@ -15,6 +15,7 @@ from mcp.server.extension import Extension
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from .auth import ROLE_FULL, ROLE_KEY, ROLE_READ_ONLY
+from .errors import READ_ONLY, with_kind
 
 log = logging.getLogger("garmin_coach_mcp.access")
 
@@ -47,4 +48,5 @@ class ReadOnlyGuard(Extension):
             return await call_next(ctx)
         shown = params.name if params.name in self._read_only else "<unregistered>"
         log.warning("tool=%s status=refused reason=read_only", shown)
-        return CallToolResult(content=[TextContent(type="text", text=READ_ONLY_REFUSAL)], is_error=True)
+        refusal = CallToolResult(content=[TextContent(type="text", text=READ_ONLY_REFUSAL)], is_error=True)
+        return with_kind(refusal, READ_ONLY)

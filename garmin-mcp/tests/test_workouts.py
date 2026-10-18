@@ -200,6 +200,7 @@ async def test_create_workout_reports_scheduling_failure(service, fake):
     out = await w.create_workout(service, **BIKE_SPEC, description=None, schedule_date=today("Europe/Prague").isoformat())
     assert out["workout_id"] == 424242
     assert "scheduling failed" in out["scheduled"]["error"]
+    assert out["scheduled"]["error_kind"] == "garmin_unavailable"
 
 
 @pytest.mark.anyio

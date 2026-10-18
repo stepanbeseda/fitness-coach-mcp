@@ -8,6 +8,7 @@ import anyio
 import httpx2
 import pytest
 from fakes import RawText, fake_garmin_app, fake_garmin_running
+from mcp.types import CallToolResult, TextContent
 
 from coach_mcp import garmin as garmin_module
 from coach_mcp.config import Settings
@@ -191,6 +192,7 @@ async def test_non_json_and_non_dict_results_are_errors(tmp_path):
 
             self.content = [mcp.types.TextContent(type="text", text=text)]
             self.is_error = is_error
+            self.meta = None  # an answer without an error kind: classified by its text
 
     class Client:
         def __init__(self, outputs):
@@ -555,3 +557,55 @@ PARSE_ROWS = {
 @pytest.mark.parametrize(("device", "expected"), list(PARSE_ROWS.values()), ids=list(PARSE_ROWS))
 def test_parse_last_sync_table(device, expected):
     assert parse_last_sync(device) == expected
+
+
+# PR 31: garmin-mcp's error kind decides; the text is the fallback for an answer without a kind.
+KIND = "local.garmin-coach-mcp/error_kind"
+
+
+def kind_result(kind: str | None, text: str) -> CallToolResult:
+    meta = {KIND: kind} if kind is not None else None
+    return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True, meta=meta)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("kind", "text", "history", "briefing"),
+    [
+        ("rate_limited", "reworded", "rate_limited", "error"),
+        ("garmin_auth", "reworded", "auth_error", "auth_error"),
+        ("garmin_unavailable", RATE_LIMIT_TEXT + " scripts/garmin-login.sh", "error", "error"),  # the kind wins
+        ("a_kind_from_the_future", "scripts/garmin-login.sh", "error", "error"),
+        (None, RATE_LIMIT_TEXT, "rate_limited", "error"),  # no kind: the text
+        (None, NOT_LOGGED_IN, "auth_error", "auth_error"),
+        (None, "boom", "error", "error"),
+    ],
+)
+async def test_an_error_is_classified_by_its_kind_first(tmp_path, kind, text, history, briefing):
+    results = {name: kind_result(kind, text) for name in ALLOWED_TOOLS}
+    app, _ = fake_garmin_app(TOKEN, results=results)
+    async with fake_garmin_running(app):
+        reader = reader_for(app, tmp_path)
+        got = await reader.history_call("get_recovery_snapshot", dict(SNAPSHOT_ARGS))
+        data = await reader.fetch(D)
+    assert got == (history, None)
+    assert data.calls == dict.fromkeys(BRIEFING_TOOLS, briefing)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        ({"error": "reworded", "error_kind": "rate_limited"}, "rate_limited"),
+        ({"error": RATE_LIMIT_TEXT, "error_kind": "garmin_unavailable"}, "ok"),  # the kind wins
+        ({"error": RATE_LIMIT_TEXT}, "rate_limited"),  # no kind: the text
+        ({"error": "Garmin Connect request failed", "error_kind": "garmin_unavailable"}, "ok"),
+        ({"error_kind": "rate_limited"}, "ok"),  # a kind without an error is no error section
+    ],
+)
+async def test_an_error_section_is_classified_by_its_kind_first(tmp_path, section, expected):
+    snapshot = history_snapshot("2026-10-06", hrv=section)
+    app, _ = fake_garmin_app(TOKEN, snapshot=snapshot)
+    async with fake_garmin_running(app):
+        got = await reader_for(app, tmp_path).history_call("get_recovery_snapshot", dict(SNAPSHOT_ARGS))
+    assert got == ((expected, snapshot) if expected == "ok" else (expected, None))

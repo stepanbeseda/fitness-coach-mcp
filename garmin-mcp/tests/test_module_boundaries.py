@@ -8,7 +8,10 @@ import pytest
 import garmin_coach_mcp
 
 PACKAGE = Path(garmin_coach_mcp.__file__).parent
-SUPPORT = {"__init__", "__main__", "access", "auth", "config", "formatting", "garmin_client", "login", "sections", "server"}
+SUPPORT = {
+    "__init__", "__main__", "access", "auth", "config", "errors", "formatting", "garmin_client", "login", "sections",
+    "server",
+}
 TOOL_MODULES = {"activities", "body", "exercises", "health", "performance", "workouts"}
 
 

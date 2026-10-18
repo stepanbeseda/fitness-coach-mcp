@@ -158,9 +158,9 @@ sections = await fetch_sections(
 - A missing or expired Garmin login fails the whole tool, because every call would fail the same way.
 - `missing_is_empty=True`: Garmin's 404 for data that does not exist gives the shaper `None`, so the section
   says `available: false` instead of an error.
-- A failed call gives its sections `{"error": "<message>"}`. A shaper that raises on an unexpected payload gives
-  `{"error": "unexpected Garmin response for <call>"}` and one log line `could not shape <call>: <exception type>`,
-  without data.
+- A failed call gives its sections `{"error": "<message>", "error_kind": "<kind>"}` (see "Error kinds"). A
+  shaper that raises on an unexpected payload gives the kind `unexpected_answer` with the text
+  `unexpected Garmin response for <call>`, and one log line `could not shape <call>: <exception type>`, without data.
 - `required=True`: a failure of that call fails the whole tool with its message (the activity itself in
   `get_activity`).
 - A `Section` shapes one key of the answer from one call's payload. Several sections can share a call
@@ -174,3 +174,41 @@ then fails the tool. Tool modules share helpers only through `formatting.py` and
 `tests/test_module_boundaries.py` fails when a tool module imports a private (`_`) name of another. The rules are
 tested once in `tests/test_sections.py`, and `tests/test_section_answers.py` compares the answers of the section
 tools for canned, failing and odd payloads with a recording made before the rules moved into `sections.py`.
+
+### Error kinds
+
+Every error carries a machine-readable kind next to its text. A failed tool call has it in the `_meta` of its
+result under `local.garmin-coach-mcp/error_kind`; an error section has it as `"error_kind"` next to `"error"` (an
+`if_error` value such as `laps_error` keeps only the text). The text the model reads does not change. `coach-mcp`
+reads `rate_limited` (it backs off) and `garmin_auth` (the login alert); only for an answer without a kind does it
+look for `HTTP 429` and `scripts/garmin-login.sh` in the text, so `tests/test_error_kinds.py` pins those texts.
+
+| Kind | When |
+|---|---|
+| `garmin_auth` | Garmin Connect is not logged in, or Garmin rejected the stored session |
+| `rate_limited` | Garmin Connect answered HTTP 429 |
+| `not_found` | Garmin Connect has no such item |
+| `garmin_unavailable` | Garmin Connect failed or could not be reached |
+| `unexpected_answer` | Garmin answered in a shape garmin-mcp cannot use |
+| `invalid_request` | the arguments were rejected (input schema or a check of the tool), or the tool is unknown |
+| `read_only` | the read-only token asked for a tool that is not annotated read-only |
+| `internal` | garmin-mcp itself failed; the text is only `Error executing tool <name>` |
+
+### The answers coach-mcp reads
+
+`tests/contract/garmin_answers.json` holds the answers of the six tools `coach-mcp` calls (`get_device_status`,
+`get_recovery_snapshot`, `get_hrv_trend`, `list_scheduled_workouts`, `list_activities`, `get_race_predictions`) for
+the canned payloads and the coach's arguments: complete, degraded, without data, truncated, rate-limited, Garmin
+Connect down, not logged in and an expired session. `tests/test_contract.py` fails when one of them changes.
+`coach-mcp` keeps the same file in its own `tests/contract/` (each service builds from its own directory, and
+`scripts/check.sh` fails when the two copies differ) and feeds it to its readers. After a deliberate change of
+such an answer, run
+
+```bash
+scripts/record-garmin-contract.sh
+```
+
+It records the file again and copies it to `coach-mcp`; then adapt `coach-mcp` until `scripts/check.sh` is green.
+`tests/tools_list.json` pins `tools/list` (names, titles, descriptions, input schemas, annotations);
+`tests/test_tools_list.py` fails on any change, and `scripts/record-garmin-contract.sh --tools-list` records it
+again after a deliberate change of the tool list.
