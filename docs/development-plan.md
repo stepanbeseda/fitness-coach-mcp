@@ -3231,6 +3231,13 @@ architecture review of 2026-10-18: system-03 and presentation-03); questions and
   `pip-audit` covers the Python packages. If wanted later: the Trivy binary
   pinned by version and checksum (or an image digest), weekly, report-only,
   HIGH and CRITICAL with a fix only.
+- **Tested down-migration CLI, postponed from PR 33 (ops-01 item 4).** The
+  eight SQL one-liners in `coach-mcp/README.md` ("Going back to a version
+  without …") stay the way back across a schema change; since PR 33 they run
+  through `docker compose run`, and `scripts/deploy.sh --rollback` refuses
+  while the database is newer than the target image and points to them. A
+  `python -m coach_mcp downgrade --to N` with a test per step 9 → 1 would
+  replace them.
 - **Not planned yet.** An English README and an ingress option without
   Tailscale for other users of the repo; a shared package for the bearer
   middleware if a third Python service appears (`auth.py` is copied between

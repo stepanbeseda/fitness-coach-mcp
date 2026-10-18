@@ -30,6 +30,13 @@ x-hardening: &hardening
       max-size: "10m"
       max-file: "3"
 
+# Image labels, set by scripts/deploy.sh at build time (empty for a plain `docker compose build`): the
+# version, the commit and the build time of the image. scripts/deploy.sh --status and its clean-up read them.
+x-build-labels: &build_labels
+  org.opencontainers.image.version: "${FCM_VERSION:-local}"
+  org.opencontainers.image.revision: "${FCM_REVISION:-}"
+  org.opencontainers.image.created: "${FCM_CREATED:-}"
+
 x-build-args: &build_args
   APP_UID: "${APP_UID:-10001}"
   APP_GID: "${APP_GID:-10001}"
@@ -80,7 +87,9 @@ services:
     build:
       context: ./gateway
       args: *build_args
-    image: fitness-coach-mcp/gateway:0.1.0
+      labels: *build_labels
+    # FCM_VERSION: the commit tag that scripts/deploy.sh writes to .env; without it the tag is "local".
+    image: fitness-coach-mcp/gateway:${FCM_VERSION:-local}
     # Share the sidecar's network namespace: tailscale serve proxies to 127.0.0.2:8080.
     network_mode: service:ts
     depends_on:
@@ -93,7 +102,6 @@ services:
       REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-}
     volumes:
       - gateway-data:/data
-      - ./gateway/config.toml:/app/config.toml:ro
     tmpfs:
       - /tmp:size=16m
     secrets:
@@ -140,7 +148,8 @@ services:
     build:
       context: ./garmin-mcp
       args: *build_args
-    image: fitness-coach-mcp/garmin-mcp:0.1.0
+      labels: *build_labels
+    image: fitness-coach-mcp/garmin-mcp:${FCM_VERSION:-local}
     environment:
       HOME: /tmp
       GARMINTOKENS: /data/garmin
@@ -169,7 +178,8 @@ services:
     build:
       context: ./coach-mcp
       args: *build_args
-    image: fitness-coach-mcp/coach-mcp:0.1.0
+      labels: *build_labels
+    image: fitness-coach-mcp/coach-mcp:${FCM_VERSION:-local}
     environment:
       HOME: /tmp
       # The athlete's local time zone: what "today" means, and when the briefing and history jobs run.

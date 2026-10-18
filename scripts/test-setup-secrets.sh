@@ -13,7 +13,7 @@ trap 'rm -rf "$WORK"' EXIT
 FAILED=0
 
 FUNCS=(ensure_dir write_secret has_secret new_backend_token cmd_backend_tokens
-       ensure_backend_tokens ensure_garmin_readonly_token cmd_all show_telegram_chat_ids)
+       ensure_backend_tokens ensure_garmin_readonly_token cmd_all show_telegram_chat_ids ensure_gateway_image)
 for f in "${FUNCS[@]}"; do
   # One function per name: a one-line function ends on its own line, a block at the next "}" line.
   body="$(awk -v f="$f" 'p == 0 && index($0, f "() {") == 1 { p = 1; print; if ($0 ~ /}[ \t]*$/) p = 0; next }
@@ -50,6 +50,9 @@ run_case() {
     cmd_hevy_key() { printf 'PROMPT hevy\n' >> "$LOG"; }
     cmd_password() { printf 'PROMPT password\n' >> "$LOG"; }
     cmd_totp() { printf 'PROMPT totp\n' >> "$LOG"; }
+    compose_image() { [[ -f "$CASE/compose_fail" ]] && return 1; echo "example.test/gateway:v1"; }
+    docker() { printf 'DOCKER %s\n' "$*" >> "$LOG"; [[ "$1 $2" == "image inspect" && -f "$CASE/have_image" ]]; }
+    dc() { printf 'DC %s\n' "$*" >> "$LOG"; }
     eval "$setup"
     eval "$action"
   ) && echo 0 > "$CASE/rc" || echo $? > "$CASE/rc"
@@ -65,7 +68,7 @@ OLD3='put hevy_backend_token hevy-old-0123456789abcdef0123456789;
       put garmin_backend_token garmin-old-0123456789abcdef012345678;
       put coach_backend_token coach-old-0123456789abcdef0123456789'
 REST='put ts_authkey tskey-x; put hevy_api_key k; put gateway_password_hash h; put gateway_totp_secret t'
-HINT='INFO The new read-only token for coach-mcp takes effect after a deploy: docker compose up -d --build garmin-mcp coach-mcp'
+HINT='INFO The new read-only token for coach-mcp takes effect after a deploy: scripts/deploy.sh'
 
 echo "[fresh install: all four tokens, one recreate as before]"
 run_case fresh ":" "ensure_backend_tokens; ensure_garmin_readonly_token"
@@ -109,6 +112,21 @@ echo "[setup-secrets.sh without arguments (cmd_all) on an existing install]"
 run_case all "$OLD3; $REST" "cmd_all"
 check "read-only token created by cmd_all" 'len_ok garmin_readonly_token'
 check "no prompts, no recreate" '[[ $(log_count PROMPT) == 0 && $(log_count RECREATE) == 0 ]]'
+
+# ensure_gateway_image: the image reference comes from docker-compose.yml (compose_image), not from a literal.
+echo "[gateway image: present, nothing is built and the reference comes from compose]"
+run_case gw-present ": > \"\$CASE/have_image\"" 'ensure_gateway_image; printf "IMAGE %s\n" "$GATEWAY_IMAGE" >> "$LOG"'
+check "no build, the inspected reference is compose's" '[[ $(log_count DC) == 0 ]] && logged "DOCKER image inspect example.test/gateway:v1" && logged "IMAGE example.test/gateway:v1"'
+
+echo "[gateway image: missing, it is built through compose]"
+run_case gw-missing ":" "ensure_gateway_image"
+check "exactly one build of the gateway, after the inspect of compose's reference" \
+  '[[ $(log_count DC) == 1 ]] && logged "DC build gateway" && logged "DOCKER image inspect example.test/gateway:v1"'
+
+echo "[gateway image: compose cannot tell it, nothing runs]"
+run_case gw-fail ": > \"\$CASE/compose_fail\"" "ensure_gateway_image"
+check "exit 3 with the message" '[[ $(cat "$CASE/rc") == 3 ]] && logged "DIE Cannot read the gateway image from docker-compose.yml."'
+check "no docker, no compose call" '[[ $(log_count DOCKER) == 0 && $(log_count DC) == 0 ]]'
 
 # show_telegram_chat_ids with a stubbed Bot API: TG holds "<HTTP status> <reply body>".
 TG_STUB='wait_enter() { :; }; telegram_api() { printf "%s" "${TG#* }" > "$3"; printf "%s" "${TG%% *}"; }'

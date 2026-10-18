@@ -291,9 +291,12 @@ to read `garmin-mcp`.
 ### 5. Start
 
 ```bash
-docker compose up -d --build
+scripts/deploy.sh
 docker compose ps          # all services healthy
 ```
+
+`scripts/deploy.sh` builds the images (the tests run inside the build), tags them with the commit and starts the
+stack; versions and rollback: [docs/operations.md](docs/operations.md#updates).
 
 The `fitness-mcp` node appears in the admin console with the `tag:fitness-mcp` tag. Funnel turns on by
 itself from `tailscale/serve.json` (`AllowFunnel`).
@@ -416,13 +419,14 @@ the pinned Actions and base images, and [`.github/workflows/audit.yml`](.github/
 docker-compose.yml       services, hardening, networks, volumes, secrets
 compose.test.yml         overlay for the e2e test (no Tailscale login, no internet)
 .env.example             non-secret configuration (hostname, owner, UID/GID, briefing and Telegram, weather location)
+CHANGELOG.md             release notes: schema version, secrets, new settings per version
 tailscale/               sidecar image (non-root) + serve.json with Funnel
 gateway/                 OAuth 2.1 gateway (Python, Starlette), tests, config.toml
 hevy-mcp/                wrapper around the official image (secrets from files, telemetry off)
 garmin-mcp/              Garmin MCP server (Python, python-garminconnect + MCP SDK), tests
 coach-mcp/               coach memory (Python, MCP SDK, SQLite), tests
-scripts/                 setup-secrets, garmin-login, healthcheck, backup, smoke-test, admin, check-updates,
-                         lock-deps; tests: check (the full check), e2e-test, check-pins, check-ingress
+scripts/                 setup-secrets, deploy, garmin-login, healthcheck, backup, smoke-test, admin,
+                         check-updates, lock-deps; tests: check (the full check), e2e-test, check-pins, check-ingress
 .github/workflows/       CI: per-service ruff, mypy and pytest, script tests, scripts/check.sh; weekly pip-audit
 .github/dependabot.yml   monthly update PRs for the Actions and base images
 docs/coach-instructions.md   Custom Instructions for the "Fitness coach" Claude project

@@ -35,8 +35,8 @@ PR's worktree where noted.
   without `-p` targets the live project from any directory. When a PR's code
   lives in a separate worktree, run only `scripts/check.sh`, `docker build`,
   `docker run`, `scripts/lock-deps.sh` and `scripts/e2e-test.sh` there (from
-  the worktree); `scripts/setup-secrets.sh`, `healthcheck.sh`, `smoke-test.sh`,
-  `admin.sh` and `garmin-login.sh` run only in the live checkout.
+  the worktree); `scripts/setup-secrets.sh`, `deploy.sh`, `healthcheck.sh`,
+  `smoke-test.sh`, `admin.sh` and `garmin-login.sh` run only in the live checkout.
 
 - Check (must be green before the PR), one command, from the PR's worktree:
   `scripts/check.sh --tag pr<NN>` (~3 min on an idle host). It runs, in order,
@@ -72,6 +72,7 @@ PR's worktree where noted.
     and the gateway DB);
   - `scripts/setup-secrets.sh`, `scripts/garmin-login.sh`,
     `scripts/admin.sh grants revoke`, `docker compose run ... login`;
+  - `scripts/deploy.sh` in any mode (even `--status` reads `.env`);
   - reading or printing `.env`, `secrets/*`, `data/*`.
   `scripts/check.sh` and `scripts/e2e-test.sh` are safe (own projects
   `fcm-e2e*`; `E2E_PROJECT` must be `fcm-e2e` or `fcm-e2e-<suffix>`).
@@ -130,9 +131,9 @@ Profile `live` = the live docker compose stack on this machine (project
 - The worker verifies the profile is up: `docker compose ps` in ROOT shows
   `ts`, `gateway`, `hevy-mcp`, `garmin-mcp`, `coach-mcp` all healthy, and the garmin
   `/healthz` returns `{"status":"ok","garmin_auth":"ok"}`.
-- EVERY deploy to the host (`docker compose up -d --build <svc>` or anything
-  that restarts live services) is stop-and-ask; smoke-test criteria are
-  checked only after the user approves the deploy.
+- EVERY deploy to the host (`scripts/deploy.sh` or anything that restarts
+  live services) is stop-and-ask; smoke-test criteria are checked only after
+  the user approves the deploy.
 - Without the profile (not requested or not up), integration criteria are
   marked "requires test host".
 
