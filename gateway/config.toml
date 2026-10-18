@@ -6,7 +6,9 @@
 # OAuth issuer and prefix of every resource URL. docker-compose always sets
 # PUBLIC_BASE_URL (from .env), which overrides this placeholder.
 public_base_url = "https://fitness-mcp.example.ts.net"
-listen_host = "127.0.0.1"
+# 127.0.0.2, not 127.0.0.1: tailscaled (userspace mode) forwards tailnet connections for ports without a serve
+# handler to 127.0.0.1, so the gateway refuses to start there. tailscale/serve.json proxies to this address.
+listen_host = "127.0.0.2"
 listen_port = 8080
 db_path = "/data/gateway.sqlite3"
 audit_log_path = "/data/audit.jsonl"

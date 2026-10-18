@@ -3,8 +3,11 @@
 # claude.ai, plain tailnet for Claude Code / Claude Desktop).
 #
 # - No service publishes a host port. The gateway shares the network namespace of
-#   the Tailscale sidecar and listens on 127.0.0.1 only, so tailscaled is the only
-#   way in. The MCP backends are reachable only from the private "mcp" network.
+#   the Tailscale sidecar and listens on 127.0.0.2 only. In userspace mode tailscaled
+#   forwards tailnet connections for ports without a serve handler to 127.0.0.1, so
+#   nothing listens there and `tailscale serve` on :443 is the only way in
+#   (scripts/check-ingress.py checks the wiring). The MCP backends are reachable only
+#   from the private "mcp" network.
 # - Secrets are Docker secrets read from ./secrets (scripts/setup-secrets.sh);
 #   SECRETS_DIR overrides the directory (used by scripts/e2e-test.sh).
 # - Every container runs as an unprivileged UID, read-only, without capabilities.
@@ -51,7 +54,8 @@ services:
       TS_SOCKET: /tmp/tailscaled.sock
       TS_SERVE_CONFIG: /config/serve.json
       TS_ENABLE_HEALTH_CHECK: "true"
-      TS_LOCAL_ADDR_PORT: 127.0.0.1:9002
+      # Health endpoint for the healthcheck below; 127.0.0.2, never 127.0.0.1 (see the header).
+      TS_LOCAL_ADDR_PORT: 127.0.0.2:9002
       HOME: /tmp
     volumes:
       - ts-state:/var/lib/tailscale
@@ -65,7 +69,7 @@ services:
     mem_limit: 256m
     pids_limit: 128
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9002/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.2:9002/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -77,7 +81,7 @@ services:
       context: ./gateway
       args: *build_args
     image: fitness-coach-mcp/gateway:0.1.0
-    # Share the sidecar's network namespace: tailscale serve proxies to 127.0.0.1:8080.
+    # Share the sidecar's network namespace: tailscale serve proxies to 127.0.0.2:8080.
     network_mode: service:ts
     depends_on:
       - ts
@@ -101,7 +105,7 @@ services:
     mem_limit: 256m
     pids_limit: 128
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.2:8080/healthz', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3

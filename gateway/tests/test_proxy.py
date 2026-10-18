@@ -1,6 +1,8 @@
 import json
 
-from conftest import FUNNEL_PUBLIC, TAILNET
+from conftest import FUNNEL_CHAINED, FUNNEL_PUBLIC, FUNNEL_SPOOFED, TAILNET
+
+import gateway.proxy as proxy_module
 
 
 def call(name, msg_id=7):
@@ -100,3 +102,34 @@ def test_mcp_rate_limit_per_grant(make_harness):
     codes = [h.mcp(token).status_code for _ in range(6)]
     assert codes[:3] == [200, 200, 200]
     assert 429 in codes[3:]
+
+
+def test_mcp_uses_the_right_most_forwarded_address(h):
+    token = h.tokens()["access_token"]
+    assert h.mcp(token, headers=FUNNEL_SPOOFED).status_code == 403
+    assert h.mcp(token, headers=FUNNEL_CHAINED).status_code == 200
+
+
+def test_busy_stream_slot_answers_503(make_harness, monkeypatch):
+    monkeypatch.setattr(proxy_module, "MAX_CONCURRENT_STREAMS", 0)
+    monkeypatch.setattr(proxy_module, "STREAM_SLOT_TIMEOUT", 0.05)
+    h = make_harness()
+    token = h.tokens()["access_token"]
+    r = h.mcp(token, method="GET")
+    assert r.status_code == 503
+    assert r.json() == {"error": "busy"}
+    assert r.headers["retry-after"] == "5"
+    assert not [req for req in h.backends["hevy"].requests if req.method == "GET"]
+
+
+def test_busy_request_slot_answers_503(make_harness, monkeypatch):
+    monkeypatch.setattr(proxy_module, "MAX_CONCURRENT_REQUESTS", 0)
+    monkeypatch.setattr(proxy_module, "REQUEST_SLOT_TIMEOUT", 0.05)
+    h = make_harness()
+    token = h.tokens()["access_token"]
+    before = len(h.backends["hevy"].requests)
+    r = h.mcp(token, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert r.status_code == 503
+    assert r.json() == {"error": "busy"}
+    assert r.headers["retry-after"] == "5"
+    assert len(h.backends["hevy"].requests) == before
