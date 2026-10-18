@@ -296,7 +296,8 @@ Three things watch the pins; none of them deploys anything.
   Python minor is not proposed, because the locks are compiled for 3.13. CI runs on every such PR. A `tailscale`
   or `hevy-mcp` PR stays red in the `scripts` job (`scripts/check-pins.sh`) until you add a commit to it that
   sets the same version in that service's `image:` tag in `docker-compose.yml`. Merge a green PR, then deploy
-  it with steps 3 to 5 below.
+  it with steps 3 to 5 below: for a `tailscale` or `hevy-mcp` bump the new tag in `docker-compose.yml` makes
+  `scripts/deploy.sh` build that image, because it is missing.
 - **The audit** (`.github/workflows/audit.yml`) runs `pip-audit` on every `requirements*.lock` each Monday, on
   demand (`gh workflow run audit.yml`) and on pull requests that change a lock or a `pyproject.toml`. GitHub
   mails you when the scheduled run fails. A red run names the package and the fixed version: raise it (step 2)
@@ -537,7 +538,7 @@ the newest backup.
 | `scripts/deploy.sh` refuses: … | The line says why; nothing was changed. `--status` shows what runs. |
 | `scripts/backup.sh` ends with `No backup written` | The lines above name the part: `is not running` (Compose message) = the service is not running (`docker compose ps`); `Garmin tokens missing` = `scripts/garmin-login.sh`; `database is larger than 32 MiB` / `stayed locked` = report it (the limit is raised in a PR). No archive was created and older ones stay. |
 | `healthcheck.sh` says `backup: newest archive is … h old` or `no archive in BACKUP_DIR` | The nightly `scripts/backup.sh` failed or did not run: run it by hand and read its lines (row above), then check its cron line and `BACKUP_DIR` in `.env`. Weekly backups need a larger `BACKUP_MAX_AGE_HOURS` (for example 192). |
-| `healthcheck.sh` says `tailnet: port 8080 of the node accepts connections that bypass tailscale serve` (or 9002) | Something in the `ts` namespace listens on `127.0.0.1` again (an edited `TS_LOCAL_ADDR_PORT` or a changed image), and the tailnet policy lets the host through on that port. Run `scripts/check-ingress.py`, restore `127.0.0.2`, recreate `ts` and `gateway` together (`docker compose up -d --build ts gateway`), and check the policy rule of README install step 1. |
+| `healthcheck.sh` says `tailnet: port 8080 of the node accepts connections that bypass tailscale serve` (or 9002) | Something in the `ts` namespace listens on `127.0.0.1` again (an edited `TS_LOCAL_ADDR_PORT` or a changed image), and the tailnet policy lets the host through on that port. Run `scripts/check-ingress.py`, restore `127.0.0.2`, recreate `ts` and `gateway` together (`scripts/deploy.sh` recreates both), and check the policy rule of README install step 1. |
 | `healthcheck.sh --notify` ends with `Notify failed: COACH_TELEGRAM_CHAT_ID …` or `… secrets/telegram_bot_token …` | The chat id is missing from `.env`, or the token file is missing, unreadable for the cron user or not a bot token → Morning briefing, steps 2 and 3 (`scripts/setup-secrets.sh telegram-token`, `scripts/setup-secrets.sh telegram-chat-id`). The problems are still printed and the exit code is 1. |
 | `Notify failed: Telegram did not accept the message (HTTP …)` | Telegram rejected the message (token, chat id, bot blocked or nobody has written to it yet) or did not respond (`HTTP 000`). Nothing is lost: the next run sends it again. |
 | `Notify failed: another healthcheck.sh --notify run is in progress` | Two runs overlapped (for example a manual run during the cron run); the other run sends the message. |
