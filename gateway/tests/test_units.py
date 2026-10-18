@@ -3,7 +3,17 @@ import time
 import pyotp
 import pytest
 
-from gateway.config import Client, ConfigError, load_settings, normalize_resource
+from starlette.requests import Request
+
+from gateway.config import (
+    DEFAULT_LISTEN_HOST,
+    Client,
+    ConfigError,
+    listen_address_problem,
+    load_settings,
+    normalize_resource,
+)
+from gateway.netctx import NetContext, net_context
 from gateway.oauth import redirect_uri_allowed
 from gateway.proxy import ResponseObserver, filter_tools
 from gateway.ratelimit import RateLimiter
@@ -137,3 +147,82 @@ def test_config_validation(tmp_path, monkeypatch):
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://other.example")
     env = load_settings(_write_config(tmp_path, BASE_CONFIG.format(url="https://h.example", redirect="https://x/cb")))
     assert env.issuer == "https://other.example"
+
+
+def ctx(headers: dict[str, str]) -> NetContext:
+    raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+    return net_context(Request({"type": "http", "headers": raw}))
+
+
+@pytest.mark.parametrize(
+    ("forwarded", "expected"),
+    [
+        ("198.51.100.1, 160.79.104.10", "160.79.104.10"),
+        ("160.79.104.10, 198.51.100.1", "198.51.100.1"),
+        ("a, b, c", "c"),
+        (" 160.79.104.10 ", "160.79.104.10"),
+        ("160.79.104.10, ", None),
+        ("", None),
+    ],
+)
+def test_net_context_uses_the_right_most_forwarded_address(forwarded, expected):
+    assert ctx({"X-Forwarded-For": forwarded}).client_ip == expected
+
+
+def test_net_context_ignores_identity_on_funnel_requests():
+    funnel = ctx(
+        {"Tailscale-Funnel-Request": "?1", "Tailscale-User-Login": "owner@github", "X-Forwarded-For": "203.0.113.7"}
+    )
+    assert funnel.via_funnel is True
+    assert funnel.tailscale_login is None
+    assert funnel.source == "funnel"
+    assert funnel.is_owner("owner@github") is False
+    # Only the is_owner guard decides here, whatever the login field holds.
+    direct = NetContext(via_funnel=True, tailscale_login="owner@github", client_ip=None)
+    assert direct.is_owner("owner@github") is False
+
+
+def test_net_context_without_headers_is_unknown():
+    none = ctx({})
+    assert (none.via_funnel, none.tailscale_login, none.client_ip, none.source) == (False, None, None, "unknown")
+    assert ctx({"Tailscale-User-Login": "   "}).tailscale_login is None
+
+
+def test_owner_match_ignores_case():
+    tailnet = ctx({"Tailscale-User-Login": "Owner@GitHub"})
+    assert tailnet.source == "tailnet"
+    assert tailnet.is_owner("owner@github")
+    assert tailnet.is_owner("OWNER@GITHUB")
+    assert not ctx({"Tailscale-User-Login": "other@github"}).is_owner("owner@github")
+
+
+@pytest.mark.parametrize("host", ["127.0.0.2", "127.0.0.53", "127.255.255.254"])
+def test_listen_address_problem_accepts_other_ipv4_loopback_addresses(host):
+    assert listen_address_problem(host) is None
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1", "::1", "::ffff:127.0.0.2", "localhost", "0.0.0.0", "::", "10.0.0.1", "", "127.000.000.002"]
+)
+def test_listen_address_problem_rejects_the_rest(host):
+    problem = listen_address_problem(host)
+    assert isinstance(problem, str)
+    if host == "127.0.0.1":
+        assert "tailscaled" in problem
+
+
+def test_listen_host_default_and_validation(tmp_path, monkeypatch):
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("OWNER_TAILSCALE_LOGIN", raising=False)
+
+    def load(host_line: str = ""):
+        body = BASE_CONFIG.format(url="https://h.example", redirect="https://x/cb")
+        body = body.replace("listen_port = 8080", host_line + "listen_port = 8080")
+        return load_settings(_write_config(tmp_path, body))
+
+    assert load().listen_host == DEFAULT_LISTEN_HOST == "127.0.0.2"
+    with pytest.raises(ConfigError, match="tailscaled"):
+        load('listen_host = "127.0.0.1"\n')
+    with pytest.raises(ConfigError):
+        load('listen_host = "::1"\n')
+    assert load('listen_host = "127.0.0.3"\n').listen_host == "127.0.0.3"
