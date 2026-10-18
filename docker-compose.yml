@@ -111,7 +111,7 @@ services:
     <<: *hardening
     build:
       context: ./hevy-mcp
-    image: fitness-coach-mcp/hevy-mcp:6.1.16
+    image: fitness-coach-mcp/hevy-mcp:6.2.1
     environment:
       HOME: /tmp
       HEVY_MCP_HTTP_MAX_SESSIONS: "20"
