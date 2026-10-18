@@ -1,8 +1,9 @@
 # How this was built
 
-The project was built in about two weeks, as 22 planned PRs on top of an initial skeleton, mostly by Claude Code
-agents working to a written plan, with me as the owner who decides, reviews and deploys. This page explains
-the process; the artefacts it refers to are all in the repository.
+The project was built in about two weeks, as 27 planned PRs on top of an initial skeleton (22 features, then 5
+refactors and fixes from two architecture reviews; 3 more are planned), mostly by Claude Code agents working to
+a written plan, with me as the owner who decides, reviews and deploys. This page explains the process; the
+artefacts it refers to are all in the repository.
 
 ## 1. A written plan before code
 
@@ -49,7 +50,7 @@ Review findings that repeat do not stay in review comments:
 
 - [`checklist.md`](../.claude/mao/checklist.md) (43 items) is what the implementer self-reviews against and
   the reviewer works through, each item marked ok / finding / n/a.
-- [`lessons.md`](../.claude/mao/lessons.md) (70+ entries) records the *shape* of each repeated error with the PR
+- [`lessons.md`](../.claude/mao/lessons.md) (80+ entries) records the *shape* of each repeated error with the PR
   it came from, and every agent reads it before starting.
 
 One example. In PR 01 a review found a branch in a payload shaper that no test noticed when it was forced
@@ -58,8 +59,9 @@ shaper needs a canned payload that takes it, and the self-review mutates each br
 
 ## 4. Verification in layers
 
-- **Offline tests** (about 770 test functions) with a fake Garmin client and canned payloads; no test touches
-  the network.
+- **Offline tests** (more than 1,100 test functions) with a fake Garmin client and canned payloads; no test
+  touches the network. The last line of `scripts/check.sh` (`CHECK OK ... garmin=<n> gateway=<n> coach=<n>`)
+  gives the exact number of passing tests per service.
 - **Static checks** (ruff and mypy) in each service's Docker test stage, so an image cannot be built from code
   that fails them.
 - **End-to-end**: `scripts/check.sh` builds every image and runs the whole OAuth 2.1 + MCP flow in a throwaway
