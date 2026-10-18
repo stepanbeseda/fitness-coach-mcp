@@ -1,7 +1,7 @@
 # coach-mcp: coach memory MCP server (goals, constraints, plan, notes; SQLite).
 # Dependencies are installed from hash-locked files (see README.md to regenerate).
 # The base image is a literal pin (no ARG), so Dependabot and scripts/check-pins.sh see it.
-FROM python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b AS deps
+FROM python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS deps
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
