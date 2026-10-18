@@ -1,12 +1,21 @@
 # MAO — project configuration fitness-coach-mcp
 
-Project layer of the `/mao` skill (`~/.claude/skills/mao/`). Whatever stands here
-takes precedence over the skill's general procedure. Do not copy the repo's
-own rules (`README.md`) here — only link to them.
+MAO (multi-agent orchestration) is the process this repository is built with:
+for each plan chapter a designer agent writes a spec, a worker checks it
+against the repository, an implementer writes code and tests in its own git
+worktree, and an independent reviewer accepts it only with a green
+`scripts/check.sh` run for the reviewed tree. The skill is public:
+https://github.com/stepanbeseda/skills/tree/main/skills/mao (background:
+`docs/how-this-was-built.md`).
+
+This file is the skill's project layer. Whatever stands here takes precedence
+over the skill's general procedure. Do not copy the repo's own rules
+(`README.md`) here — only link to them.
 
 Stack: Python >= 3.13 MCP servers in Docker (`garmin-mcp/`, `gateway/`,
-`hevy-mcp/`, `coach-mcp/`), hash-locked dependencies, no UI. The host has only Python 3.12,
-no pytest/ruff/uv/just/make — tests run inside Docker.
+`hevy-mcp/`, `coach-mcp/`), hash-locked dependencies, no UI. Do not rely on the
+host's Python or tools (no pytest/ruff/uv/just/make there) — tests run inside
+Docker.
 
 ## Files
 
@@ -28,7 +37,7 @@ no pytest/ruff/uv/just/make — tests run inside Docker.
 
 ## Commands
 
-All commands run from ROOT (`/home/ubuntu/dev/fitness-coach-mcp`), or from the
+All commands run from ROOT (the repository root), or from the
 PR's worktree where noted.
 
 - `docker-compose.yml` fixes `name: fitness-coach-mcp`, so `docker compose`
@@ -82,7 +91,7 @@ PR's worktree where noted.
 Several PRs may be implemented at once in separate worktrees (background:
 `.claude/mao/lessons.md`, "Parallel runs").
 
-- At most 2 concurrent implementers on this machine (2 CPUs, 11 GB).
+- At most 2 concurrent implementers on this machine.
 - Every `docker build` and every e2e run holds `flock /tmp/fcm-docker.lock`
   (`scripts/check.sh` does it itself; `CHECK_LOCK=0` only for a deliberate
   parallel test). Waiting for the lock is normal; never kill another PR's build.
