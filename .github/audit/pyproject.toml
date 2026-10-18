@@ -1,0 +1,10 @@
+# The vulnerability audit of CI (.github/workflows/audit.yml), not a package. scripts/lock-deps.sh turns it
+# into requirements.lock next to this file; CI installs that with --require-hashes.
+[project]
+name = "fitness-coach-audit"
+version = "0.1.0"
+description = "Pinned pip-audit for the weekly audit of the service locks"
+requires-python = ">=3.13"
+dependencies = [
+    "pip-audit==2.10.1",
+]
