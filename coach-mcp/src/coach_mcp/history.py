@@ -84,6 +84,28 @@ _SECTION_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
 }
 ALL_SECTIONS = frozenset(SNAPSHOT_SECTIONS)
+# Every key garmin-mcp's snapshot shaper gives each section (tests/test_garmin_contract.py checks them against
+# garmin-mcp's answers). A section that is an object without "error", not {"available": false}, with keys but none
+# of them has drifted from the contract: it counts as a section in error, so it is logged and repaired.
+SNAPSHOT_KEYS: dict[str, frozenset[str]] = {
+    "readiness": frozenset(
+        {"score", "level", "feedback", "time_local", "recovery_time_h", "factors", "morning_score", "morning_level"}
+    ),
+    "hrv": frozenset(
+        {"last_night_avg_ms", "last_night_5min_high_ms", "weekly_avg_ms", "status", "feedback",
+         "baseline_balanced_ms", "baseline_low_upper_ms"}
+    ),
+    "sleep": frozenset(
+        {"score", "quality", "duration_h", "deep_min", "light_min", "rem_min", "awake_min", "start_local",
+         "end_local", "avg_overnight_hrv_ms", "resting_hr"}
+    ),
+    "body_battery": frozenset({"latest", "at_wake", "high", "low", "charged", "drained"}),
+    "resting_hr": frozenset({"today", "avg_7d"}),
+    "stress": frozenset({"avg", "max"}),
+    "training_status": frozenset(
+        {"status", "acute", "chronic", "acwr_ratio", "acwr_status", "vo2max_running", "vo2max_cycling"}
+    ),
+}
 # Column -> key of its section.
 _SECTION_OF: dict[str, str] = {column: key for key, columns in _SECTION_COLUMNS.items() for column, _ in columns}
 SPORTS = ("running", "cycling", "swimming", "walking", "hiking", "strength", "other")
@@ -91,16 +113,31 @@ SPORTS = ("running", "cycling", "swimming", "walking", "hiking", "strength", "ot
 ENDURANCE_SPORTS = ("running", "cycling", "swimming", "walking", "hiking", "other")
 
 
+def drifted_sections(payload: dict[str, Any]) -> frozenset[str]:
+    """The sections that are objects without ``error``, not ``{"available": false}``, with keys but none of
+    ``SNAPSHOT_KEYS``: garmin-mcp answered in a shape the coach does not know (``{}`` is a day without values)."""
+    out = set()
+    for key in SNAPSHOT_SECTIONS:
+        section = payload.get(key)
+        if not isinstance(section, dict) or "error" in section or section.get("available") is False:
+            continue
+        if section and not SNAPSHOT_KEYS[key] & section.keys():
+            out.add(key)
+    return frozenset(out)
+
+
 def recovery_values(payload: dict[str, Any]) -> dict[str, Any]:
     """Columns of ``history_days`` from a ``get_recovery_snapshot`` payload.
 
-    A section that holds ``error`` leaves its columns out (the stored value is kept); a section that is
-    missing, ``{"available": false}`` or not an object gives ``None`` for all its columns.
+    A section in error (``section_errors``: it holds ``error`` or has drifted) leaves its columns out (the
+    stored value is kept); a section that is missing, ``{"available": false}`` or not an object gives ``None``
+    for all its columns.
     """
     out: dict[str, Any] = {}
+    errors = section_errors(payload)
     for key, columns in _SECTION_COLUMNS.items():
         section = payload.get(key)
-        if isinstance(section, dict) and "error" in section:
+        if key in errors:
             continue
         if not isinstance(section, dict):
             section = {}
@@ -118,15 +155,16 @@ def recovery_values(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def snapshot_failed(payload: dict[str, Any]) -> bool:
-    """True when every section of the snapshot is an error (the call itself worked, nothing was read)."""
-    return all(isinstance(payload.get(key), dict) and "error" in payload[key] for key in SNAPSHOT_SECTIONS)
+    """True when every section of the snapshot is in error (the call itself worked, nothing was read)."""
+    return section_errors(payload) == ALL_SECTIONS
 
 
 def section_errors(payload: dict[str, Any]) -> frozenset[str]:
-    """The sections of a snapshot payload that hold ``error`` (the test of ``recovery_values``)."""
-    return frozenset(
+    """The sections of a snapshot payload that hold ``error`` or have drifted (the test of ``recovery_values``)."""
+    held = frozenset(
         key for key in SNAPSHOT_SECTIONS if isinstance(payload.get(key), dict) and "error" in payload[key]
     )
+    return held | drifted_sections(payload)
 
 
 def missing_text(sections: Collection[str]) -> str:
@@ -353,6 +391,7 @@ class _Run:
         # the evidence that a section works (or is down) for the whole run.
         self.snapshots_answered = 0
         self.sections_ok: set[str] = set()
+        self.drifted: set[str] = set()  # sections garmin-mcp answered in a shape the coach does not know
 
 
 class _StrengthRun:
@@ -477,6 +516,8 @@ class HistoryJob:
         except Exception as exc:  # the run's outcome and scheduling stand; BaseException propagates
             step = f"reconcile=error kind={exception_kind(exc)}"
             level = logging.WARNING
+        if run.drifted:  # section names only, never values
+            log.warning("history status=contract_warning sections=%s", missing_text(run.drifted))
         log.log(
             level,
             "history status=%s fetched=%d failed=%d pending=%d given_up=%d ms=%.0f repaired=%d %s",
@@ -602,6 +643,8 @@ class HistoryJob:
         if outcome in _STOP_OUTCOMES:
             raise _Stop(_STOP_OUTCOMES[outcome])
         if outcome == "ok" and payload is not None:
+            if name == "get_recovery_snapshot":  # also a snapshot whose every section drifted (snapshot_failed)
+                run.drifted |= drifted_sections(payload)
             return "ok", payload
         return "error", None
 
