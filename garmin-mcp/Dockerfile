@@ -11,11 +11,14 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-deps --require-hashes -r requirements.lock
 
-# Test stage: runs during every build (the runtime stage depends on its marker). Static checks first
-# (ruff, then mypy; both configured in pyproject.toml), then the tests.
-FROM deps AS test
+# Dev stage: the test tools, without the code (scripts/record-garmin-contract.sh runs the tests of a mounted tree).
+FROM deps AS dev
 COPY requirements-dev.lock .
 RUN pip install --no-deps --require-hashes -r requirements-dev.lock
+
+# Test stage: runs during every build (the runtime stage depends on its marker). Static checks first
+# (ruff, then mypy; both configured in pyproject.toml), then the tests.
+FROM dev AS test
 COPY pyproject.toml ./
 COPY src/ src/
 COPY tests/ tests/
