@@ -6,9 +6,10 @@
 #   scripts/healthcheck.sh --quiet             print only problems (for cron)
 #   scripts/healthcheck.sh --quiet --notify    also send changes of the problem set to Telegram (for cron)
 #
-# Checks: container health, Tailscale node + Funnel, OAuth discovery over the tailnet and through the public
-# Funnel path, the login page not being public, Garmin tokens, the coach memory database, the coach scheduler
-# and history, the Hevy API key, drift of the pinned Claude client metadata and the age of the newest backup.
+# Checks: container health, Tailscale node + Funnel, ports 8080 and 9002 of the node closed to the tailnet,
+# OAuth discovery over the tailnet and through the public Funnel path, the login page not being public, Garmin
+# tokens, the coach memory database, the coach scheduler and history, the Hevy API key, drift of the pinned Claude
+# client metadata and the age of the newest backup.
 #
 # --notify posts to the chat of COACH_TELEGRAM_CHAT_ID with secrets/telegram_bot_token (the morning briefing
 # bot) when the set of failing checks changes, and once when all pass again. Every problem has a key (the
@@ -82,6 +83,30 @@ if jq -e --arg h "${PUBLIC_HOST}:443" '.AllowFunnel[$h] == true' <<<"$funnel" >/
   report_ok "funnel: on for ${PUBLIC_HOST}:443"
 else
   report_fail funnel-config "funnel: not on (check the funnel nodeAttrs for the tag in the tailnet policy)"
+fi
+
+# 2b. no way around tailscale serve: in userspace mode tailscaled forwards tailnet connections for ports without a
+# serve handler to 127.0.0.1:<port> in the sidecar; 8080 (gateway) and 9002 (tailscaled health) must not answer.
+if [[ "$state" == "Running" ]]; then
+  node_ip="$(jq -r '[.Self.TailscaleIPs[]? | select(test("^[0-9]+(\\.[0-9]+){3}$"))][0] // empty' <<<"$ts_json" 2>/dev/null || true)"
+  if [[ -z "$node_ip" ]]; then
+    report_warn "tailnet: no IPv4 address of the node, port probe skipped"
+  else
+    for port in 8080 9002; do
+      probe="$(curl -s -o /dev/null --max-time 3 -w '%{time_connect} %{exitcode}' "http://$node_ip:$port/" 2>/dev/null || true)"
+      connect="${probe%% *}"
+      code="${probe##* }"
+      if [[ -n "$connect" && ! "$connect" =~ ^0(\.0+)?$ ]]; then
+        report_fail "tailnet-direct-$port" "tailnet: port $port of the node accepts connections that bypass tailscale serve → scripts/check-ingress.py; README, Security model"
+      elif [[ "$code" == 7 ]]; then
+        report_ok "tailnet: port $port of the node does not accept connections (refused)"
+      elif [[ "$code" == 28 ]]; then
+        report_ok "tailnet: port $port of the node does not accept connections (no answer)"
+      else
+        report_warn "tailnet: probe of port $port inconclusive (curl exit ${code:-?})"
+      fi
+    done
+  fi
 fi
 
 # 3. discovery over the tailnet
