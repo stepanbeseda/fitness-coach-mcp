@@ -1,26 +1,158 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc" id="architecture-root">
-        <title id="architecture-title">Fitness Coach MCP architecture</title>
-        <desc id="architecture-desc">Claude clients reach a Tailscale node and an OAuth gateway, which routes to three private MCP backends that call Hevy, Garmin Connect, Telegram and Open-Meteo.</desc>
-        <defs>
-      <style>#architecture-root { --color-paper:   #f5f5f5;   
-      --color-ink:     #2d3142;   
-      --color-muted:   #4f5d75;   
-      --color-accent:  #bf4520;   
-      --font-sans:     'Geist', system-ui, sans-serif;
-      --font-serif:    'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
-      --font-mono:     'Geist Mono', ui-monospace, monospace; }
-      #architecture-root { font-family: var(--font-sans); color: var(--color-ink); }
-      #architecture-root .diagram-container { width: 100%; overflow-x: auto; }
-      #architecture-root .diagram-container { overflow-x: visible; }</style>
-          <marker id="architecture-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
-          <marker id="architecture-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bf4520"/></marker>
-          <marker id="architecture-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
-        </defs>
-        <rect width="100%" height="100%" fill="#f5f5f5"/>
-        <rect x="300" y="98" width="260" height="306" rx="8" fill="#2d3142" stroke="#2d3142" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.10"/><rect x="316" y="102" width="200" height="12" rx="2" fill="#f5f5f5"/><text x="416.0" y="111" fill="#5a6580" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">TAILSCALE SIDECAR · LOOPBACK ONLY</text><rect x="660" y="98" width="300" height="456" rx="8" fill="#2d3142" stroke="#2d3142" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.10"/><rect x="676" y="102" width="176" height="12" rx="2" fill="#f5f5f5"/><text x="764.0" y="111" fill="#5a6580" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">PRIVATE DOCKER NETWORK · MCP</text><text x="30" y="112" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">CLIENTS</text><text x="1060" y="112" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">EXTERNAL SERVICES</text>
-        <path d="M210,162 H330" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/><path d="M210,300 H247 Q255,300 255,292 V232 Q255,224 263,224 H330" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/><path d="M430,226 V272" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/><path d="M530,299 H572 Q580,299 580,291 V174 Q580,166 588,166 H690" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/><path d="M530,326 H690" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/><path d="M530,353 H592 Q600,353 600,361 V478 Q600,486 608,486 H690" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/><path d="M760,290 V202" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#architecture-arrow)"/><path d="M760,362 V450" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#architecture-arrow)"/><path d="M930,166 H1060" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/><path d="M930,486 H1060" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/><path d="M930,314 H1002 Q1010,314 1010,306 V298 Q1010,290 1018,290 H1060" fill="none" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#architecture-arrow-link)"/><path d="M930,338 H1002 Q1010,338 1010,346 V384 Q1010,392 1018,392 H1060" fill="none" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#architecture-arrow-link)"/>
-        <rect x="238.0" y="142" width="64" height="12" rx="2" fill="#f5f5f5"/><text x="270" y="151" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">FUNNEL :443</text><rect x="274.0" y="204" width="44" height="12" rx="2" fill="#f5f5f5"/><text x="296" y="213" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">TAILNET</text><rect x="440.0" y="242" width="80" height="12" rx="2" fill="#f5f5f5"/><text x="480" y="251" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">127.0.0.2:8080</text><rect x="621.0" y="146" width="56" height="12" rx="2" fill="#f5f5f5"/><text x="649" y="155" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">/hevy/mcp</text><rect x="618.0" y="306" width="64" height="12" rx="2" fill="#f5f5f5"/><text x="650" y="315" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">/coach/mcp</text><rect x="618.0" y="466" width="64" height="12" rx="2" fill="#f5f5f5"/><text x="650" y="475" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">/garmin/mcp</text><rect x="770.0" y="240" width="68" height="12" rx="2" fill="#f5f5f5"/><text x="804" y="249" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">2 READ TOOLS</text><rect x="770.0" y="400" width="60" height="12" rx="2" fill="#f5f5f5"/><text x="800" y="409" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">READ ONLY</text><rect x="940.0" y="294" width="52" height="12" rx="2" fill="#f5f5f5"/><text x="966" y="303" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">BRIEFING</text><rect x="940.0" y="346" width="52" height="12" rx="2" fill="#f5f5f5"/><text x="966" y="355" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">FORECAST</text>
-        <rect x="30" y="126" width="180" height="72" rx="6" fill="#f5f5f5"/><rect x="30" y="126" width="180" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="120.0" y="152" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">claude.ai</text><text x="120.0" y="169" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">web · desktop · mobile</text><text x="120.0" y="183" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Anthropic 160.79.104.0/21</text><rect x="30" y="264" width="180" height="72" rx="6" fill="#f5f5f5"/><rect x="30" y="264" width="180" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="120.0" y="290" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Claude Code</text><text x="120.0" y="307" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">mcp-remote</text><text x="120.0" y="321" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">your tailnet devices</text><rect x="330" y="130" width="200" height="96" rx="6" fill="#f5f5f5"/><rect x="330" y="130" width="200" height="96" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="430.0" y="168" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Tailscale</text><text x="430.0" y="185" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">node fitness-mcp</text><text x="430.0" y="199" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">serve + funnel :443</text><rect x="330" y="272" width="200" height="108" rx="6" fill="#f5f5f5"/><rect x="330" y="272" width="200" height="108" rx="6" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/><text x="430.0" y="309" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">gateway</text><text x="430.0" y="326" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">OAuth 2.1 server</text><text x="430.0" y="340" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">reverse proxy</text><text x="430.0" y="354" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">audit · rate limit</text><rect x="690" y="130" width="240" height="72" rx="6" fill="#f5f5f5"/><rect x="690" y="130" width="240" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="810.0" y="163" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">hevy-mcp</text><text x="810.0" y="180" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">official image</text><rect x="690" y="290" width="240" height="72" rx="6" fill="#f5f5f5"/><rect x="690" y="290" width="240" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="810.0" y="316" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">coach-mcp</text><text x="810.0" y="333" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">goals · plan · notes · briefing</text><text x="810.0" y="347" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">SQLite · coach-data volume</text><rect x="690" y="450" width="240" height="72" rx="6" fill="#f5f5f5"/><rect x="690" y="450" width="240" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="810.0" y="476" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">garmin-mcp</text><text x="810.0" y="493" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">custom server</text><text x="810.0" y="507" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">tokens · garmin-tokens volume</text><rect x="1060" y="130" width="190" height="72" rx="6" fill="#f5f5f5"/><rect x="1060" y="130" width="190" height="72" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.30"/><text x="1155.0" y="163" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Hevy API</text><text x="1155.0" y="180" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">workout data</text><rect x="1060" y="450" width="190" height="72" rx="6" fill="#f5f5f5"/><rect x="1060" y="450" width="190" height="72" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.30"/><text x="1155.0" y="483" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Garmin Connect</text><text x="1155.0" y="500" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">health and activity data</text><rect x="1060" y="254" width="190" height="72" rx="6" fill="#f5f5f5"/><rect x="1060" y="254" width="190" height="72" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" stroke-dasharray="4,3" fill-opacity="0.02" stroke-opacity="0.20"/><text x="1155.0" y="287" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Telegram Bot API</text><text x="1155.0" y="304" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">briefing and your replies</text><rect x="1060" y="356" width="190" height="72" rx="6" fill="#f5f5f5"/><rect x="1060" y="356" width="190" height="72" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" stroke-dasharray="4,3" fill-opacity="0.02" stroke-opacity="0.20"/><text x="1155.0" y="389" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Open-Meteo</text><text x="1155.0" y="406" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">rounded coordinates only</text>
-        <line x1="30" y1="588" x2="1250" y2="588" stroke="#2d3142" stroke-width="0.8" stroke-opacity="0.10"/><text x="30" y="612" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text><rect x="120" y="603" width="16" height="12" rx="3" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="144" y="612" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Service</text><rect x="230" y="603" width="16" height="12" rx="3" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/><text x="254" y="612" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Gateway (focal)</text><rect x="400" y="603" width="16" height="12" rx="3" fill="#2d3142" stroke="#2d3142" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.30"/><text x="424" y="612" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">External API</text><rect x="530" y="603" width="16" height="12" rx="3" fill="#2d3142" stroke="#2d3142" stroke-width="1" stroke-dasharray="4,3" fill-opacity="0.02" stroke-opacity="0.20"/><text x="554" y="612" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Optional</text><line x1="650" y1="609" x2="678" y2="609" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/><text x="686" y="612" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Internal call</text><line x1="800" y1="609" x2="828" y2="609" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/><text x="836" y="612" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Outbound API call</text><line x1="990" y1="609" x2="1018" y2="609" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#architecture-arrow)"/><text x="1026" y="612" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Read-only / optional</text>
-      </svg>
+<svg viewBox="0 0 900 1072" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc">
+<title id="architecture-title">Fitness Coach MCP architecture</title>
+<desc id="architecture-desc">Claude clients reach a Tailscale node and an OAuth gateway, which routes to three private MCP backends. coach-mcp runs background jobs (nightly history, morning briefing, Monday report, Telegram long poll) and reads garmin-mcp and hevy-mcp read-only. The backends call Hevy, Garmin Connect, Telegram and Open-Meteo. A host cron runs the healthcheck with Telegram alerts and the backup to a backup directory.</desc>
+<defs><marker id="architecture-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0 0, 10 4, 0 8" fill="#4f5d75"/></marker><marker id="architecture-arrow-link" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0 0, 10 4, 0 8" fill="#2e5aa8"/></marker><marker id="architecture-arrow-ink" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0 0, 10 4, 0 8" fill="#2d3142"/></marker></defs>
+<rect width="100%" height="100%" fill="#f5f5f5"/>
+<text x="24" y="52" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">CLIENTS</text>
+<rect x="24" y="70" width="206" height="80" rx="6" fill="#f5f5f5"/>
+<rect x="24" y="70" width="206" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+<text x="127.0" y="96" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">claude.ai</text>
+<text x="127.0" y="116" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">web · desktop · mobile</text>
+<text x="127.0" y="133" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Anthropic 160.79.104.0/21</text>
+<rect x="24" y="170" width="206" height="80" rx="6" fill="#f5f5f5"/>
+<rect x="24" y="170" width="206" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+<text x="127.0" y="196" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Claude Code</text>
+<text x="127.0" y="216" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">mcp-remote</text>
+<text x="127.0" y="233" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">your tailnet devices</text>
+<rect x="330" y="44" width="546" height="222" rx="8" fill="#2d3142" stroke="#2d3142" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.12"/>
+<rect x="347.0" y="35" width="304" height="18" rx="2" fill="#f5f5f5"/>
+<text x="499.015" y="48" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">TAILSCALE SIDECAR · LOOPBACK ONLY</text>
+<rect x="346" y="70" width="172" height="150" rx="6" fill="#f5f5f5"/>
+<rect x="346" y="70" width="172" height="150" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+<text x="432.0" y="96" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Tailscale</text>
+<text x="432.0" y="116" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">node fitness-mcp</text>
+<text x="432.0" y="133" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">serve + funnel :443</text>
+<rect x="391.0" y="154" width="82" height="22" rx="11" fill="#f5f5f5" stroke="#4f5d75" stroke-width="0.8"/>
+<text x="432.0" y="169" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">ts-state</text>
+<text x="432.0" y="192" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">node state</text>
+<rect x="644" y="70" width="216" height="150" rx="6" fill="#f5f5f5"/>
+<rect x="644" y="70" width="216" height="150" rx="6" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/>
+<text x="752.0" y="96" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">gateway</text>
+<text x="752.0" y="116" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">OAuth 2.1 server</text>
+<text x="752.0" y="133" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">reverse proxy</text>
+<text x="752.0" y="150" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">audit · rate limit</text>
+<rect x="696.5" y="171" width="111" height="22" rx="11" fill="#f5f5f5" stroke="#4f5d75" stroke-width="0.8"/>
+<text x="752.0" y="186" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">gateway-data</text>
+<text x="752.0" y="209" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">OAuth DB · audit log</text>
+<path d="M230,110 H346" fill="none" stroke="#2d3142" stroke-width="1.6" marker-end="url(#architecture-arrow-ink)"/>
+<path d="M230,210 H272 Q280,210 280,202 V178 Q280,170 288,170 H346" fill="none" stroke="#2d3142" stroke-width="1.6" marker-end="url(#architecture-arrow-ink)"/>
+<rect x="231.5" y="101" width="97" height="18" rx="2" fill="#f5f5f5"/>
+<text x="280" y="114" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">FUNNEL :443</text>
+<rect x="247.0" y="181" width="66" height="18" rx="2" fill="#f5f5f5"/>
+<text x="280" y="194" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">TAILNET</text>
+<path d="M518,130 H644" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<rect x="520.5" y="105" width="121" height="18" rx="2" fill="#f5f5f5"/>
+<text x="581.0" y="118" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">127.0.0.2:8080</text>
+<rect x="24" y="302" width="852" height="366" rx="8" fill="#2d3142" stroke="#2d3142" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.12"/>
+<rect x="41.2" y="293" width="259" height="18" rx="2" fill="#f5f5f5"/>
+<text x="170.74" y="306" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">PRIVATE DOCKER NETWORK · MCP</text>
+<path d="M752.0,220 V332 M135.0,332 H765.0" fill="none" stroke="#4f5d75" stroke-width="1.2"/>
+<path d="M135.0,332 V382" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<rect x="94.0" y="350.0" width="82" height="18" rx="2" fill="#f5f5f5"/>
+<text x="135.0" y="363.0" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">/hevy/mcp</text>
+<path d="M450.0,332 V382" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<rect x="405.0" y="350.0" width="90" height="18" rx="2" fill="#f5f5f5"/>
+<text x="450.0" y="363.0" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">/coach/mcp</text>
+<path d="M765.0,332 V382" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<rect x="716.5" y="350.0" width="97" height="18" rx="2" fill="#f5f5f5"/>
+<text x="765.0" y="363.0" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">/garmin/mcp</text>
+<rect x="40" y="382" width="190" height="88" rx="6" fill="#f5f5f5"/>
+<rect x="40" y="382" width="190" height="88" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+<text x="135.0" y="408" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">hevy-mcp</text>
+<text x="135.0" y="428" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">chrisdoc/hevy-mcp</text>
+<text x="135.0" y="445" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">upstream · pinned</text>
+<rect x="670" y="382" width="190" height="136" rx="6" fill="#f5f5f5"/>
+<rect x="670" y="382" width="190" height="136" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+<text x="765.0" y="408" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">garmin-mcp</text>
+<text x="765.0" y="428" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">custom server</text>
+<rect x="706.0" y="449" width="118" height="22" rx="11" fill="#f5f5f5" stroke="#4f5d75" stroke-width="0.8"/>
+<text x="765.0" y="464" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">garmin-tokens</text>
+<text x="765.0" y="487" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">login tokens</text>
+<rect x="335" y="382" width="230" height="270" rx="6" fill="#f5f5f5"/>
+<rect x="335" y="382" width="230" height="270" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+<text x="450.0" y="408" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">coach-mcp</text>
+<text x="450.0" y="428" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">goals · plan · notes</text>
+<text x="450.0" y="456" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">BACKGROUND JOBS</text>
+<rect x="351" y="468" width="198" height="22" rx="4" fill="#ffffff" stroke="#4f5d75" stroke-width="0.8"/>
+<text x="450.0" y="483" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">nightly history</text>
+<rect x="351" y="498" width="198" height="22" rx="4" fill="#ffffff" stroke="#4f5d75" stroke-width="0.8" stroke-dasharray="4,3"/>
+<text x="450.0" y="513" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">morning briefing</text>
+<rect x="351" y="528" width="198" height="22" rx="4" fill="#ffffff" stroke="#4f5d75" stroke-width="0.8" stroke-dasharray="4,3"/>
+<text x="450.0" y="543" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Monday report</text>
+<rect x="351" y="558" width="198" height="22" rx="4" fill="#ffffff" stroke="#4f5d75" stroke-width="0.8" stroke-dasharray="4,3"/>
+<text x="450.0" y="573" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Telegram long poll</text>
+<rect x="402.0" y="594" width="96" height="22" rx="11" fill="#f5f5f5" stroke="#4f5d75" stroke-width="0.8"/>
+<text x="450.0" y="609" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">coach-data</text>
+<text x="450.0" y="632" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">SQLite: memory, history</text>
+<path d="M335,426 H230" fill="none" stroke="#4f5d75" stroke-width="1.8" stroke-dasharray="0.1,4.5" stroke-linecap="round" marker-end="url(#architecture-arrow)"/>
+<rect x="230.0" y="401" width="105" height="18" rx="2" fill="#f5f5f5"/>
+<text x="282.5" y="414" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">2 READ TOOLS</text>
+<path d="M565,426 H670" fill="none" stroke="#4f5d75" stroke-width="1.8" stroke-dasharray="0.1,4.5" stroke-linecap="round" marker-end="url(#architecture-arrow)"/>
+<rect x="576.5" y="401" width="82" height="18" rx="2" fill="#f5f5f5"/>
+<text x="617.5" y="414" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">READ ONLY</text>
+<text x="24" y="706" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">EXTERNAL SERVICES</text>
+<rect x="40" y="728" width="190" height="70" rx="6" fill="#f5f5f5"/>
+<rect x="40" y="728" width="190" height="70" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.30"/>
+<text x="135.0" y="754" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Hevy API</text>
+<text x="135.0" y="774" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">workout data</text>
+<rect x="250" y="728" width="190" height="88" rx="6" fill="#f5f5f5"/>
+<rect x="250" y="728" width="190" height="88" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" stroke-dasharray="4,3" fill-opacity="0.02" stroke-opacity="0.45"/>
+<text x="345.0" y="754" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Open-Meteo</text>
+<text x="345.0" y="774" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">weather forecast</text>
+<text x="345.0" y="791" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">rounded coordinates</text>
+<rect x="460" y="728" width="190" height="88" rx="6" fill="#f5f5f5"/>
+<rect x="460" y="728" width="190" height="88" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" stroke-dasharray="4,3" fill-opacity="0.02" stroke-opacity="0.45"/>
+<text x="555.0" y="754" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Telegram Bot API</text>
+<text x="555.0" y="774" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">briefing · report</text>
+<text x="555.0" y="791" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">replies · alerts</text>
+<rect x="670" y="728" width="190" height="70" rx="6" fill="#f5f5f5"/>
+<rect x="670" y="728" width="190" height="70" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.30"/>
+<text x="765.0" y="754" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Garmin Connect</text>
+<text x="765.0" y="774" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">health and activity</text>
+<path d="M200,470 V728" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/>
+<path d="M765.0,518 V728" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/>
+<path d="M380,652 V728" fill="none" stroke="#2e5aa8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#architecture-arrow-link)"/>
+<rect x="343.0" y="681.0" width="74" height="18" rx="2" fill="#f5f5f5"/>
+<text x="380" y="694.0" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">FORECAST</text>
+<path d="M520,652 V728" fill="none" stroke="#2e5aa8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#architecture-arrow-link)"/>
+<rect x="483.0" y="681.0" width="74" height="18" rx="2" fill="#f5f5f5"/>
+<text x="520" y="694.0" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">MESSAGES</text>
+<text x="24" y="854" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">HOST · OUTSIDE DOCKER</text>
+<rect x="335" y="876" width="230" height="88" rx="6" fill="#f5f5f5"/>
+<rect x="335" y="876" width="230" height="88" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="450.0" y="902" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">host cron</text>
+<text x="450.0" y="922" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">healthcheck.sh --notify</text>
+<text x="450.0" y="939" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">backup.sh</text>
+<rect x="40" y="876" width="190" height="70" rx="6" fill="#f5f5f5"/>
+<rect x="40" y="876" width="190" height="70" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="135.0" y="902" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">backup directory</text>
+<text x="135.0" y="922" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">BACKUP_DIR</text>
+<path d="M520,876 V816" fill="none" stroke="#2e5aa8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#architecture-arrow-link)"/>
+<rect x="491.0" y="837.0" width="58" height="18" rx="2" fill="#f5f5f5"/>
+<text x="520" y="850.0" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">ALERTS</text>
+<path d="M335,920 H230" fill="none" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#architecture-arrow)"/>
+<rect x="245.5" y="895" width="74" height="18" rx="2" fill="#f5f5f5"/>
+<text x="282.5" y="908" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">ARCHIVES</text>
+<line x1="24" y1="992" x2="876" y2="992" stroke="#2d3142" stroke-opacity="0.12" stroke-width="0.8"/>
+<text x="24" y="1022" fill="#5a6580" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
+<rect x="120" y="1012" width="22" height="14" rx="3" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+<text x="150" y="1023" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">Service</text>
+<rect x="226.61" y="1012" width="22" height="14" rx="3" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/>
+<text x="256.61" y="1023" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">Gateway (focal)</text>
+<rect x="391.06" y="1012" width="22" height="14" rx="3" fill="#2d3142" stroke="#2d3142" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.30"/>
+<text x="421.06" y="1023" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">External API</text>
+<rect x="533.8199999999999" y="1012" width="22" height="14" rx="3" fill="#2d3142" stroke="#2d3142" stroke-width="1" stroke-dasharray="4,3" fill-opacity="0.02" stroke-opacity="0.45"/>
+<path d="M563.8199999999999,1019 H593.8199999999999" fill="none" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#architecture-arrow)"/>
+<text x="601.8199999999999" y="1023" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">Optional</text>
+<rect x="685.66" y="1012" width="22" height="14" rx="7" fill="#f5f5f5" stroke="#4f5d75" stroke-width="0.8"/>
+<text x="715.66" y="1023" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">Docker volume</text>
+<path d="M120,1048 H150" fill="none" stroke="#2d3142" stroke-width="1.6" marker-end="url(#architecture-arrow-ink)"/>
+<text x="158" y="1052" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">Client request</text>
+<path d="M285.22,1048 H315.22" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<text x="323.22" y="1052" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">Internal call</text>
+<path d="M443.21000000000004,1048 H473.21000000000004" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/>
+<text x="481.21000000000004" y="1052" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">Outbound API call</text>
+<path d="M630.1200000000001,1048 H660.1200000000001" fill="none" stroke="#4f5d75" stroke-width="1.8" stroke-dasharray="0.1,4.5" stroke-linecap="round" marker-end="url(#architecture-arrow)"/>
+<text x="668.1200000000001" y="1052" fill="#4f5d75" font-size="12" font-family="'Geist Mono', ui-monospace, monospace">Read-only call</text>
+</svg>

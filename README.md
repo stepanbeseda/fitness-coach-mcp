@@ -157,7 +157,7 @@ The parts most relevant to building LLM agents that act on real, personal data:
 - **Honest statistics.** `get_correlations` returns Pearson and Spearman with the number of paired days, refuses
   below 14 pairs, and carries a "correlation is not a cause" caveat that the instructions require the coach
   to repeat.
-- **Tested offline.** About 770 test functions run against fakes and canned payloads, with no network. An
+- **Tested offline.** More than 1,200 test functions run against fakes and canned payloads, with no network. An
   end-to-end test runs the full OAuth + MCP flow in a throwaway Compose project (`scripts/check.sh`).
 - **Statically checked.** Every image build lints the three Python services with `ruff` and type-checks their
   `src/` with `mypy` in strict mode before the tests run; a finding fails the build.
@@ -167,7 +167,7 @@ The parts most relevant to building LLM agents that act on real, personal data:
 
 ## Architecture
 
-![Architecture: clients reach a Tailscale node and the OAuth gateway, which routes to the hevy, coach and garmin MCP backends and their external APIs](docs/architecture.svg)
+![Architecture: Claude clients reach a Tailscale node and the OAuth gateway, which routes to the hevy, coach and garmin MCP backends; coach-mcp runs background jobs and reads garmin-mcp and hevy-mcp read-only; a host cron runs the healthcheck with Telegram alerts and the backup](docs/architecture.svg)
 
 Editable source: [`docs/architecture.html`](docs/architecture.html).
 
@@ -429,7 +429,7 @@ compose.test.yml         overlay for the e2e test (no Tailscale login, no intern
 CHANGELOG.md             release notes: schema version, secrets, new settings per version
 tailscale/               sidecar image (non-root) + serve.json with Funnel
 gateway/                 OAuth 2.1 gateway (Python, Starlette), tests, config.toml
-hevy-mcp/                wrapper around the official image (secrets from files, telemetry off)
+hevy-mcp/                wrapper around upstream chrisdoc/hevy-mcp, pinned (secrets from files, telemetry off)
 garmin-mcp/              Garmin MCP server (Python, python-garminconnect + MCP SDK), tests
 coach-mcp/               coach memory (Python, MCP SDK, SQLite), tests
 scripts/                 setup-secrets, deploy, garmin-login, healthcheck, backup, smoke-test, admin,

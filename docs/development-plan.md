@@ -20,6 +20,9 @@ chapter and a table row; existing chapters are never rewritten, only the
   PR 08 is sent to the owner's Telegram chat and kept there by Telegram, and,
   since PR 22, what the owner writes to that bot, which passes through
   Telegram before `coach-mcp` fetches it.
+  *Superseded on 2026-10-18 (PR 35):* three MCP backends, `hevy-mcp/`,
+  `garmin-mcp/` and `coach-mcp/` (the coach memory server since PR 03),
+  sit behind the gateway.
 - **One way in.** Every MCP backend is reachable only through the gateway. A
   new backend means: a `[[backends]]` entry in `gateway/config.toml`, its own
   internal token secret, a hardened service in `docker-compose.yml` (the
@@ -3244,3 +3247,5 @@ architecture review of 2026-10-18: system-03 and presentation-03); questions and
   `garmin-mcp` and `coach-mcp`); creating a Hevy workout from a strength
   session recorded on the watch (after PR 19). The weekly report push is part
   of PR 14 since 2026-10-09.
+  *Resolved on 2026-10-18 (PR 35):* the English README came with the
+  open-source release on 2026-10-09 (section 1, "Language").
