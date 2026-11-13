@@ -382,6 +382,13 @@ def test_weekly_report_every_section_from_seeded_db(store, history):
         {"flag": "sleep_down", "week": 6.5, "baseline": 7.5, "change": -1.0, "change_pct": -13.3},
         {"flag": "hrv_down", "week": 55.7, "baseline": 60.0, "change": -4.3, "change_pct": -7.1},
     ]  # resting HR is +4 bpm: below its threshold of 5
+    assert list(out)[-1] == "recommendations"
+    assert out["recommendations"] == [
+        {"key": "endurance_load_up", "source": "endurance_load_up",
+         "numbers": {"pct": 48.0, "max_load": 162, "cap_pct": 30.0, "easy_days": 2}},
+        {"key": "hrv_down", "source": "hrv_down", "numbers": {"pct": 7.1, "easy_days": 2}},
+        {"key": "sleep_down", "source": "sleep_down", "numbers": {"minutes": 60, "baseline_h": 7.5}},
+    ]  # endurance_time_up is hidden by endurance_load_up, which has the same cause
 
 
 def test_weekly_report_lists_a_sport_that_only_the_baseline_has(store, history):

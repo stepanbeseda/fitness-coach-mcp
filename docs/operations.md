@@ -117,7 +117,8 @@ container log.
 
 **Monday report.** On Mondays, right after the briefing, a second message follows: last week's numbers from
 `get_weekly_report` (endurance, strength, sleep, HRV, resting HR, plan, new bests and watch-outs) and the
-progress of your goals with a metric (`get_goal_progress`). It goes out once per ISO week (the week it reports)
+progress of your goals with a metric (`get_goal_progress`), then at most three recommendations
+("Recommendations:"), left out when nothing fires. It goes out once per ISO week (the week it reports)
 and never without the briefing: when the briefing was not sent that day (it gave up, or the service started after
 the cutoff), there is no Monday report that week. It uses the same retry interval and cutoff as the briefing.
 `COACH_WEEKLY_PUSH=false` in `.env` turns it off (the briefing stays). By hand, for a look at the last complete

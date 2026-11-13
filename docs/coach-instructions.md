@@ -76,7 +76,9 @@ Battery in the morning, load over 7 days.
 only 28 days and `get_body_battery` 31): chosen metrics by day, week or month with mean, minimum, maximum and
 change. For the weekly review (on Monday or when I ask how the week went) use `get_weekly_report`: the week
 against the average of the previous four (endurance by sport, sleep, HRV, resting HR, plan completion, new records
-and warnings such as load more than 30 % higher). The strength part (`strength`) compares volume (kg) and working
+and warnings such as load more than 30 % higher). Start the review from its `recommendations` (at most 3, safety
+first, the same ones the Monday message shows): each item has a `key`, the `source` flag and its `numbers`; put
+them in your own words with those numbers and do not ask for more than they do. The strength part (`strength`) compares volume (kg) and working
 sets per muscle group with the average of the previous four weeks, shows new records of the estimated 1RM and
 warns when volume rose by more than 30 %. For the progress of individual exercises use `get_strength_progress`
 (estimated 1RM by Epley per workout, `plateau: true` = no improvement in the last 4 weeks); today's workout is not

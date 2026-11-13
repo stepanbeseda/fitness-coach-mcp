@@ -3,7 +3,9 @@
 ``render_weekly`` is pure: it turns the ``get_weekly_report`` and ``get_goal_progress`` results into a
 ``PushMessage`` with the words of the language catalogue (``messages.WEEKLY_LANGUAGES``). It reads only the keys
 it uses and skips a section that is missing or ``available: false``, an unknown best and an unknown flag, so a
-later addition to ``trends.py`` cannot break the push.
+later addition to ``trends.py`` cannot break the push. The message ends with the recommendations of
+the report (``recommendations``, see ``recommendations.py``), one line each; an item with an unknown key or goal
+metric is skipped.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from datetime import date
 from typing import Any, TypeGuard
 
 from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _one_line, detraining_parts, fmt, load_spike_parts
-from .messages import WeeklyTexts, texts, weekly_texts
+from .messages import Texts, WeeklyTexts, texts, weekly_texts
 from .push import PushMessage
 
 
@@ -75,6 +77,53 @@ def _goal_lines(w: WeeklyTexts, progress: dict[str, Any], day_title: Any, sep: s
             )
         )
     return lines
+
+
+def _recommendation_values(
+    w: WeeklyTexts, t: Texts, numbers: dict[str, Any], sep: str
+) -> dict[str, str] | None:
+    """The placeholders of one recommendation; None when its goal metric has no name in the catalogue."""
+    values: dict[str, str] = {}
+    for name, value in numbers.items():
+        if name == "goal":
+            noun = w.goal_noun.get(value)
+            if noun is None:
+                return None
+            values[name] = noun
+        elif name == "records":
+            records = [
+                w.recommendation_record.format(
+                    exercise=_one_line(record.get("exercise") or t.untitled, 60),
+                    date=t.day_title(date.fromisoformat(record["date"])),
+                    weight=fmt(record["weight_kg"], sep),
+                    reps=record["reps"],
+                )
+                for record in value
+            ]
+            more = numbers.get("more") or 0
+            values[name] = "; ".join(records) + (w.recommendation_more.format(n=more) if more else "")
+        elif name == "sessions":
+            values[name] = w.sessions(value)
+        elif name.endswith("_h"):
+            values[name] = _duration(w, value * 60)
+        elif name.endswith("_min"):
+            values[name] = _duration(w, value)
+        else:
+            values[name] = fmt(value, sep)
+    return values
+
+
+def _recommendation_lines(w: WeeklyTexts, t: Texts, items: Any, sep: str) -> list[str]:
+    lines = []
+    for item in items if isinstance(items, list) else []:
+        template = w.recommendation.get(item.get("key") or "") if isinstance(item, dict) else None
+        numbers = item.get("numbers") if isinstance(item, dict) else None
+        if template is None or not isinstance(numbers, dict):
+            continue
+        values = _recommendation_values(w, t, numbers, sep)
+        if values is not None:
+            lines.append(f"- {template.format(**values)}")
+    return [w.recommendations, *lines] if lines else []
 
 
 def render_weekly(report: dict[str, Any], progress: dict[str, Any], language: str) -> PushMessage:
@@ -182,6 +231,7 @@ def render_weekly(report: dict[str, Any], progress: dict[str, Any], language: st
         lines.extend(_goal_lines(w, progress, t.day_title, sep))
     elif progress.get("goals_without_metric"):
         lines.append(w.goals_without_metric.format(n=progress["goals_without_metric"]))
+    lines.extend(_recommendation_lines(w, t, report.get("recommendations"), sep))
     start, end = (date.fromisoformat(report["week"][key]) for key in ("start", "end"))
     title = w.title.format(week=report["week"]["iso_week"], days=f"{t.day_title(start)}–{t.day_title(end)}")
     body = _guard_bytes("\n".join(lines), MAX_MESSAGE_BYTES - len(title.encode()) - 2)

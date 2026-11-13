@@ -58,7 +58,8 @@ INSTRUCTIONS = (
     "dropped for 14 days) and a strength load spike (working sets of 7 days above 1.5x the usual). "
     "get_trends returns the stored daily Garmin history (collected nightly) aggregated by day, week or month: "
     "use it for anything older than 28 days. get_weekly_report compares one ISO week with the previous four: "
-    "use it for weekly reviews (it includes strength volume and sets per muscle group from Hevy). "
+    "use it for weekly reviews (it includes strength volume and sets per muscle group from Hevy) "
+    "and start from its recommendations (at most 3, the same as the Monday message). "
     "get_strength_progress returns the estimated 1RM (Epley) per exercise over time from the stored Hevy history "
     "with a plateau flag: use it for strength progression; for the latest workout and exact sets call Hevy. "
     "A day whose best e1RM is more than 35 % above or 30 % below the median of the previous 3 sessions is "
@@ -381,7 +382,9 @@ def build_server(
         as training load or strength volume up more than 30 %, detraining toward an endurance goal and a strength
         load spike (working sets above 1.5x the baseline). A suspect strength day (an e1RM far from the
         previous sessions) is no new best; it is listed in strength.to_check with a strength_record_suspect
-        flag. Sections without data are marked available: false. Reads the stored history only."""
+        flag. recommendations lists at most 3 next steps from those flags (key, source flag, numbers; the same
+        as the Monday message), safety first. Sections without data are marked available: false. Reads the
+        stored history only."""
         return trends.get_weekly_report(store, today(), week=week)
 
     @tool("get_strength_progress", _read("Strength progress"))

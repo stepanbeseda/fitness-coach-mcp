@@ -295,6 +295,12 @@ class WeeklyTexts:
     goal_unavailable: str  # {title} {metric} {reason}
     goal_reasons: Mapping[str, str]  # reason code of get_goal_progress -> text
     goals_without_metric: str  # {n}
+    recommendations: str
+    recommendation: Mapping[str, str]  # item key of recommendations.recommend -> placeholders = the item's numbers
+    recommendation_record: str  # {exercise} {date} {weight} {reps}
+    recommendation_more: str  # {n}
+    goal_noun: Mapping[str, str]  # goal metric -> its name in a recommendation sentence
+    sessions: Callable[[int], str]
 
 
 
@@ -369,6 +375,25 @@ WEEKLY_EN = WeeklyTexts(
         "trend_too_steep": "the trend is too steep to project",
     },
     goals_without_metric="Goals without a measurable metric: {n}.",
+    recommendations="Recommendations:",
+    recommendation={
+        "load_spike": "Working sets {sets} against the 4-week average {baseline_sets}: this week at most {max_sets} ({factor}× the average).",
+        "endurance_load_up": "Endurance load {pct} % above the 4-week average: this week at most {max_load} (average +{cap_pct} %), with at least {easy_days} easy days.",
+        "hrv_down": "HRV {pct} % below the 4-week average: easy training only for the first {easy_days} days, intensity only on a green morning verdict.",
+        "resting_hr_up": "Resting HR {bpm} bpm above the 4-week average: easy training only for the first {easy_days} days, intensity only on a green morning verdict.",
+        "sleep_down": "Sleep {minutes} min a night shorter than the 4-week average: aim for {baseline_h} a night, go to bed {minutes} min earlier.",
+        "detraining_running": "Running {km_week} km a week against the usual {baseline_km} km with a {goal} goal: this week {runs} easy runs, {km} km in total.",
+        "detraining_acwr": "Load ratio (ACWR) below {acwr_limit} for {days} days (last {acwr}) with a {goal} goal: add {easy_sessions} easy endurance sessions this week.",
+        "endurance_time_up": "Endurance time {pct} % above the 4-week average: this week at most {max_time_min} (average +{cap_pct} %).",
+        "strength_volume_up": "Strength volume {pct} % above the 4-week average: do not raise it further this week.",
+        "endurance_load_down": "Endurance load {pct} % below the 4-week average: if that was not the plan, add one easy session this week.",
+        "strength_record_suspect": "Check these records in Hevy and fix the ones logged wrong: {records}.",
+        "unconfirmed_sessions": "Confirm {sessions} with a matching activity so the plan numbers are right.",
+    },
+    recommendation_record="{exercise} {date} {weight} kg × {reps}",
+    recommendation_more=" +{n}",
+    goal_noun={"race_5k": "5 km", "race_10k": "10 km", "race_half_marathon": "half marathon", "race_marathon": "marathon", "vo2max_running": "VO2max"},
+    sessions=_plural_en("session", "sessions"),
 )
 
 WEEKLY_CS = WeeklyTexts(
@@ -435,6 +460,25 @@ WEEKLY_CS = WeeklyTexts(
         "trend_too_steep": "trend je příliš strmý na odhad",
     },
     goals_without_metric="Cíle bez měřitelné metriky: {n}.",
+    recommendations="Doporučení:",
+    recommendation={
+        "load_spike": "Pracovní série {sets} proti průměru 4 týdnů {baseline_sets}: tento týden nejvýš {max_sets} ({factor}× průměr).",
+        "endurance_load_up": "Vytrvalostní zátěž o {pct} % nad průměrem 4 týdnů: tento týden nejvýš {max_load} (průměr +{cap_pct} %) a aspoň {easy_days} lehké dny.",
+        "hrv_down": "HRV o {pct} % pod průměrem 4 týdnů: první {easy_days} dny jen lehký trénink, intenzitu jen při zeleném ranním verdiktu.",
+        "resting_hr_up": "Klidová tepovka o {bpm} bpm nad průměrem 4 týdnů: první {easy_days} dny jen lehký trénink, intenzitu jen při zeleném ranním verdiktu.",
+        "sleep_down": "Spánek o {minutes} min za noc kratší než průměr 4 týdnů: cíl {baseline_h} za noc, choď spát o {minutes} min dřív.",
+        "detraining_running": "Běh {km_week} km týdně proti obvyklým {baseline_km} km při cíli {goal}: tento týden {runs} lehké běhy, celkem {km} km.",
+        "detraining_acwr": "Poměr zátěže (ACWR) {days} dní pod {acwr_limit} (naposledy {acwr}) při cíli {goal}: přidej tento týden {easy_sessions} lehké vytrvalostní tréninky.",
+        "endurance_time_up": "Čas vytrvalosti o {pct} % nad průměrem 4 týdnů: tento týden nejvýš {max_time_min} (průměr +{cap_pct} %).",
+        "strength_volume_up": "Objem síly o {pct} % nad průměrem 4 týdnů: tento týden ho dál nezvyšuj.",
+        "endurance_load_down": "Vytrvalostní zátěž o {pct} % pod průměrem 4 týdnů: pokud to nebyl záměr, přidej tento týden jeden lehký trénink.",
+        "strength_record_suspect": "Zkontroluj v Hevy tyto záznamy a oprav chybně zapsané: {records}.",
+        "unconfirmed_sessions": "Potvrď {sessions} s odpovídající aktivitou, ať sedí čísla plánu.",
+    },
+    recommendation_record="{exercise} {date} {weight} kg × {reps}",
+    recommendation_more=" +{n}",
+    goal_noun={"race_5k": "5 km", "race_10k": "10 km", "race_half_marathon": "půlmaraton", "race_marathon": "maraton", "vo2max_running": "VO2max"},
+    sessions=_plural_cs("trénink", "tréninky", "tréninků"),
 )
 
 WEEKLY_LANGUAGES: Mapping[str, WeeklyTexts] = {"en": WEEKLY_EN, "cs": WEEKLY_CS}
