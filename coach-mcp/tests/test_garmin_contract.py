@@ -74,7 +74,8 @@ async def test_the_briefing_reads_every_metric_with_the_coachs_arguments(tmp_pat
     made = briefing.build_briefing(DAY, data, [], {})
     assert made.payload["missing"] == []
     holds = {a["key"]: a["holds"] for a in made.payload["alerts"]}
-    assert {key for key, value in holds.items() if value is None} == set()  # every alert input was read
+    # every alert input was read; the load alerts are history inputs, not Garmin's (build_briefing here has no load)
+    assert {key for key, value in holds.items() if value is None} == set(briefing.LOAD_ALERTS)
     assert made.payload["garmin_today"] == ["Z2 kolo"]
     assert briefing.hrv_night_present(data.snapshot)
 

@@ -53,6 +53,11 @@ class Texts:
     alert_missed_session: str  # {sessions}
     alert_missed_session_stale: str  # {sessions}
     alert_garmin_auth: str
+    alert_detraining: str  # {goal} {details} {reasons}
+    detraining_acwr: str  # {limit} {days} {window} {last}
+    detraining_running: str  # {km} {window} {usual}
+    goal_by: str  # {date}
+    alert_load_spike: str  # {sets} {ratio} {baseline} {weeks}
     # Message lines.
     verdict: str  # {level} {advice}
     missing_value: str
@@ -137,6 +142,14 @@ EN = Texts(
         "(may be out of date): {sessions}."
     ),
     alert_garmin_auth="Garmin is not logged in: run scripts/garmin-login.sh on the server.",
+    alert_detraining='Endurance training is fading while you work toward "{goal}"{details}: {reasons}.',
+    detraining_acwr="ACWR below {limit} on all {days} stored days of the last {window} (latest {last})",
+    detraining_running="running {km} km in {window} days against the usual {usual} km",
+    goal_by="by {date}",
+    alert_load_spike=(
+        "Strength load spike: {sets} working sets in the last 7 days, {ratio}\u00d7 the average of {baseline} "
+        "over the previous {weeks} weeks."
+    ),
     verdict="Verdict: {level} – {advice}",
     missing_value="missing",
     readiness="Readiness",
@@ -206,6 +219,14 @@ CS = Texts(
         "(nemusí platit): {sessions}."
     ),
     alert_garmin_auth="Garmin není přihlášený: na serveru spusť scripts/garmin-login.sh.",
+    alert_detraining="Vytrvalostní trénink upadá, přestože máš cíl \u201e{goal}\u201c{details}: {reasons}.",
+    detraining_acwr="ACWR pod {limit} ve všech {days} uložených dnech z posledních {window} (naposledy {last})",
+    detraining_running="běh {km} km za {window} dní proti obvyklým {usual} km",
+    goal_by="do {date}",
+    alert_load_spike=(
+        "Skok v posilování: pracovní série za posledních 7 dní {sets}, {ratio}\u00d7 průměr {baseline} "
+        "z předchozích {weeks} týdnů."
+    ),
     verdict="Verdikt: {level} – {advice}",
     missing_value="chybí",
     readiness="Readiness",
@@ -257,7 +278,9 @@ class WeeklyTexts:
     new_bests: str  # {items}
     best: Mapping[str, str]  # metric of get_weekly_report new_bests -> {value} {previous} {exercise}
     flags: str  # {items}
-    flag: Mapping[str, str]  # flag of get_weekly_report flags -> {pct} {minutes} {bpm}
+    # flag of get_weekly_report flags -> {pct} {minutes} {bpm}; detraining / load_spike also take the placeholders of
+    # briefing.detraining_parts / load_spike_parts
+    flag: Mapping[str, str]
     no_data: str
     goals: str
     goal_metric: Mapping[str, str]  # goal metric -> name
@@ -315,6 +338,8 @@ WEEKLY_EN = WeeklyTexts(
         "hrv_down": "HRV {pct} % below the 4-week average",
         "resting_hr_up": "resting HR {bpm} bpm above the 4-week average",
         "strength_volume_up": "strength volume {pct} % above the 4-week average",
+        "detraining": 'detraining toward "{goal}"{details}: {reasons}',
+        "load_spike": "working sets {sets}, {ratio}\u00d7 the 4-week average of {baseline}",
     },
     no_data="No stored data for this week (the nightly history is off or still loading).",
     goals="Goals:",
@@ -378,6 +403,8 @@ WEEKLY_CS = WeeklyTexts(
         "hrv_down": "HRV o {pct} % pod průměrem 4 týdnů",
         "resting_hr_up": "klidová tepovka o {bpm} bpm nad průměrem 4 týdnů",
         "strength_volume_up": "objem síly o {pct} % nad průměrem 4 týdnů",
+        "detraining": "detrénink před cílem \u201e{goal}\u201c{details}: {reasons}",
+        "load_spike": "pracovní série {sets}, {ratio}\u00d7 průměr 4 týdnů ({baseline})",
     },
     no_data="Pro tento týden nejsou uložená data (noční historie je vypnutá nebo se ještě načítá).",
     goals="Cíle:",

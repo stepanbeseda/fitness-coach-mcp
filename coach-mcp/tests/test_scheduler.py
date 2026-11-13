@@ -13,10 +13,12 @@ import httpx2
 import pytest
 from fakes import FakeClock, FakeGarmin, FakePush, StopLoop, fake_garmin_app, fake_garmin_running
 
+from coach_mcp import scheduler as scheduler_module
 from coach_mcp.__main__ import configure_logging, main
-from coach_mcp.briefing import ALERT_KEYS, EVENT_ALERTS
+from coach_mcp.briefing import ALERT_KEYS, EVENT_ALERTS, LOAD_ALERTS
 from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminReader, LastSync
+from coach_mcp.load import load_signals
 from coach_mcp.push import TelegramPush
 from coach_mcp.scheduler import (
     SETTLE,
@@ -27,6 +29,8 @@ from coach_mcp.scheduler import (
     send_weekly_report_command,
 )
 from coach_mcp.store import Store
+from history_helpers import seed_w45
+from view_values import W45_DAY, W45_GOAL, w45_history
 from garmin_payloads import (
     GREEN_SNAPSHOT,
     device_status,
@@ -350,6 +354,8 @@ ALERT_TEXT = {
     "acwr_out_of_range": "Poměr akutní a chronické zátěže",
     "missed_workout": "Včera naplánovaný trénink",
     "garmin_auth": "Garmin není přihlášený: na serveru",
+    "detraining": "Vytrvalostní trénink upadá",
+    "load_spike": "Skok v posilování",
 }
 
 
@@ -372,6 +378,8 @@ def alert_data(key: str, day: date, holds: bool):
         snapshot["training_status"] = {"acwr_ratio": 1.7, "acwr_status": "HIGH" if holds else "OPTIMAL"}
     elif key == "missed_workout":
         sched = scheduled([{"date": (day - timedelta(days=1)).isoformat(), "name": "Run", "completed": not holds}])
+    elif key in LOAD_ALERTS:
+        pass  # the load alerts read the stored history, not Garmin: the test patches the signals
     else:
         auth = "missing" if holds else "ok"
     return garmin_data(auth=auth, snapshot=snapshot, hrv_trend=hrv_trend, scheduled=sched)
@@ -383,8 +391,18 @@ STATE_ALERT_KEYS = tuple(k for k in ALERT_KEYS if k not in EVENT_ALERTS)
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("key", STATE_ALERT_KEYS)
-async def test_alert_fires_once_then_not_again(db_path, key):
+async def test_alert_fires_once_then_not_again(db_path, key, monkeypatch):
+    # The load alerts read the stored history: ``scheduler.load_signals`` (what compose_briefing calls) returns the
+    # W45 signals while the day under test "holds" and the quiet week's signals otherwise.
+    holding = {"now": True}
+    w45 = load_signals(w45_history(), [W45_GOAL], W45_DAY)
+    quiet = load_signals(w45_history(quiet=True), [W45_GOAL], W45_DAY)
+    monkeypatch.setattr(
+        scheduler_module, "load_signals", lambda *args, **kwargs: w45 if holding["now"] else quiet
+    )
+
     async def day_run(day: date, holds: bool, from_hour: int = 0, to_hour: int = 12) -> list[str]:
+        holding["now"] = holds
         garmin = FakeGarmin(lambda d, i: alert_data(key, d, holds))
         push, _ = await run_scheduler(
             db_path, local(day, from_hour), garmin, until=local(day, to_hour), store=Store(db_path)
@@ -419,6 +437,34 @@ async def test_alert_fires_once_then_not_again(db_path, key):
     (message,) = await day_run(d1 + timedelta(days=3), True)
     assert text in message
     assert Store(db_path).alert_states()[key]["fired_on"] == (d1 + timedelta(days=3)).isoformat()
+
+
+@pytest.mark.anyio
+async def test_w45_push_carries_both_alerts_and_the_monday_watch_lines(db_path):
+    store = Store(db_path)
+    seed_w45(store)
+    expected = (await compose_briefing(store, FakeGarmin(garmin_data()), W45_DAY, "cs")).message.text
+    push, _ = await run_scheduler(db_path, local(W45_DAY, 0), FakeGarmin(garmin_data()), stop_pushes=2, store=store)
+    briefing_msg, weekly_msg = (msg for _, msg in push.sent)
+    assert briefing_msg.text == expected
+    assert (
+        "- Vytrvalostní trénink upadá, přestože máš cíl \u201eRun a marathon\u201c (3:59:59, do 3. 10. 2027): "
+        "ACWR pod 0,8 ve všech 13 uložených dnech z posledních 14 (naposledy 0,40); "
+        "běh 0 km za 14 dní proti obvyklým 20,4 km." in briefing_msg.body
+    )
+    assert (
+        "- Skok v posilování: pracovní série za posledních 7 dní 77, 3,5\u00d7 průměr 21,8 z předchozích 4 týdnů."
+        in briefing_msg.body
+    )
+    assert "2026-W45" in weekly_msg.title
+    watch = next(line for line in weekly_msg.body.splitlines() if line.startswith("Pozor:"))
+    assert (
+        "detrénink před cílem \u201eRun a marathon\u201c (3:59:59, do 3. 10. 2027): "
+        "ACWR pod 0,8 ve všech 13 uložených dnech z posledních 14 (naposledy 0,40); "
+        "běh 0 km za 14 dní proti obvyklým 20,4 km" in watch
+    )
+    assert "pracovní série 77, 3,5\u00d7 průměr 4 týdnů (21,8)" in watch
+    assert store.alert_states()["detraining"]["value"] == 1
 
 
 @pytest.mark.anyio

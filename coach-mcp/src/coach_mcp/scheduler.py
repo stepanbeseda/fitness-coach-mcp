@@ -30,6 +30,8 @@ from .clock import LocalClock
 from .config import Settings
 from .delivery import Attempt, DailyDelivery, DailyMessage, send_now
 from .garmin import GarminData, GarminReader, GarminSource, LastSync, exception_kind
+from .history_view import HistoryView
+from .load import load_signals
 from .messages import DEFAULT_LANGUAGE
 from .push import PushMessage, PushSender
 from .store import Store
@@ -72,6 +74,7 @@ async def compose_briefing(
     rows = store.sessions_between(before, before)
     yesterday_sessions = tools.sessions_out(store, rows)
     checked_at = store.suggestion_times([row["id"] for row in rows if row["status"] == "planned"])
+    load = load_signals(HistoryView(store), store.list_goals("active"), day)
     return build_briefing(
         day,
         data,
@@ -80,6 +83,7 @@ async def compose_briefing(
         yesterday_sessions=yesterday_sessions,
         checked_at=checked_at,
         language=language,
+        load=load,
     )
 
 

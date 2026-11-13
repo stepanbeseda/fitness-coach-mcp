@@ -165,3 +165,64 @@ def seed_live_strength(history: FakeHistory) -> None:
         for day, weight, reps, estimate in points:
             history.lift(date.fromisoformat(day), tid, 3, 1500.0, best(weight, reps, estimate), group=group, title=title)
     history.cover(date(2026, 7, 11), date(2026, 11, 11))
+
+W45_DAY = date(2026, 11, 9)  # the Monday after ISO week 2026-W45 (2-8 Nov)
+W45_END = W45_DAY - timedelta(days=1)
+W45_GOAL = {"id": 1, "title": "Run a marathon", "metric": "race_marathon", "target_value": 14399.0,
+            "target_date": "2027-10-03", "status": "active"}
+W45_SETS = (20, 22, 23, 22, 77)  # Hevy working sets of the five weeks up to W45, one workout per week
+
+
+def w45_acwr(offset: int, *, quiet: bool, acwr: float | None, acwr_days: int | None) -> float | None:
+    """The stored ACWR ``offset`` days before the end of the window (None: not stored)."""
+    if acwr_days is not None:
+        return (0.5 if acwr is None else acwr) if offset < acwr_days else None
+    if offset == 3:  # one missing day, as on the owner's 2026-11-05
+        return None
+    if quiet:
+        return 1.0
+    if acwr is not None:
+        return acwr
+    return 0.4 if offset == 0 else 0.5 if offset <= 2 else 0.7
+
+
+def w45_history(*, end: date = W45_END, quiet: bool = False, acwr: float | None = None, acwr_days: int | None = None,
+                window_km: float = 0.0, base_km: float = 10.2, sets: tuple[int, ...] = W45_SETS,
+                unfetched: tuple[date, ...] = (), cover: tuple[date, date] | None = None) -> FakeHistory:
+    """W45 of the coach review: 42 days up to ``end``; one run of ``base_km`` a week before the 14-day window and
+    ``window_km`` on its last day (quiet: one 10.2 km run a week also in the window, ACWR 1.0, 22 sets in the last
+    week); one strength workout a week, 4 days before ``end`` and every 7 days before."""
+    h = FakeHistory()
+    for offset in range(41, -1, -1):
+        day = end - timedelta(days=offset)
+        weekly = offset % 7 == 4
+        if day not in unfetched:
+            if offset < 14:
+                km = (10.2 if weekly else 0.0) if quiet else (window_km if offset == 0 else 0.0)
+            else:
+                km = base_km if weekly else 0.0
+            h.activities(day, {"running": sport(distance_km=km)} if km else {})
+        if offset < 14 and (value := w45_acwr(offset, quiet=quiet, acwr=acwr, acwr_days=acwr_days)) is not None:
+            h.recovery(day, acwr_ratio=value)
+    h.cover(*(cover or (end - timedelta(days=68), end)))
+    weeks = sets[:-1] + (22,) if quiet else sets
+    for k, count in enumerate(reversed(weeks)):
+        h.lift(end - timedelta(days=4 + 7 * k), "T1", count, count * 100.0)
+    return h
+
+
+# The alert lines (after the heading) that the W45 signals render in each language; literal, never from the catalogue.
+W45_LINES = {
+    "en": (
+        '- Endurance training is fading while you work toward "Run a marathon" (3:59:59, by 3 Oct 2027): '
+        "ACWR below 0.8 on all 13 stored days of the last 14 (latest 0.40); "
+        "running 0 km in 14 days against the usual 20.4 km.",
+        "- Strength load spike: 77 working sets in the last 7 days, 3.5\u00d7 the average of 21.8 over the previous 4 weeks.",
+    ),
+    "cs": (
+        "- Vytrvalostní trénink upadá, přestože máš cíl \u201eRun a marathon\u201c (3:59:59, do 3. 10. 2027): "
+        "ACWR pod 0,8 ve všech 13 uložených dnech z posledních 14 (naposledy 0,40); "
+        "běh 0 km za 14 dní proti obvyklým 20,4 km.",
+        "- Skok v posilování: pracovní série za posledních 7 dní 77, 3,5\u00d7 průměr 21,8 z předchozích 4 týdnů.",
+    ),
+}

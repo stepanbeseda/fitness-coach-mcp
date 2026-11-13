@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, TypeGuard
 
-from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _one_line, fmt
+from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _one_line, detraining_parts, fmt, load_spike_parts
 from .messages import WeeklyTexts, texts, weekly_texts
 from .push import PushMessage
 
@@ -159,11 +159,18 @@ def render_weekly(report: dict[str, Any], progress: dict[str, Any], language: st
         if template is None:
             continue
         pct, change = flag.get("change_pct"), flag.get("change")
+        name = flag.get("flag")
+        extra = (
+            detraining_parts(t, flag)
+            if name == "detraining"
+            else load_spike_parts(t, flag) if name == "load_spike" else {}
+        )
         flags.append(
             template.format(
                 pct=fmt(abs(pct), sep) if pct is not None else "?",
                 minutes=round(abs(change) * 60) if change is not None else "?",
                 bpm=fmt(abs(change), sep) if change is not None else "?",
+                **extra,
             )
         )
     if flags:

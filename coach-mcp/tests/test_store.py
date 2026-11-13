@@ -17,8 +17,10 @@ from coach_mcp.store import (
 
 # The schema version of the strength tables: the only number that changes when this migration is renumbered.
 STRENGTH_VERSION = 5
-# The latest schema version (two-way Telegram, PR 22); the other number pinned by hand.
-LATEST_VERSION = 9
+# The latest schema version (load alerts, PR 38); the other number pinned by hand.
+LATEST_VERSION = 10
+# The schema version of the load alerts (derived from the migration text, so a rebase renumbers nothing here).
+LOAD_ALERTS_VERSION = next(i + 1 for i, script in enumerate(MIGRATIONS) if "detraining" in script)
 
 
 def _tables(path) -> set[str]:
@@ -1409,3 +1411,78 @@ def test_downgrade_9_sql_returns_to_a_version_8_file(db_path, monkeypatch):
     monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:INBOUND_VERSION])
     again = Store(db_path)
     assert _user_version(db_path) == INBOUND_VERSION and again.inbound_state() is None
+
+
+# ------------------------------------------------------- load alerts (PR 38)
+
+OLD_ALERT_KEYS = (
+    "hrv_below_baseline",
+    "resting_hr_elevated",
+    "acwr_out_of_range",
+    "missed_workout",
+    "garmin_auth",
+    "missed_planned_session",
+)
+
+
+def test_migration_10_upgrades_a_version_9_file_with_data(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: LOAD_ALERTS_VERSION - 1])
+        old = Store(db_path)
+        goal_id = old.insert_goal({"title": "Keep me"})
+        old.record_briefing_sent(
+            date(2026, 10, 7), "yellow", {key: (i % 2 == 0, i % 3 == 0) for i, key in enumerate(OLD_ALERT_KEYS)}
+        )
+        before = old.alert_states()
+        assert set(before) == set(OLD_ALERT_KEYS)
+        assert any(row["fired_on"] for row in before.values()) and any(not row["fired_on"] for row in before.values())
+        assert _user_version(db_path) == LOAD_ALERTS_VERSION - 1
+    new = Store(db_path)
+    assert _user_version(db_path) == LOAD_ALERTS_VERSION
+    assert new.alert_states() == before
+    goal = new.get_goal(goal_id)
+    assert goal is not None and goal["title"] == "Keep me"
+    new.record_briefing_sent(date(2026, 10, 8), "green", {"detraining": (True, True), "load_spike": (False, False)})
+    assert new.alert_states()["detraining"] == {"value": 1, "evaluated_on": "2026-10-08", "fired_on": "2026-10-08"}
+    assert new.alert_states()["load_spike"]["value"] == 0
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO alert_state (key, value, evaluated_on) VALUES ('bogus', 1, 'a')")
+    finally:
+        conn.close()
+
+
+# Keep in sync with the 10 -> 9 downgrade command in coach-mcp/README.md.
+DOWNGRADE_10_SQL = (
+    "BEGIN IMMEDIATE; DELETE FROM alert_state WHERE key IN ('detraining', 'load_spike'); "
+    "PRAGMA user_version = 9; COMMIT;"
+)
+
+
+def test_downgrade_10_sql_returns_to_a_version_9_file(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:LOAD_ALERTS_VERSION])
+        new = Store(db_path)
+        new.record_briefing_sent(
+            date(2026, 10, 7),
+            "green",
+            {"garmin_auth": (False, False), "detraining": (True, True), "load_spike": (True, True)},
+        )
+        assert _user_version(db_path) == LOAD_ALERTS_VERSION
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_10_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == LOAD_ALERTS_VERSION - 1
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: LOAD_ALERTS_VERSION - 1])
+        old = Store(db_path)
+        assert set(old.alert_states()) == {"garmin_auth"}
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:LOAD_ALERTS_VERSION])
+        again = Store(db_path)
+        assert _user_version(db_path) == LOAD_ALERTS_VERSION
+        again.record_briefing_sent(date(2026, 10, 8), "green", {"detraining": (True, True), "load_spike": (True, True)})
+        assert {"detraining", "load_spike"} <= set(again.alert_states())

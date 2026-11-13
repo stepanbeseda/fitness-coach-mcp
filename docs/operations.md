@@ -69,7 +69,8 @@ Once a day, `coach-mcp` can send a short briefing to your chat with your own Tel
 - today's plan from the coach memory;
 - new alerts: HRV below baseline 3+ nights, resting HR 5+ bpm above its 7-day average, load outside Garmin's
   optimal range, yesterday's missed workout in Garmin's calendar and in the coach plan (held back until the
-  watch has synced after midnight), an invalid Garmin login.
+  watch has synced after midnight), an invalid Garmin login, detraining toward the endurance goal and a strength
+  load spike (working sets of 7 days above 1.5× the usual).
 
 It is computed without an LLM, and the `get_daily_briefing` tool computes it the same way from current Garmin
 data. The text is in English by default; `COACH_LANGUAGE=cs` switches it to Czech (catalogue in

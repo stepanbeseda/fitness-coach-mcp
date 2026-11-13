@@ -73,12 +73,21 @@ Alerts (the message lists them only when they are **new**):
 - a workout scheduled yesterday in the Garmin calendar was not completed;
 - a session planned yesterday in the coach's plan with no activity of the same sport in Garmin (according to the
   plan reconciliation suggestion);
+- detraining: an endurance goal is active (a goal with the metric race_5k, race_10k, race_half_marathon,
+  race_marathon or vo2max_running) and, over the 14 days up to yesterday, every stored ACWR is below 0.8 (at least
+  10 stored values) or the running distance is below half of the usual (the weekly mean of the four weeks before,
+  times 2); the line names the condition, its numbers and the goal with the earliest target date;
+- load spike: the Hevy working sets of the last 7 days are more than 1.5× the mean of the fully covered 7-day
+  windows among the four before (at least 2);
 - Garmin is not logged in.
 
 New = holds this morning and did not hold at the previous evaluation; the state is in the `alert_state` table. The
 exception is both missed-session alerts (Garmin calendar and the coach's plan): they are reported every day on
 which some session planned for yesterday was left undone (it is a different session each day). An unknown
 condition (missing data) does not change the state.
+
+Both load alerts read the stored history (Garmin and Hevy), not the morning Garmin read; with the history off, too few
+stored values or no Hevy coverage they are unknown. They never change the verdict.
 
 Both missed-session alerts are held back (unknown) while the watch has not synced since yesterday ended, because
 yesterday's activity may not have reached Garmin yet; a held-back alert is not repeated the next day. When the
@@ -137,7 +146,7 @@ Exit code: 0 sent, 1 failed, 2 push not configured or wrong argument.
 
 On Mondays the scheduler sends a second message right after the briefing: last week's numbers (the same as
 `get_weekly_report` for the ISO week that ended yesterday: endurance, strength, sleep, HRV, resting HR, plan, new
-bests, watch-outs) and the progress of the goals with a metric (see Goal progress). The title is
+bests, watch-outs including detraining toward the endurance goal and a strength load spike) and the progress of the goals with a metric (see Goal progress). The title is
 `📊 Weekly report 2026-W41 · 5 Oct–11 Oct`. It is an event about the reported week, de-duplicated by that week's
 label (table `weekly_reports`), so every Monday sends one.
 - It goes out only after the briefing of that day was sent (in this process or recorded in `briefing_runs`), never
@@ -402,6 +411,20 @@ Run `scripts/backup.sh` before moving to an older version.
 and names the procedure below. Every version these procedures go back to is older than `scripts/deploy.sh`:
 check out that commit (`git checkout <commit>`) and start it the way it was started then,
 `docker compose up -d --build --no-deps coach-mcp`. Come back with `git checkout main` and `scripts/deploy.sh`.
+
+**Going back to a version without the load alerts** (schema 10 → 9). An older image refuses a database with
+schema 10 (`database schema version 10 is newer`). Before deploying the older version, delete the alert state of
+`detraining` and `load_spike`; every other row stays. After the next upgrade both alerts start without a state and
+may fire once more. The service must be stopped; run the commands one at a time:
+
+```bash
+docker compose stop coach-mcp
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 10 or sys.exit(f"schema version {v}, expected 10: nothing changed"); c.executescript("BEGIN IMMEDIATE; DELETE FROM alert_state WHERE key IN ('"'"'detraining'"'"', '"'"'load_spike'"'"'); PRAGMA user_version = 9; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+The second command must print `schema version 9`. Then deploy the older version (the commit before PR 38; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 10 and
+nothing changed. To go back to an even older version, run this 10 → 9 procedure first and then the ones below.
 
 **Going back to a version without two-way Telegram** (schema 9 → 8). An older image refuses a database with
 schema 9 (`database schema version 9 is newer`). Before deploying the older version, drop the table

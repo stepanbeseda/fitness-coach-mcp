@@ -54,6 +54,8 @@ INSTRUCTIONS = (
     "get_daily_briefing returns the morning verdict (green / yellow / red) with its numbers, missing data, "
     "today's planned sessions and alerts, computed the same way as the morning push from the current Garmin "
     "data; still read fresh Garmin data before planning. "
+    "Its alerts include detraining (an endurance goal while ACWR or running volume "
+    "dropped for 14 days) and a strength load spike (working sets of 7 days above 1.5x the usual). "
     "get_trends returns the stored daily Garmin history (collected nightly) aggregated by day, week or month: "
     "use it for anything older than 28 days. get_weekly_report compares one ISO week with the previous four: "
     "use it for weekly reviews (it includes strength volume and sets per muscle group from Hevy). "
@@ -333,7 +335,9 @@ def build_server(
         baseline, sleep, Body Battery at wake), the numbers behind it, what is missing, today's planned
         sessions and the alerts (HRV below baseline 3+ nights, resting HR 5+ bpm above its 7-day average,
         load ratio outside Garmin's optimal range, yesterday's scheduled workout not completed,
-        yesterday's planned session without a recorded activity, Garmin login). Reads Garmin through
+        yesterday's planned session without a recorded activity, detraining toward an endurance goal (ACWR
+        below 0.8 or running below half of the usual for 14 days), a strength load spike (working sets of 7
+        days above 1.5x the usual), Garmin login). Reads Garmin through
         garmin-mcp; changes nothing."""
         return (await compose_briefing(store, garmin, today(), settings.language)).payload
 
@@ -372,7 +376,8 @@ def build_server(
         time, distance and training load by sport, Garmin load at the end of the week, strength volume and
         working sets per muscle group from Hevy, sleep, HRV, resting heart rate, plan adherence from the
         coach plan, new bests (VO2max, weekly distance and load, estimated 1RM per exercise) and flags such
-        as training load or strength volume up more than 30 %. A suspect strength day (an e1RM far from the
+        as training load or strength volume up more than 30 %, detraining toward an endurance goal and a strength
+        load spike (working sets above 1.5x the baseline). A suspect strength day (an e1RM far from the
         previous sessions) is no new best; it is listed in strength.to_check with a strength_record_suspect
         flag. Sections without data are marked available: false. Reads the stored history only."""
         return trends.get_weekly_report(store, today(), week=week)

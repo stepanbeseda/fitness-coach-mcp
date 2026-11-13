@@ -6,7 +6,8 @@ from typing import Any
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
-from view_values import LIVE_TODAY, FakeHistory, best, seed_live_strength, sport
+from history_helpers import seed_w45
+from view_values import LIVE_TODAY, W45_DAY, W45_END, FakeHistory, best, seed_live_strength, sport
 
 from conftest import TODAY
 from coach_mcp import strength, trends
@@ -1028,3 +1029,63 @@ def test_weekly_suspects_only_list_covered_days(store):
     assert out["strength"]["days"] == 1
     assert [i["template_id"] for i in out["strength"]["to_check"]] == ["HT", "CF"]
     assert [f["template_id"] for f in suspect_flags(out)] == ["HT", "CF"]
+
+
+# ------------------------------------------------------------ load flags (PR 38)
+
+W45_DETRAINING_FLAG = {
+    "flag": "detraining",
+    "conditions": ["acwr", "running"],
+    "start": "2026-10-26",
+    "end": "2026-11-08",
+    "goal": {
+        "id": 1,
+        "title": "Run a marathon",
+        "metric": "race_marathon",
+        "target_value": "3:59:59",
+        "target_date": "2027-10-03",
+    },
+    "acwr_days": 13,
+    "acwr_max": 0.7,
+    "acwr_last": 0.4,
+    "running_km": {"window": 0.0, "week": 0.0, "baseline": 10.2, "usual": 20.4, "baseline_weeks": 4},
+}
+W45_SPIKE_FLAG = {
+    "flag": "load_spike",
+    "week": 77,
+    "baseline": 21.8,
+    "change": 55.2,
+    "change_pct": 254.0,
+    "baseline_weeks": 4,
+    "ratio": 3.54,
+}
+
+
+def w45_report(store, today=W45_DAY):
+    return trends.get_weekly_report(store, today, week="2026-11-02")
+
+
+def test_weekly_report_w45_load_flags(store):
+    seed_w45(store)
+    flags = w45_report(store)["flags"]
+    assert W45_DETRAINING_FLAG in flags and W45_SPIKE_FLAG in flags
+    names = [f["flag"] for f in flags]
+    assert names.index("detraining") < names.index("strength_volume_up") < names.index("load_spike")
+
+
+def test_weekly_report_quiet_week_has_no_load_flags(store):
+    seed_w45(store, quiet=True)
+    assert {f["flag"] for f in w45_report(store)["flags"]}.isdisjoint({"detraining", "load_spike"})
+
+
+def test_weekly_report_without_goal_has_no_detraining(store):
+    seed_w45(store, goal=False)
+    names = {f["flag"] for f in w45_report(store)["flags"]}
+    assert "load_spike" in names and "detraining" not in names
+
+
+def test_detraining_flag_needs_a_final_week(store):
+    seed_w45(store)
+    report_ = w45_report(store, today=W45_END)  # Sunday 2026-11-08: the week is still partial
+    assert report_["week"]["partial"] is True
+    assert {f["flag"] for f in report_["flags"]}.isdisjoint({"detraining", "load_spike"})
