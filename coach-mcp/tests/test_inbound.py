@@ -19,7 +19,7 @@ from history_helpers import seed_w45
 from view_values import W45_LINES
 
 from coach_mcp import inbound as inbound_module
-from coach_mcp import plan
+from coach_mcp import confirm, plan
 from coach_mcp.__main__ import configure_logging
 from coach_mcp.config import Settings
 from coach_mcp.inbound import (
@@ -27,7 +27,7 @@ from coach_mcp.inbound import (
     parse_command,
 )
 from coach_mcp.messages import REPLY_CS, REPLY_EN, reply_texts, texts
-from coach_mcp.push import TelegramPush
+from coach_mcp.push import TelegramPush, inline_markup
 from coach_mcp.scheduler import compose_briefing
 from coach_mcp.store import Store
 
@@ -181,7 +181,7 @@ async def test_first_start_discards_the_backlog_and_then_handles_new_messages(tm
     assert [(p.get("offset"), p["timeout"]) for p in bench.telegram.polls] == [(None, 0), (50, 0), (60, 0), (63, 0)]
     assert await bench.say("po startu", 63) == "Note saved (7 Oct)."
     assert bench.telegram.polls[-1] == {
-        "timeout": 50, "limit": 10, "allowed_updates": ["message"], "offset": 63,
+        "timeout": 50, "limit": 10, "allowed_updates": ["message", "callback_query"], "offset": 63,
     }
     assert bench.notes() == [("2026-10-07", "po startu")]
 
@@ -336,7 +336,7 @@ async def test_another_bot_starts_from_scratch(tmp_path, caplog):
     bench.token_file.write_text(OTHER_TOKEN + "\n", encoding="utf-8")
     bench.telegram.pending.append(message(3, SECRET))  # what the new bot had queued: its set-up messages
     assert await bench.poller.step() == 0.0
-    assert bench.telegram.polls[0] == {"timeout": 0, "limit": 10, "allowed_updates": ["message"]}
+    assert bench.telegram.polls[0] == {"timeout": 0, "limit": 10, "allowed_updates": ["message", "callback_query"]}
     assert bench.store.inbound_state()["bot_id"] == OTHER_BOT_ID and bench.offset() == 4
     assert bench.notes() == [] and "inbound status=started discarded=1" in caplog.text
     assert all(url == f"https://api.telegram.org/bot{OTHER_TOKEN}/getUpdates" for url in bench.telegram.urls)
@@ -884,6 +884,8 @@ def every_refusal() -> list[plan.Refusal]:
         plan.Refusal(plan.Reason.NOT_PLANNED, 5),
         plan.Refusal(plan.Reason.SAME_DATE, 5),
         plan.Refusal(plan.Reason.PAST_DATE, 5),
+        plan.Refusal(plan.Reason.ALREADY_MARKED, 5, status="done"),
+        plan.Refusal(plan.Reason.ALREADY_MARKED, 5, status="skipped"),
         plan.Refusal(plan.Reason.TEXT_EMPTY),
         plan.Refusal(plan.Reason.TEXT_NUL),
         plan.Refusal(plan.Reason.TEXT_TOO_LONG, length=2001),
@@ -901,6 +903,8 @@ REFUSAL_REPLIES = {
         "Session #5 cannot be changed.",
         "Session #5 cannot be changed.",
         "Session #5 cannot be changed.",
+        "Session #5 is already done; nothing changed.",
+        "Session #5 is already skipped; nothing changed.",
         "The note could not be saved.",
         "The note could not be saved.",
         "The note is too long (2001 characters, at most 2000). Nothing was saved.",
@@ -915,6 +919,8 @@ REFUSAL_REPLIES = {
         "Trénink #5 nejde změnit.",
         "Trénink #5 nejde změnit.",
         "Trénink #5 nejde změnit.",
+        "Trénink #5 už je splněný; nic se nezměnilo.",
+        "Trénink #5 už je přeskočený; nic se nezměnilo.",
         "Poznámku se nepodařilo uložit.",
         "Poznámku se nepodařilo uložit.",
         "Poznámka je moc dlouhá (2001 znaků, nejvýš 2000). Nic se neuložilo.",
@@ -1124,3 +1130,344 @@ async def test_the_czech_list_of_open_sessions_after_a_bad_id_is_pinned(tmp_path
     assert await bench.say("/skip abc") == (
         "Použití: /skip <id>, například /skip 12. Nic se nezměnilo.\nDnes otevřené:\n#1 st 7. 10. · běh: 10 km easy (60 min)"
     )
+
+
+# ----------------------------------------------------------------- button taps (PR 36)
+
+YESTERDAY = D - timedelta(days=1)
+DROP = object()  # a key of the tap that the update leaves out
+CB_SHAPE = re.compile(
+    r"inbound (cb=[a-z_-]+ status=[a-z_]+ answer=[a-z_]+ edit=[a-z_]+ ms=\d+|status=ignored count=\d+|status=failed kind=\w+)"
+)
+
+
+def keyboard_of(language: str, sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    """The markup the morning push carried, as Telegram hands it back with the tap."""
+    return inline_markup(confirm.rows(texts(language), reply_texts(language), sessions))
+
+
+def tap(update_id: int, data: Any, *, chat: Any = OWNER, sender: Any = OWNER, kind: str = "private",
+        message_id: Any = 500, markup: Any = None, query_id: Any = "cbq-1", origin_extra: dict[str, Any] | None = None,
+        **extra: Any) -> dict[str, Any]:
+    origin: dict[str, Any] = {
+        "message_id": message_id,
+        "from": {"id": int(BOT_ID), "is_bot": True, "first_name": "Coach"},
+        "chat": {"id": chat, "type": kind},
+        "date": int(NOW.timestamp()),
+        "text": "briefing",
+        "reply_markup": markup,
+    }
+    query: dict[str, Any] = {
+        "id": query_id,
+        "from": {"id": sender, "is_bot": False, "first_name": "A"},
+        "message": origin,
+        "chat_instance": "42",
+        "data": data,
+    }
+    origin.update(origin_extra or {})
+    query.update(extra)
+    for body in (origin, query):
+        for key in [k for k, v in body.items() if v is DROP]:
+            del body[key]
+    return {"update_id": update_id, "callback_query": query}
+
+
+def seed_two(bench: Bench) -> tuple[list[int], dict[str, Any]]:
+    ids = bench.seed(
+        {"date": YESTERDAY, "type": "running", "description": "Run"},
+        {"date": YESTERDAY, "type": "mobility", "description": "Mobility"},
+    )
+    sessions = [bench.store.get_session(i) for i in ids]
+    return ids, keyboard_of(bench.settings.language, [s for s in sessions if s is not None])
+
+
+def status_of(bench: Bench, sid: int) -> str:
+    session = bench.store.get_session(sid)
+    assert session is not None
+    return session["status"]
+
+
+def inbound_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "coach_mcp.inbound"]
+
+
+async def run_tap(bench: Bench, update: dict[str, Any]) -> None:
+    bench.telegram.pending.append(update)
+    assert await bench.poller.step() == 0.0
+
+
+TAP_DONE = {
+    "en": (
+        "Recorded: #1 run done.",
+        [
+            [{"text": "#1 run: ✅ done", "callback_data": "x:1"}],
+            [{"text": "✅ #2 mobility: done", "callback_data": "d:2"}, {"text": "⏭ skipped", "callback_data": "s:2"}],
+        ],
+    ),
+    "cs": (
+        "Zapsáno: #1 běh splněno.",
+        [
+            [{"text": "#1 běh: ✅ splněno", "callback_data": "x:1"}],
+            [
+                {"text": "✅ #2 mobilita: splněno", "callback_data": "d:2"},
+                {"text": "⏭ přeskočeno", "callback_data": "s:2"},
+            ],
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("language", ["en", "cs"])
+async def test_tap_done_marks_answers_and_replaces_the_row(tmp_path, language):
+    bench = Bench(tmp_path, language=language)
+    ids, markup = seed_two(bench)
+    assert ids == [1, 2]
+    await run_tap(bench, tap(100, "d:1", markup=markup))
+    answer, rows = TAP_DONE[language]
+    assert (status_of(bench, 1), status_of(bench, 2)) == ("done", "planned")
+    assert bench.telegram.answers == [{"callback_query_id": "cbq-1", "text": answer}]
+    assert bench.telegram.edits == [{"chat_id": OWNER, "message_id": 500, "reply_markup": {"inline_keyboard": rows}}]
+    assert bench.telegram.sent == []  # no chat message for a tap
+    assert bench.offset() == 101
+
+
+@pytest.mark.parametrize(("language", "answer"), [("en", "Recorded: #1 run skipped."), ("cs", "Zapsáno: #1 běh přeskočeno.")])
+async def test_tap_skip_marks_skipped(tmp_path, language, answer):
+    bench = Bench(tmp_path, language=language)
+    _ids, markup = seed_two(bench)
+    await run_tap(bench, tap(100, "s:1", markup=markup))
+    assert status_of(bench, 1) == "skipped"
+    assert bench.telegram.answers == [{"callback_query_id": "cbq-1", "text": answer}]
+    assert bench.telegram.edits[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "x:1"
+
+
+@pytest.mark.parametrize(
+    ("language", "stored", "data", "answer", "row"),
+    [
+        ("en", "done", "s:1", "Session #1 is already done; nothing changed.", "#1 run: ✅ done"),
+        ("en", "skipped", "d:1", "Session #1 is already skipped; nothing changed.", "#1 run: ⏭ skipped"),
+        ("cs", "done", "s:1", "Trénink #1 už je splněný; nic se nezměnilo.", "#1 běh: ✅ splněno"),
+        ("cs", "skipped", "d:1", "Trénink #1 už je přeskočený; nic se nezměnilo.", "#1 běh: ⏭ přeskočeno"),
+    ],
+)
+async def test_stale_tap_changes_nothing_and_says_so(tmp_path, language, stored, data, answer, row):
+    bench = Bench(tmp_path, language=language)
+    _ids, markup = seed_two(bench)  # the keyboard of the morning, while both were planned
+    assert isinstance(plan.mark_session(bench.store, D, 1, stored), plan.Marked)  # /done, the coach or the night
+    await run_tap(bench, tap(100, data, markup=markup))
+    assert status_of(bench, 1) == stored
+    assert bench.telegram.answers == [{"callback_query_id": "cbq-1", "text": answer}]
+    assert bench.telegram.edits[0]["reply_markup"]["inline_keyboard"][0] == [{"text": row, "callback_data": "x:1"}]
+    assert bench.offset() == 101
+
+
+async def test_tap_on_a_superseded_session_answers_the_refusal(tmp_path):
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    with sqlite3.connect(bench.settings.db_path) as conn:
+        conn.execute("UPDATE sessions SET status = 'superseded' WHERE id = 1")
+    await run_tap(bench, tap(100, "d:1", markup=markup))
+    assert status_of(bench, 1) == "superseded"
+    assert bench.telegram.answers == [
+        {"callback_query_id": "cbq-1", "text": "Session #1 was replaced by a later plan and cannot be changed."}
+    ]
+    assert [row[0]["callback_data"] for row in bench.telegram.edits[0]["reply_markup"]["inline_keyboard"]] == ["d:2"]
+
+
+FOREIGN_TAPS = {
+    "other-chat": {"chat": 987654321},
+    "other-sender": {"sender": 987654321},
+    "group": {"kind": "group"},
+    "supergroup": {"kind": "supergroup"},
+    "channel": {"kind": "channel"},
+    "bot-sender": {"is_bot": True},
+    "chat-id-true": {"chat": True},
+    "chat-id-text": {"chat": "123456789"},
+    "sender-id-float": {"sender": 123456789.0},
+    "inline-no-message": {"message": DROP, "inline_message_id": "AAQ"},
+    "message-not-a-dict": {"message": "briefing"},
+    "from-missing": {"from": DROP},
+    "chat-missing": {"origin_extra": {"chat": DROP}},
+    "chat-not-a-dict": {"origin_extra": {"chat": [OWNER]}},
+    "query-id-missing": {"query_id": DROP},
+    "query-id-empty": {"query_id": ""},
+    "query-id-257": {"query_id": "q" * 257},
+    "query-id-int": {"query_id": 7},
+}
+
+
+@pytest.mark.parametrize("case", list(FOREIGN_TAPS), ids=list(FOREIGN_TAPS))
+async def test_foreign_taps_are_ignored(tmp_path, caplog, case):
+    caplog.set_level(logging.INFO)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    change = dict(FOREIGN_TAPS[case])
+    is_bot = change.pop("is_bot", False)
+    update = tap(100, "d:1", markup=markup, **change)
+    if is_bot:
+        update["callback_query"]["from"]["is_bot"] = True
+    await run_tap(bench, update)
+    assert (status_of(bench, 1), bench.telegram.answers, bench.telegram.edits) == ("planned", [], [])
+    assert bench.offset() == 101
+    assert inbound_messages(caplog) == ["inbound status=ignored count=1"]
+
+
+async def test_query_id_of_max_length_is_accepted(tmp_path):
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    await run_tap(bench, tap(100, "d:1", markup=markup, query_id="q" * 256))
+    assert status_of(bench, 1) == "done"
+    assert [a["callback_query_id"] for a in bench.telegram.answers] == ["q" * 256]
+
+
+@pytest.mark.parametrize(
+    ("limit", "answer"), [(22, "Recorded: #1 run done."), (21, "Recorded: #1 run don…")], ids=["fits", "clipped"]
+)
+async def test_answer_text_is_clipped_to_the_limit(tmp_path, monkeypatch, limit, answer):
+    # The real bound is 200 characters, which no catalogue answer reaches; a lower bound shows the clip is wired.
+    monkeypatch.setattr(inbound_module, "ANSWER_MAX_CHARS", limit)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    await run_tap(bench, tap(100, "d:1", markup=markup))
+    assert status_of(bench, 1) == "done"
+    assert [a["text"] for a in bench.telegram.answers] == [answer]
+    assert len(answer) == limit
+
+
+@pytest.mark.parametrize(
+    "data", [DROP, "", "d:0", "d:abc", "z:1", "d:" + "1" * 63, "d:1" + SECRET],
+    ids=["missing", "empty", "zero", "letters", "action", "65-bytes", "secret"],
+)
+async def test_owner_tap_with_malformed_data_changes_nothing(tmp_path, caplog, data):
+    caplog.set_level(logging.INFO)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    await run_tap(bench, tap(100, data, markup=markup))
+    assert (status_of(bench, 1), status_of(bench, 2)) == ("planned", "planned")
+    assert bench.telegram.answers == [{"callback_query_id": "cbq-1"}]  # stops the spinner, no text
+    assert bench.telegram.edits == [] and bench.offset() == 101
+    msgs = inbound_messages(caplog)
+    assert [m for m in msgs if m.startswith("inbound cb=")] == ["inbound cb=bad_data status=bad_data answer=sent edit=skipped ms=0"]
+    assert all(CB_SHAPE.fullmatch(m) for m in msgs) and not any(SECRET in m for m in msgs)
+
+
+async def test_tap_on_a_result_button_changes_nothing(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    await run_tap(bench, tap(100, "x:1", markup=markup))
+    assert status_of(bench, 1) == "planned"
+    assert bench.telegram.answers == [{"callback_query_id": "cbq-1"}] and bench.telegram.edits == []
+    assert [m for m in inbound_messages(caplog) if m.startswith("inbound cb=")] == [
+        "inbound cb=noop status=ok answer=sent edit=skipped ms=0"
+    ]
+    assert bench.offset() == 101
+
+
+async def test_tap_log_line_has_outcome_words_only(tmp_path, caplog, mono):
+    caplog.set_level(logging.DEBUG)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    mono.value = 0.0
+    await run_tap(bench, tap(100, "d:1", markup=markup))
+    msgs = inbound_messages(caplog)
+    lines = [m for m in msgs if m.startswith("inbound cb=")]
+    assert len(lines) == 1
+    assert re.fullmatch(r"inbound cb=done status=ok answer=sent edit=sent ms=\d+", lines[0])
+    assert all(CB_SHAPE.fullmatch(m) for m in msgs)
+    assert not any("cbq-1" in m or TOKEN in m or "run" in m for m in msgs)
+
+
+@pytest.mark.parametrize("drop", ["reply_markup", "message_id"])
+async def test_tap_without_markup_or_message_id_is_answered_without_edit(tmp_path, caplog, drop):
+    caplog.set_level(logging.INFO)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    update = tap(100, "d:1", markup=DROP if drop == "reply_markup" else markup,
+                 message_id=DROP if drop == "message_id" else 500)
+    await run_tap(bench, update)
+    assert status_of(bench, 1) == "done"
+    assert bench.telegram.answers == [{"callback_query_id": "cbq-1", "text": "Recorded: #1 run done."}]
+    assert bench.telegram.edits == []
+    assert [m for m in inbound_messages(caplog) if m.startswith("inbound cb=")] == [
+        "inbound cb=done status=ok answer=sent edit=skipped ms=0"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "word"),
+    [(400, "rejected"), (500, "transient"), (429, "transient"), (httpx2.ConnectError("down"), "transient"),
+     (RuntimeError("odd"), "crashed")],
+    ids=["400", "500", "429", "connect-error", "crash"],
+)
+async def test_answer_and_edit_failures_are_named_and_the_batch_goes_on(tmp_path, caplog, code, word):
+    caplog.set_level(logging.INFO)
+    bench = Bench(tmp_path, FakeTelegram(answer_codes=[code], edit_codes=[code]))
+    _ids, markup = seed_two(bench)
+    bench.telegram.pending.extend([tap(100, "d:1", markup=markup), message(101, "/plan")])
+    assert await bench.poller.step() == 0.0
+    assert status_of(bench, 1) == "done" and bench.offset() == 102
+    assert len(bench.telegram.answers) == 1 and len(bench.telegram.edits) == 1
+    assert len(bench.telegram.sent) == 1  # the /plan reply of the same batch
+    assert f"inbound cb=done status=ok answer={word} edit={word} ms=0" in inbound_messages(caplog)
+
+
+async def test_answer_without_a_token_is_named(tmp_path, caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    bench.telegram.pending.append(tap(100, "d:1", markup=markup))
+    calls: list[int] = []
+    real = inbound_module.read_bot_token
+
+    def token_once(path: Path) -> Any:  # getUpdates gets the token, the two calls after it do not
+        calls.append(1)
+        return real(path) if len(calls) == 1 else None
+
+    monkeypatch.setattr(inbound_module, "read_bot_token", token_once)
+    assert await bench.poller.step() == 0.0
+    assert status_of(bench, 1) == "done" and bench.telegram.answers == []
+    assert "inbound cb=done status=ok answer=no_token edit=no_token ms=0" in inbound_messages(caplog)
+
+
+async def test_a_tap_whose_handling_raises_is_answered_with_failed(tmp_path, caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(SECRET)
+
+    monkeypatch.setattr(plan, "mark_session", boom)
+    await run_tap(bench, tap(100, "d:1", markup=markup))
+    assert status_of(bench, 1) == "planned" and bench.offset() == 101
+    assert bench.telegram.answers == [{"callback_query_id": "cbq-1", "text": "Something went wrong (internal error)."}]
+    assert bench.telegram.edits == []
+    msgs = inbound_messages(caplog)
+    assert "inbound status=failed kind=RuntimeError" in msgs
+    assert "inbound cb=- status=failed answer=sent edit=skipped ms=0" in msgs
+    assert not any(SECRET in m for m in msgs)
+
+
+async def test_a_database_error_of_a_tap_stops_the_batch(tmp_path, monkeypatch):
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise sqlite3.OperationalError("locked")
+
+    monkeypatch.setattr(plan, "mark_session", broken)
+    bench.telegram.pending.append(tap(100, "d:1", markup=markup))
+    with pytest.raises(sqlite3.OperationalError):
+        await bench.poller.step()
+    assert bench.offset() is None and bench.telegram.answers == [] and bench.telegram.edits == []
+    monkeypatch.undo()
+    assert await bench.poller.step() == 0.0  # the same tap is asked for again and handled
+    assert status_of(bench, 1) == "done" and bench.offset() == 101
+
+
+async def test_today_reply_has_no_keyboard(tmp_path):
+    bench = Bench(tmp_path)
+    seed_two(bench)
+    await bench.say("/dnes")
+    assert ["reply_markup" in body for body in bench.telegram.sent] == [False]

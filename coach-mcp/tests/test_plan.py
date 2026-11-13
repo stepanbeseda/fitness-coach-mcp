@@ -43,6 +43,7 @@ def refused(outcome: Marked | Noted | Refusal) -> Refusal:
 def test_every_session_refusal_writes_nothing(store):
     planned_id = seed(store, "2026-10-08")
     done_id = seed(store, "2026-10-06", status="done")
+    skipped_id = seed(store, "2026-10-06", status="skipped")
     gone_id = seed(store, "2026-10-06", status="superseded")
     lost_id = seed(store, "2026-10-06", status="moved")  # moved without a copy row
     moved_id = seed(store, "2026-10-08", status="moved")  # dated after today: moved is named before future
@@ -64,6 +65,8 @@ def test_every_session_refusal_writes_nothing(store):
         ((done_id, "moved"), {"new_date": date(2026, 10, 9)}, Refusal(Reason.NOT_PLANNED, done_id)),
         ((planned_id, "moved"), {"new_date": date(2026, 10, 8)}, Refusal(Reason.SAME_DATE, planned_id)),
         ((planned_id, "moved"), {"new_date": date(2026, 10, 6)}, Refusal(Reason.PAST_DATE, planned_id)),
+        ((done_id, "skipped"), {"expect_planned": True}, Refusal(Reason.ALREADY_MARKED, done_id, status="done")),
+        ((skipped_id, "done"), {"expect_planned": True}, Refusal(Reason.ALREADY_MARKED, skipped_id, status="skipped")),
         ((planned_id, "done"), {"note": "   "}, Refusal(Reason.TEXT_EMPTY)),
         ((999, "done"), {"note": "a\x00"}, Refusal(Reason.TEXT_NUL)),  # the note is checked before the session
         ((planned_id, "done"), {"note": "x" * 2001}, Refusal(Reason.TEXT_TOO_LONG, length=2001)),
@@ -124,6 +127,46 @@ def test_the_status_and_its_note_are_one_transaction(store):
 
 
 # ------------------------------------------------------------------ add_note
+
+
+def test_expect_planned_marks_a_planned_session(store):
+    for status in ("done", "skipped"):
+        sid = seed(store, "2026-10-06")
+        marked = plan.mark_session(store, TODAY, sid, status, expect_planned=True)
+        assert isinstance(marked, Marked)
+        assert marked.session["status"] == status
+
+
+def test_expect_planned_keeps_the_order_of_reasons(store):
+    gone_id = seed(store, "2026-10-06", status="superseded")
+    moved_id = seed(store, "2026-10-06", status="moved")
+    copy_id = seed(store, "2026-10-09", moved_from_id=moved_id)
+    future_id = seed(store, "2026-10-08")
+    cases = [
+        (gone_id, Refusal(Reason.SUPERSEDED, gone_id)),
+        (moved_id, Refusal(Reason.MOVED_TO, moved_id, copy_id=copy_id, copy_day=date(2026, 10, 9))),
+        (999, Refusal(Reason.NOT_FOUND, 999)),
+        (future_id, Refusal(Reason.FUTURE, future_id, day=date(2026, 10, 8))),
+    ]
+    for sid, expected in cases:
+        assert plan.mark_session(store, TODAY, sid, "done", expect_planned=True) == expected
+
+
+def test_without_expect_planned_a_done_session_can_be_re_marked(store):
+    sid = seed(store, "2026-10-06", status="done")
+    marked = plan.mark_session(store, TODAY, sid, "skipped")
+    assert isinstance(marked, Marked)
+    assert marked.session["status"] == "skipped"
+
+
+def test_expect_planned_with_a_note_writes_the_note_once(store):
+    sid = seed(store, "2026-10-06")
+    marked = plan.mark_session(store, TODAY, sid, "done", note="auto", expect_planned=True)
+    assert isinstance(marked, Marked) and marked.note is not None
+    assert (marked.note["text"], marked.note["session_id"]) == ("auto", sid)
+    again = plan.mark_session(store, TODAY, sid, "done", note="auto", expect_planned=True)
+    assert again == Refusal(Reason.ALREADY_MARKED, sid, status="done")
+    assert len(snapshot(store)["notes"]) == 1
 
 
 def test_note_text_rules_in_order():

@@ -150,8 +150,9 @@ The parts most relevant to building LLM agents that act on real, personal data:
   [coach instructions](docs/coach-instructions.md) require showing the proposal and getting explicit
   confirmation first, and claude.ai by default asks before it runs a tool that is not marked read-only. No server
   enforces the confirmation; what limits a wrong write is described in the Security model below (LLM / prompt
-  injection). Plan reconciliation only *suggests* a session status from recorded activities, and the athlete
-  confirms it.
+  injection). Plan reconciliation suggests a session status from recorded activities, and the athlete confirms
+  it (a tap on the morning message's buttons counts); only the opt-in `COACH_AUTO_CONFIRM_MATCHED` marks a final
+  match done by itself, with a note, and nothing is ever marked skipped automatically.
 - **Least privilege between components.** The coach server reads Garmin with a separate read-only token, so
   `garmin-mcp` rejects its write tools before they run. It may call only two read tools on Hevy. The client's
   OAuth token is never forwarded to a backend.

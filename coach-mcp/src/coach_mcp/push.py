@@ -1,4 +1,4 @@
-"""Push transport: the Telegram Bot API (sendMessage, plain text).
+"""Push transport: the Telegram Bot API (sendMessage, plain text, optionally with inline buttons).
 
 The bot token is part of the request URL, so log lines carry outcome words, status codes,
 durations and exception class names only, never the URL, the token, the chat id or the text.
@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx2
 
@@ -25,14 +26,26 @@ PushOutcome = Literal["sent", "transient", "permanent"]
 
 
 @dataclass(frozen=True)
+class Button:
+    text: str
+    data: str  # callback_data
+
+
+@dataclass(frozen=True)
 class PushMessage:
     title: str  # first line: verdict circle, level, date
     body: str
+    keyboard: tuple[tuple[Button, ...], ...] = ()  # inline buttons under the message; never part of .text
 
     @property
     def text(self) -> str:
         """Exactly what Telegram receives: the title line, a blank line, the body."""
         return f"{self.title}\n\n{self.body}"
+
+
+def inline_markup(rows: Sequence[Sequence[Button]]) -> dict[str, Any]:
+    """The Bot API ``reply_markup`` of an inline keyboard with ``rows``."""
+    return {"inline_keyboard": [[{"text": b.text, "callback_data": b.data} for b in row] for row in rows]}
 
 
 class PushSender(Protocol):
@@ -44,7 +57,8 @@ class TextSender(Protocol):
 
 
 class TelegramPush:
-    """Sends one plain-text message to the configured chat through ``sendMessage``.
+    """Sends one plain-text message to the configured chat through ``sendMessage``, with the message's inline
+    keyboard when it has one.
 
     The token is read from its file on every send, so a rotated token works without a restart,
     and it exists only inside ``send``: never as an argument, an attribute or a log value.
@@ -55,15 +69,20 @@ class TelegramPush:
         self._transport = transport
 
     async def send(self, msg: PushMessage) -> PushOutcome:
-        return await self.send_text(msg.text)
+        body: dict[str, Any] = {"chat_id": int(self._settings.telegram_chat_id), "text": msg.text}
+        if msg.keyboard:
+            body["reply_markup"] = inline_markup(msg.keyboard)
+        return await self._post(body)
 
     async def send_text(self, text: str) -> PushOutcome:
         """One plain-text message with exactly ``text`` (the replies of the inbound part use this directly)."""
+        return await self._post({"chat_id": int(self._settings.telegram_chat_id), "text": text})
+
+    async def _post(self, body: dict[str, Any]) -> PushOutcome:
         token = read_bot_token(self._settings.telegram_token_file)
         if token is None:
             log.warning("push status=permanent reason=no_token")
             return "permanent"
-        body = {"chat_id": int(self._settings.telegram_chat_id), "text": text}
         started = time.monotonic()
         try:
             async with httpx2.AsyncClient(timeout=httpx2.Timeout(20.0), transport=self._transport) as http:

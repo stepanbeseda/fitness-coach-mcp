@@ -148,7 +148,9 @@ On Mondays the scheduler sends a second message right after the briefing: last w
 `get_weekly_report` for the ISO week that ended yesterday: endurance, strength, sleep, HRV, resting HR, plan, new
 bests, watch-outs including detraining toward the endurance goal and a strength load spike) and the progress of the goals with a metric (see Goal progress). The title is
 `📊 Weekly report 2026-W41 · 5 Oct–11 Oct`. It is an event about the reported week, de-duplicated by that week's
-label (table `weekly_reports`), so every Monday sends one.
+label (table `weekly_reports`), so every Monday sends one. The plan line names how many of the still-planned
+sessions have a matched activity (`still planned 2, of them 1 matched with an activity`; the key
+`adherence.planned_matched` of `get_weekly_report`), so they can be confirmed.
 - It goes out only after the briefing of that day was sent (in this process or recorded in `briefing_runs`), never
   instead of it. When the briefing gave up or the service started after the cutoff, there is no Monday report that
   week (`get_weekly_report`, `get_goal_progress` and `send-weekly-report` still work).
@@ -175,13 +177,32 @@ not configured or wrong argument.
 With push on, the switch `COACH_TELEGRAM_INBOUND` not `false` and a private chat id (a positive number), a third
 background task (`src/coach_mcp/inbound.py`) reads the athlete's messages to the bot and answers them by fixed
 rules, without an LLM. It only makes outbound calls: long polling of the Bot API method `getUpdates` (50 s per
-request, at most 10 updates, message updates only) and `sendMessage` for the answers. With a group chat id the task
-does not start and the log says `inbound status=off reason=group_chat`.
+request, at most 10 updates, message and callback query updates) and `sendMessage` for the answers. With a group chat
+id the task does not start and the log says `inbound status=off reason=group_chat`.
 
 A message is handled only when it is a text message of a private chat whose chat id and sender id both equal
 `COACH_TELEGRAM_CHAT_ID` and whose sender is not a bot. Everything else is confirmed to Telegram and dropped: no
 answer, nothing stored, and the log only counts it. The athlete's own message is the confirmation the write tools
 ask the coach for.
+
+### Buttons of the morning push
+
+While the inbound part is on, the scheduled briefing and `send-briefing` carry one row of inline buttons per
+session of yesterday that is still `planned` (at most 8 rows, in plan order): `[✅ #12 run: done] [⏭ skipped]`. The
+text of the message is unchanged. A tap is a `callback_query` update and is accepted only when it comes from the
+same private chat and sender as a message (chat id and sender id equal `COACH_TELEGRAM_CHAT_ID`, not a bot);
+any other tap is not answered, nothing is stored and the log only counts it. An accepted tap counts as the
+athlete's confirmation like `/done` / `/skip`: the session is marked through the Plan rules, but only while it is
+still `planned` (a session marked meanwhile by `/done`, the coach or the night gets the answer `Session #12 is
+already done; nothing changed.`). The status is stored first; then the tap is answered with
+`answerCallbackQuery` (`Recorded: #12 run done.`) and the tapped message's keyboard is redrawn from the store with
+`editMessageReplyMarkup`, so a marked session shows its result (`[#12 run: ✅ done]`) and the other rows stay.
+No chat message is sent for a tap. The button data is `d:<id>`, `s:<id>` or `x:<id>` (a result row: a tap
+changes nothing); anything else is answered without text and changes nothing. `/dnes` and `get_daily_briefing`
+carry no buttons. The log line of a tap is `inbound cb=done|skip|noop|bad_data|- status=ok|refused|bad_data|failed
+answer=… edit=… ms=…` (`sent`, `transient`, `rejected`, `no_token`, `crashed` or `skipped`), never the data,
+the session id or a chat id. The delivery of `callback_query`, the answer and the redraw follow the Bot API
+documentation and were not run against the real bot before the first deploy.
 
 | Message | Effect | Answer |
 |---|---|---|
@@ -340,9 +361,11 @@ answers `garmin-mcp` records for its canned payloads (`tests/contract/garmin_ans
 with keys, none of them known) counts as a section in error: it is stored as missing, repaired like one, and the
 run logs `history status=contract_warning sections=…` (section names only).
 For each run the log has one line for Garmin:
-`history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=…`
+`history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=… confirmed=…`
 (`repaired` = days whose missing sections loaded in a repair call of this run; `reconcile=error kind=…` when plan
-reconciliation fails; the history run does not fail because of it), one for the race predictions
+reconciliation fails; `confirmed=N` = sessions marked done by the automatic confirmation, `confirmed=off` with
+`COACH_AUTO_CONFIRM_MATCHED` off, `confirmed=error kind=…` when it fails; the history run does not fail because of
+it), one for the race predictions
 `history status=… part=predictions days=… ms=…` (days stored; only when a call was due) and one for Hevy:
 `history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (no data or values;
 `skipped` = events from Hevy that could not be used). The race-prediction and Hevy parts run before plan
@@ -359,8 +382,10 @@ with evidence (sport, number of activities, duration and distance of that sport 
 day whose activities have not been loaded yet, or were given up after three errors, has no suggestion. Several
 sessions of the same sport on one day: activities are first assigned to sessions already marked `done`, the rest
 to planned ones in plan order. A suggestion has `final: false` while the day can still be reloaded (until the third
-day after it, late watch sync). The server never changes a session's status: `get_plan` and `get_coach_context`
-show the suggestion only for sessions in status `planned`, the coach checks it and, after confirmation, writes
+day after it, late watch sync). The server changes a session's status only with `COACH_AUTO_CONFIRM_MATCHED=true`:
+the nightly run then marks done every planned session whose suggestion is `matched` and `final` and links a note
+naming the source and the evidence; otherwise `get_plan` and `get_coach_context` show the suggestion only for sessions
+in status `planned`, the coach checks it and, after confirmation, writes
 `update_session`. A strength session is matched with a strength record from the watch (`strength_training`) or
 with a Hevy workout on the same day (evidence `source: hevy` with the number of sets and volume); a day not yet
 covered by the Hevy strength history is matched only with the watch. Without the nightly history
@@ -611,6 +636,7 @@ Weather data: [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0 licence).
 | `COACH_BRIEFING_CUTOFF` | `09:30` | latest send time, even with missing data (later than the start time) |
 | `COACH_BRIEFING_RETRY_MINUTES` | `15` | pause between attempts when sleep or HRV is missing (1 to 180) |
 | `COACH_WEEKLY_PUSH` | `true` | Monday report after the briefing (`true` / `false`); effective only while push is on |
+| `COACH_AUTO_CONFIRM_MATCHED` | `false` | Nightly automatic confirmation (true / false): mark done the planned sessions whose suggestion is matched and final, with a note; never skipped; effective only with the history on |
 | `COACH_HISTORY_ENABLED` | `true` | nightly history from Garmin and Hevy (`true` / `false`) |
 | `COACH_HISTORY_TIME` | `03:30` | when (`HH:MM`, `TZ`); a time inside the briefing window moves the run to the cutoff |
 | `COACH_HISTORY_BACKFILL_DAYS` | `90` | how many days back to load (1 to 366) |

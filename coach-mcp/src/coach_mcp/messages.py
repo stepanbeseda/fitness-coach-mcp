@@ -273,8 +273,9 @@ class WeeklyTexts:
     sleep: str  # {time} {average}
     hrv: str  # {value} {average}
     resting_hr: str  # {value} {average}
-    plan: str  # {done} {skipped} {moved} {planned} {rate}
+    plan: str  # {done} {skipped} {moved} {planned} {matched} {rate}
     plan_rate: str  # {rate}
+    plan_matched: str  # {count}
     new_bests: str  # {items}
     best: Mapping[str, str]  # metric of get_weekly_report new_bests -> {value} {previous} {exercise}
     flags: str  # {items}
@@ -316,8 +317,9 @@ WEEKLY_EN = WeeklyTexts(
     sleep="Sleep: average {time}{average}",
     hrv="HRV: average {value} ms{average}",
     resting_hr="Resting HR: average {value} bpm{average}",
-    plan="Plan: done {done}, skipped {skipped}, moved {moved}, still planned {planned}{rate}",
+    plan="Plan: done {done}, skipped {skipped}, moved {moved}, still planned {planned}{matched}{rate}",
     plan_rate=" – completion {rate} %",
+    plan_matched=", of them {count} matched with an activity",
     new_bests="New bests: {items}.",
     best={
         "vo2max_running": "VO2max running {value} (was {previous})",
@@ -381,8 +383,9 @@ WEEKLY_CS = WeeklyTexts(
     sleep="Spánek: průměr {time}{average}",
     hrv="HRV: průměr {value} ms{average}",
     resting_hr="Klidová tepovka: průměr {value} bpm{average}",
-    plan="Plán: splněno {done}, přeskočeno {skipped}, přesunuto {moved}, zbývá v plánu {planned}{rate}",
+    plan="Plán: splněno {done}, přeskočeno {skipped}, přesunuto {moved}, zbývá v plánu {planned}{matched}{rate}",
     plan_rate=" – plnění {rate} %",
+    plan_matched=", z toho {count} se záznamem aktivity",
     new_bests="Nové rekordy: {items}.",
     best={
         "vo2max_running": "VO2max běh {value} (dříve {previous})",
@@ -444,7 +447,8 @@ def weekly_texts(language: str) -> WeeklyTexts:
 
 @dataclass(frozen=True)
 class ReplyTexts:
-    """Words of the replies to the athlete's Telegram messages (``inbound.py``).
+    """Words of the athlete's Telegram conversation (inbound.py), of the confirmation buttons of the morning push and
+    of the automatic confirmation note (confirm.py).
 
     The rules are in ``plan.py`` and ``inbound.py``.
     """
@@ -474,6 +478,16 @@ class ReplyTexts:
     note_refused: str
     briefing_failed: str
     failed: str
+    button_done: str  # {label}
+    button_skipped: str
+    button_marked_done: str  # {label}
+    button_marked_skipped: str  # {label}
+    tap_done: str  # {label}
+    tap_skipped: str  # {label}
+    already_done: str  # {id}
+    already_skipped: str  # {id}
+    auto_confirmed: str  # {source} {evidence}
+    evidence_sets: str  # {sets}
 
 
 REPLY_EN = ReplyTexts(
@@ -511,6 +525,16 @@ REPLY_EN = ReplyTexts(
     note_refused="The note could not be saved.",
     briefing_failed="The briefing could not be computed right now. Try again later.",
     failed="Something went wrong (internal error).",
+    button_done="✅ {label}: done",
+    button_skipped="⏭ skipped",
+    button_marked_done="{label}: ✅ done",
+    button_marked_skipped="{label}: ⏭ skipped",
+    tap_done="Recorded: {label} done.",
+    tap_skipped="Recorded: {label} skipped.",
+    already_done="Session #{id} is already done; nothing changed.",
+    already_skipped="Session #{id} is already skipped; nothing changed.",
+    auto_confirmed="Confirmed automatically ({source}): {evidence}.",
+    evidence_sets="working sets {sets}",
 )
 
 REPLY_CS = ReplyTexts(
@@ -548,6 +572,16 @@ REPLY_CS = ReplyTexts(
     note_refused="Poznámku se nepodařilo uložit.",
     briefing_failed="Briefing se teď nepodařilo spočítat. Zkus to později.",
     failed="Něco se pokazilo (vnitřní chyba).",
+    button_done="✅ {label}: splněno",
+    button_skipped="⏭ přeskočeno",
+    button_marked_done="{label}: ✅ splněno",
+    button_marked_skipped="{label}: ⏭ přeskočeno",
+    tap_done="Zapsáno: {label} splněno.",
+    tap_skipped="Zapsáno: {label} přeskočeno.",
+    already_done="Trénink #{id} už je splněný; nic se nezměnilo.",
+    already_skipped="Trénink #{id} už je přeskočený; nic se nezměnilo.",
+    auto_confirmed="Automaticky potvrzeno ({source}): {evidence}.",
+    evidence_sets="pracovní série {sets}",
 )
 
 REPLY_LANGUAGES: Mapping[str, ReplyTexts] = {"en": REPLY_EN, "cs": REPLY_CS}

@@ -475,6 +475,8 @@ def refusal_error(refusal: plan.Refusal, field: str) -> ToolError:
             text = "new_date must differ from the session date"
         case plan.Reason.PAST_DATE:
             text = "new_date must be today or later"
+        case plan.Reason.ALREADY_MARKED:
+            text = f"session {sid} is already {refusal.status}; nothing changed"
         case plan.Reason.TEXT_EMPTY:
             text = f"{field} must not be empty"
         case plan.Reason.TEXT_NUL:

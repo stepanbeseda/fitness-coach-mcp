@@ -13,13 +13,14 @@ import httpx2
 import pytest
 from fakes import FakeClock, FakeGarmin, FakePush, StopLoop, fake_garmin_app, fake_garmin_running
 
+from coach_mcp import plan
 from coach_mcp import scheduler as scheduler_module
 from coach_mcp.__main__ import configure_logging, main
 from coach_mcp.briefing import ALERT_KEYS, LOAD_ALERTS
 from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminReader, LastSync
 from coach_mcp.load import load_signals
-from coach_mcp.push import TelegramPush
+from coach_mcp.push import PushMessage, TelegramPush
 from coach_mcp.scheduler import (
     SETTLE,
     BriefingScheduler,
@@ -1171,3 +1172,101 @@ async def test_compose_briefing_reuses_a_given_read_and_labels_a_stale_check(db_
     other = FakeGarmin(data)
     await compose_briefing(store, other, D, "cs")
     assert other.calls == 1
+
+
+# ------------------------------------------------------------ confirmation buttons (PR 36)
+
+
+def seed_yesterday(store: Store, kinds: list[tuple[str, str]]) -> list[int]:
+    """Sessions of D - 1 as (type, status); a done / skipped / moved status is set through Plan."""
+    day = D - timedelta(days=1)
+    rows = [{"date": day, "type": kind, "description": kind} for kind, _status in kinds]
+    ids = store.replace_planned(day, day, day, rows)[1]
+    for sid, (_kind, status) in zip(ids, kinds, strict=True):
+        if status == "moved":
+            assert isinstance(plan.mark_session(store, D, sid, "moved", new_date=D + timedelta(days=1)), plan.Marked)
+        elif status != "planned":
+            assert isinstance(plan.mark_session(store, D, sid, status), plan.Marked)
+    return list(ids)
+
+
+def keyboard_pairs(message: PushMessage) -> list[list[tuple[str, str]]]:
+    return [[(b.text, b.data) for b in row] for row in message.keyboard]
+
+
+def planned_row(sid: int, name: str) -> list[tuple[str, str]]:
+    return [(f"✅ #{sid} {name}: splněno", f"d:{sid}"), ("⏭ přeskočeno", f"s:{sid}")]
+
+
+@pytest.mark.anyio
+async def test_briefing_keyboard_has_yesterdays_planned_sessions(db_path):
+    store = Store(db_path)
+    ids = seed_yesterday(
+        store,
+        [
+            ("running", "planned"),
+            ("strength", "planned"),
+            ("mobility", "planned"),
+            ("running", "done"),
+            ("cycling", "skipped"),
+            ("running", "moved"),
+        ],
+    )
+    store.upsert_suggestions([(ids[0], "matched", True, '{"count":1}'), (ids[1], "no_activity", True, None)], D)
+    garmin = FakeGarmin(garmin_data())
+    with_buttons = await compose_briefing(store, garmin, D, "cs", keyboard=True)
+    plain = await compose_briefing(store, garmin, D, "cs")
+    assert keyboard_pairs(with_buttons.message) == [
+        planned_row(ids[0], "běh"),
+        planned_row(ids[1], "síla"),
+        planned_row(ids[2], "mobilita"),
+    ]
+    assert plain.message.keyboard == ()
+    assert with_buttons.message.text == plain.message.text
+    assert with_buttons.payload == plain.payload
+
+
+async def scheduled_message(db_path: Path, **settings: Any) -> PushMessage:
+    push, _ = await run_scheduler(
+        db_path, local(D, 7), FakeGarmin(garmin_data()), until=local(D, 12), store=Store(db_path), **settings
+    )
+    (sent,) = [msg for _, msg in push.sent if "Týdenní" not in msg.title]
+    return sent
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("statuses", "settings", "expected_rows"),
+    [
+        ([("running", "done")], {}, 0),
+        ([("running", "planned")], {"telegram_inbound": False}, 0),
+        ([("running", "planned")], {"telegram_chat_id": "-100123456789"}, 0),
+        ([("running", "planned")], {}, 1),
+    ],
+    ids=["no-planned-session", "inbound-off", "group-chat", "inbound-on"],
+)
+async def test_no_keyboard_without_planned_sessions_or_inbound(db_path, statuses, settings, expected_rows):
+    ids = seed_yesterday(Store(db_path), statuses)
+    message = await scheduled_message(db_path, **settings)
+    if expected_rows:
+        assert keyboard_pairs(message) == [planned_row(ids[0], "běh")]
+    else:
+        assert message.keyboard == ()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("inbound", [True, False])
+async def test_send_briefing_command_carries_the_keyboard_only_with_inbound(db_path, inbound):
+    store = Store(db_path)
+    ids = seed_yesterday(store, [("running", "planned")])
+    push = FakePush()
+    rc = await send_briefing_command(
+        make_settings(db_path, telegram_inbound=inbound),
+        store=store,
+        garmin=FakeGarmin(garmin_data()),
+        push=push,
+        today=lambda: D,
+    )
+    assert rc == 0
+    (message,) = [msg for _, msg in push.sent]
+    assert keyboard_pairs(message) == ([planned_row(ids[0], "běh")] if inbound else [])

@@ -19,12 +19,13 @@ two messages' adapters and the loop.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from . import goals, tools, trends, weekly
+from . import confirm, goals, tools, trends, weekly
 from .briefing import Briefing, build_briefing
 from .clock import LocalClock
 from .config import Settings
@@ -32,7 +33,7 @@ from .delivery import Attempt, DailyDelivery, DailyMessage, send_now
 from .garmin import GarminData, GarminReader, GarminSource, LastSync, exception_kind
 from .history_view import HistoryView
 from .load import load_signals
-from .messages import DEFAULT_LANGUAGE
+from .messages import DEFAULT_LANGUAGE, reply_texts, texts
 from .push import PushMessage, PushSender
 from .store import Store
 
@@ -64,9 +65,19 @@ def reusable(data: GarminData) -> bool:
 
 
 async def compose_briefing(
-    store: Store, garmin: GarminSource, day: date, language: str = DEFAULT_LANGUAGE, *, data: GarminData | None = None
+    store: Store,
+    garmin: GarminSource,
+    day: date,
+    language: str = DEFAULT_LANGUAGE,
+    *,
+    data: GarminData | None = None,
+    keyboard: bool = False,
 ) -> Briefing:
-    """``data``: a full Garmin read to reuse (the scheduler's retry gate); None reads Garmin now."""
+    """``data``: a full Garmin read to reuse (the scheduler's retry gate); None reads Garmin now.
+
+    ``keyboard``: add the confirmation buttons of yesterday's planned sessions (the scheduled push and
+    ``send-briefing`` while the inbound part is on).
+    """
     if data is None:
         data = await garmin.fetch(day)
     sessions = tools.sessions_out(store, store.sessions_between(day, day))
@@ -75,7 +86,7 @@ async def compose_briefing(
     yesterday_sessions = tools.sessions_out(store, rows)
     checked_at = store.suggestion_times([row["id"] for row in rows if row["status"] == "planned"])
     load = load_signals(HistoryView(store), store.list_goals("active"), day)
-    return build_briefing(
+    briefing = build_briefing(
         day,
         data,
         sessions,
@@ -85,6 +96,13 @@ async def compose_briefing(
         language=language,
         load=load,
     )
+    if keyboard:
+        buttons = confirm.rows(
+            texts(language), reply_texts(language), [s for s in yesterday_sessions if s["status"] == "planned"]
+        )
+        if buttons:
+            return dataclasses.replace(briefing, message=dataclasses.replace(briefing.message, keyboard=buttons))
+    return briefing
 
 
 @dataclass(frozen=True)
@@ -159,7 +177,14 @@ class BriefingScheduler:
 
     async def _compose_briefing(self, attempt: Attempt) -> Briefing:
         data = await self._garmin_data(attempt)
-        return await compose_briefing(self._store, self._garmin, attempt.day, self._settings.language, data=data)
+        return await compose_briefing(
+            self._store,
+            self._garmin,
+            attempt.day,
+            self._settings.language,
+            data=data,
+            keyboard=self._settings.inbound_enabled,
+        )
 
     def _record_briefing(self, day: date, briefing: Briefing) -> None:
         self._store.record_briefing_sent(day, briefing.verdict, briefing.alert_updates)
@@ -210,7 +235,11 @@ async def send_briefing_command(
 
     async def compose(day: date) -> Briefing:
         return await compose_briefing(
-            store or Store(settings.db_path), garmin or GarminReader(settings), day, settings.language
+            store or Store(settings.db_path),
+            garmin or GarminReader(settings),
+            day,
+            settings.language,
+            keyboard=settings.inbound_enabled,
         )
 
     def summary(briefing: Briefing) -> str:

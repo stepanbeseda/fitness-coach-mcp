@@ -152,6 +152,9 @@ sessions stays with the coach. The answers are plain text in the language of `CO
   HTTPS like the briefing), so no port is opened and nothing reaches the server from outside.
 - **After a stop.** Messages sent while `coach-mcp` was stopped are handled when it starts again, as long as
   Telegram still holds them (about 24 hours). The first start with a bot ignores what was sent to it before.
+- **Buttons.** The morning message has done / skipped buttons for yesterday's planned sessions while the inbound
+  part is on; a tap marks the session (only while it is still planned) and the row then shows the result. The log
+  line `inbound cb=…` names the outcome (`answer=` / `edit=`).
 - **No answer?** The note or the status may still have been stored (an answer is tried twice): `/plan` shows the
   status, the coach sees the note. Editing a message in Telegram does not change a stored note.
 - **Turning it off.** `COACH_TELEGRAM_INBOUND=false` in `.env` and `docker compose up -d coach-mcp`; the briefing
@@ -189,8 +192,10 @@ line is `history status=… part=predictions days=… ms=…`. A failed call cha
 for the whole missed range again.
 
 The data stays on the server, so no personal data is newly exposed. From the stored activities the server
-suggests a status for the planned sessions of the last 7 days every night (`matched` / `no_activity`). It
-never changes the status itself; the coach confirms it with `update_session`.
+suggests a status for the planned sessions of the last 7 days every night (`matched` / `no_activity`). It sets a
+status itself only with `COACH_AUTO_CONFIRM_MATCHED=true`: the nightly run then marks done the sessions whose
+suggestion is `matched` and `final`, each with a linked note, and never marks one skipped. Otherwise the athlete
+confirms with the buttons of the morning message or `/done` / `/skip`, or the coach with `update_session`.
 
 The first run is the largest. A minute after deployment it starts loading 90 days back: about 471 Garmin
 Connect calls in 104 `garmin-mcp` calls (one of them for the race predictions of the whole range) with a 15 s
@@ -550,6 +555,7 @@ the newest backup.
 | `coach-mcp` does not start: `bind source path does not exist: …/secrets/telegram_bot_token` | The bot token file is missing (an empty one is enough) → `scripts/setup-secrets.sh` and `docker compose up -d coach-mcp`. |
 | `garmin-mcp` or `coach-mcp` does not start: `bind source path does not exist: …/secrets/garmin_readonly_token` | The coach's read-only token is missing → `scripts/setup-secrets.sh` and `scripts/deploy.sh`. |
 | The briefing and history have no Garmin data, the `garmin-mcp` log says `read-only token file missing or too short` | `secrets/garmin_readonly_token` is empty → `scripts/setup-secrets.sh` fills it; running services pick up the new token by themselves. |
+| Buttons of the morning message show a spinner / do nothing | `docker compose logs coach-mcp`, lines `inbound cb=…`: `answer=rejected` = Telegram refused the answer, the status is stored anyway (check `/plan`). No `inbound cb=` line but `inbound status=ignored count=N` = the guard rejected the tap (not the owner's chat or sender, or no `message.chat`), nothing stored. |
 | `coach-mcp` keeps restarting, log says `COACH_TELEGRAM_CHAT_ID is set but … does not hold a Telegram bot token` | `.env` has a chat id but the token is missing or corrupt → `scripts/setup-secrets.sh telegram-token`, or delete the chat id from `.env` (briefing off). |
 | `get_trends` / `get_weekly_report` have no data, `get_correlations` returns `too_few_pairs` | The history is still loading (first run ~30 min, outside the briefing window) or Garmin is not logged in: `docker compose logs coach-mcp`, lines `history status=…` (`rate_limited` = Garmin limited the calls, next attempt in 1 to 8 h; `auth` = `scripts/garmin-login.sh`; `service_error` = Garmin Connect or the internet did not work, next attempt in 1 to 8 h, the days do not count; `given_up` > 0 = days that failed three times although Garmin returned other days). |
 | `get_goal_progress` shows `available: false` or a goal without a projection | `reason` says why. `available: false`: `no_recent_value` / `too_few_values` = no value in the last 14 days or fewer than 14 values over 4 weeks (the race predictions need a night of history first; `docker compose logs coach-mcp`, lines `part=predictions`). `available: true` without a projection: `no_target_date`, `target_date_passed`, `target_date_too_far` (needs a target date within 26 weeks), `trend_too_steep`; `no_target_value` = projection but no verdict (give `set_goal` a `target_value`). A goal without `metric` is not listed (give it one with `set_goal`). |

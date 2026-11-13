@@ -136,6 +136,7 @@ def render_weekly(report: dict[str, Any], progress: dict[str, Any], language: st
                 skipped=plan["skipped"],
                 moved=plan["moved"],
                 planned=plan["planned"],
+                matched="" if not plan.get("planned_matched") else w.plan_matched.format(count=plan["planned_matched"]),
                 rate="" if rate is None else w.plan_rate.format(rate=round(rate * 100)),
             )
         )

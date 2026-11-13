@@ -526,8 +526,13 @@ def _adherence(
         rate = tools.adherence(store.sessions_between(m, m + dt.timedelta(days=6)), today)["completion_rate"]
         if rate is not None:
             rates.append(rate)
+    # Still planned, but the nightly reconcile step found an activity (final or not): the athlete may confirm it.
+    planned_ids = [r["id"] for r in rows if r["status"] == "planned"]
+    suggested = store.suggestions_for(planned_ids)
+    matched = sum(1 for sid in planned_ids if sid in suggested and suggested[sid]["result"] == "matched")
     return {
         **tools.adherence(rows, today),
+        "planned_matched": matched,
         "baseline_completion_rate": round(_mean(rates), 2) if rates else None,
         "baseline_weeks": len(rates),
     }

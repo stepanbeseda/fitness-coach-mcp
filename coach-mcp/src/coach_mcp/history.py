@@ -6,9 +6,10 @@ Progress is the stored state, not a cursor: ``needs_fetch`` decides from the dat
 the store which days still need a call, so a restart resumes where the last run stopped. The clock and the
 sleep function are injected. Log lines carry outcome words, counters and exception class names only, never
 dates, values, payload text or arguments. After every run the job stores a suggestion (matched / no_activity)
-for the planned sessions of the last seven days (``reconcile``, over the activity days of ``history_view``); it
-never changes a session status. The re-fetch window (``REFETCH_DAYS``, ``MAX_FAILURES``) is defined in
-``history_view``, whose settled flag is its inverse.
+for the planned sessions of the last seven days (``reconcile``, over the activity days of ``history_view``);
+with ``COACH_AUTO_CONFIRM_MATCHED`` on, it then marks done the planned sessions whose suggestion is matched and
+final, each with a linked note, and otherwise leaves every status as it is. The re-fetch window
+(``REFETCH_DAYS``, ``MAX_FAILURES``) is defined in ``history_view``, whose settled flag is its inverse.
 A day whose snapshot had sections in error keeps them in ``recovery_missing``; after the re-fetch window such a
 day is fetched again, a few per night, and only its missing sections are written (``repair_sections``).
 
@@ -30,12 +31,13 @@ from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from . import strength
+from . import confirm, plan, strength
 from .clock import LocalClock
 from .config import Settings
 from .garmin import HistorySource, exception_kind
 from .hevy import StrengthSource
 from .history_view import MAX_FAILURES, REFETCH_DAYS, HistoryView
+from .messages import reply_texts, texts
 from .reconcile import RECONCILE_DAYS, suggest
 from .store import Store
 from .values import finite
@@ -511,8 +513,17 @@ class HistoryJob:
             strength_seconds = time.monotonic() - strength_started
         # The step needs only the store, so it runs after every run, also after an early return or a stop.
         try:
-            matched, no_activity = self._reconcile(self._clock.today())
+            today = self._clock.today()
+            matched, no_activity = self._reconcile(today)
             step = f"matched={matched} no_activity={no_activity}"
+            if self._settings.auto_confirm_matched:
+                try:
+                    step += f" confirmed={self._auto_confirm(today)}"
+                except Exception as exc:  # the run's outcome and scheduling stand; BaseException propagates
+                    step += f" confirmed=error kind={exception_kind(exc)}"
+                    level = logging.WARNING
+            else:
+                step += " confirmed=off"
         except Exception as exc:  # the run's outcome and scheduling stand; BaseException propagates
             step = f"reconcile=error kind={exception_kind(exc)}"
             level = logging.WARNING
@@ -538,8 +549,34 @@ class HistoryJob:
             scheduled = predictions_outcome  # the only two outcomes of the predictions part that steer scheduling
         return scheduled if strength_outcome is None else combined_outcome(scheduled, strength_outcome)
 
+    def _auto_confirm(self, today: date) -> int:
+        """Mark done each planned session of the reconcile window whose suggestion, stored by this run, is matched
+        and final, with a note naming the source and the evidence; returns how many were marked. Plan refuses a
+        session the athlete marked meanwhile (``expect_planned``), so a tap always wins. Never marks skipped."""
+        first, last = today - timedelta(days=RECONCILE_DAYS), today - timedelta(days=1)
+        language = self._settings.language
+        t, r = texts(language), reply_texts(language)
+        rows = sorted(
+            (row for row in self._store.sessions_between(first, last) if row["status"] == "planned"),
+            key=lambda row: row["id"],
+        )
+        suggested = self._store.suggestions_for([row["id"] for row in rows])
+        confirmed = 0
+        for row in rows:
+            suggestion = suggested.get(row["id"])
+            if suggestion is None or suggestion["result"] != "matched" or suggestion["final"] != 1:
+                continue
+            if suggestion["evaluated_on"] != today.isoformat():
+                continue
+            note = confirm.auto_note(t, r, row, json.loads(suggestion["evidence"]))
+            outcome = plan.mark_session(self._store, today, row["id"], "done", note=note, expect_planned=True)
+            if isinstance(outcome, plan.Marked):
+                confirmed += 1
+        return confirmed
+
     def _reconcile(self, today: date) -> tuple[int, int]:
-        """Store a suggestion for every planned session of the last RECONCILE_DAYS days; changes no status.
+        """Store a suggestion for every planned session of the last RECONCILE_DAYS days; the status is left to the
+        athlete, the coach and ``_auto_confirm``.
 
         Returns (matched, no_activity).
         """

@@ -8,7 +8,7 @@ import httpx2
 import pytest
 
 from coach_mcp.config import Settings
-from coach_mcp.push import PushMessage, TelegramPush
+from coach_mcp.push import Button, PushMessage, TelegramPush
 
 TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1"
 SECOND_TOKEN = "987654321:BBHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw2"
@@ -154,3 +154,39 @@ async def test_send_text_sends_exactly_the_text(tmp_path):
 async def test_send_text_classifies_like_send(tmp_path, status, outcome):
     push = make_push(tmp_path, lambda request: httpx2.Response(status))
     assert await push.send_text("x") == outcome
+
+
+def recording(seen: list[httpx2.Request]):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, json={"ok": True})
+
+    return handler
+
+
+@pytest.mark.anyio
+async def test_send_with_a_keyboard_posts_the_reply_markup(tmp_path):
+    seen: list[httpx2.Request] = []
+    msg = PushMessage(MSG.title, MSG.body, keyboard=((Button("✅ #12 run: done", "d:12"), Button("⏭ skipped", "s:12")),))
+    assert await make_push(tmp_path, recording(seen)).send(msg) == "sent"
+    (request,) = seen
+    assert str(request.url) == f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    assert json.loads(request.content) == {
+        "chat_id": 123456789,
+        "text": MSG.text,
+        "reply_markup": {
+            "inline_keyboard": [
+                [{"text": "✅ #12 run: done", "callback_data": "d:12"}, {"text": "⏭ skipped", "callback_data": "s:12"}]
+            ]
+        },
+    }
+    assert msg.text == MSG.text  # the keyboard is never part of the text
+
+
+@pytest.mark.anyio
+async def test_send_without_a_keyboard_has_no_reply_markup(tmp_path):
+    seen: list[httpx2.Request] = []
+    push = make_push(tmp_path, recording(seen))
+    assert await push.send(MSG) == "sent"
+    assert await push.send_text("x") == "sent"
+    assert ["reply_markup" in json.loads(request.content) for request in seen] == [False, False]
