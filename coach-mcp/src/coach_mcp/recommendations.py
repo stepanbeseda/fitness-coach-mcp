@@ -102,7 +102,7 @@ def _detraining(_: Mapping[str, Any], flags: Sequence[Mapping[str, Any]]) -> tup
     week, baseline = _get(running, "week"), _get(running, "baseline")
     if "running" in conditions and _numbers(week, baseline) and math.floor(baseline) >= 1:
         return "detraining_running", {"km_week": week, "baseline_km": baseline, "runs": RETURN_SESSIONS,
-                                      "km": math.ceil(baseline), "goal": metric}
+                                      "km": math.floor(baseline), "goal": metric}
     acwr = flag.get("acwr_last")
     if "acwr" in conditions and _numbers(acwr):
         return "detraining_acwr", {"acwr": acwr, "acwr_limit": ACWR_LOW, "days": WINDOW_DAYS,
@@ -152,7 +152,7 @@ RULES: tuple[Rule, ...] = (
     Rule("hrv_down", "hrv_down", 30, ("resting_hr_up",), _hrv_down),
     Rule("resting_hr_up", "resting_hr_up", 40, (), _resting_hr_up),
     Rule("sleep_down", "sleep_down", 50, (), _sleep_down),
-    Rule("detraining", "detraining", 60, (), _detraining),
+    Rule("detraining", "detraining", 60, ("endurance_load_down",), _detraining),
     Rule("endurance_time_up", "endurance_time_up", 70, (), _endurance_time_up),
     Rule("strength_volume_up", "strength_volume_up", 80, (), _pct_only("strength_volume_up")),
     Rule("endurance_load_down", "endurance_load_down", 90, (), _pct_only("endurance_load_down")),
@@ -171,7 +171,7 @@ def recommend(report: Mapping[str, Any]) -> list[dict[str, Any]]:
     a holding rule hides, at most MAX_RECOMMENDATIONS."""
     flags = [f for f in report.get("flags") or [] if isinstance(f, Mapping)]
     week = report.get("week")
-    final = True
+    final = isinstance(week, Mapping) and week.get("partial") is False
     fired: list[tuple[Rule, tuple[str, Numbers]]] = []
     for rule in sorted(RULES, key=lambda r: r.priority):
         if rule.source == PLANNED_MATCHED:
@@ -179,7 +179,7 @@ def recommend(report: Mapping[str, Any]) -> list[dict[str, Any]]:
         else:
             matching = [f for f in flags if f.get("flag") == rule.source]
             out = rule.params(report, matching) if final and matching else None
-        if out is not None and len(fired) < MAX_RECOMMENDATIONS:
+        if out is not None:
             fired.append((rule, out))
     hidden = {name for rule, _ in fired for name in rule.hides}
     items = [{"key": key, "source": rule.source, "numbers": numbers}
