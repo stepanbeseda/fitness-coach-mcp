@@ -1037,6 +1037,41 @@ def test_load_alerts_render_numbers_and_goal(lang):
     assert [a["new"] for a in b.payload["alerts"] if a["key"] in LOAD_ALERTS] == [True, True]
 
 
+_DETRAINING_HEAD = {
+    "en": '- Endurance training is fading while you work toward "Run a marathon" (3:59:59, by 3 Oct 2027): ',
+    "cs": "- Vytrvalostní trénink upadá, přestože máš cíl \u201eRun a marathon\u201c (3:59:59, do 3. 10. 2027): ",
+}
+_ACWR_REASON = {
+    "en": "ACWR below 0.8 on all 13 stored days of the last 14 (latest 0.40)",
+    "cs": "ACWR pod 0,8 ve všech 13 uložených dnech z posledních 14 (naposledy 0,40)",
+}
+_RUNNING_REASON = {
+    "en": "running 7 km in 14 days against the usual 20.4 km",
+    "cs": "běh 7 km za 14 dní proti obvyklým 20,4 km",
+}
+
+
+@pytest.mark.parametrize("lang", ["en", "cs"])
+@pytest.mark.parametrize(("history", "reason"), [
+    ({"window_km": 20.4}, _ACWR_REASON),  # ACWR alone: the running reason is not named
+    ({"acwr": 0.8, "window_km": 7.0}, _RUNNING_REASON),  # running alone: the ACWR reason is not named
+])
+def test_detraining_line_names_only_the_condition_that_held(lang, history, reason):
+    signals = load_signals(w45_history(**history), [W45_GOAL], W45_DAY)
+    b = _build_briefing(DAY, garmin_data(), [], {}, language=lang, load=signals)
+    assert b.message.body.splitlines()[-2] == _DETRAINING_HEAD[lang] + reason[lang] + "."
+
+
+@pytest.mark.parametrize("lang", ["en", "cs"])
+def test_detraining_line_without_goal_target_has_no_empty_brackets(lang):
+    goal = {**W45_GOAL, "target_value": None, "target_date": None}
+    b = _build_briefing(DAY, garmin_data(), [], {}, language=lang, load=load_signals(w45_history(), [goal], W45_DAY))
+    line = [line for line in b.message.body.splitlines() if "Run a marathon" in line][0]
+    assert "()" not in line
+    assert line.startswith({"en": '- Endurance training is fading while you work toward "Run a marathon": ',
+                            "cs": "- Vytrvalostní trénink upadá, přestože máš cíl \u201eRun a marathon\u201c: "}[lang])  # fmt: skip
+
+
 @pytest.mark.parametrize(("row", "new"), [
     ({"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}, False),
     ({"value": 0, "evaluated_on": YESTERDAY, "fired_on": None}, True),

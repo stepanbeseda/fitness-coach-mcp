@@ -394,12 +394,15 @@ STATE_ALERT_KEYS = tuple(k for k in ALERT_KEYS if k not in ("missed_workout", "m
 @pytest.mark.parametrize("key", STATE_ALERT_KEYS)
 async def test_alert_fires_once_then_not_again(db_path, key, monkeypatch):
     # The load alerts read the stored history: ``scheduler.load_signals`` (what compose_briefing calls) returns the
-    # W45 signals while the day under test "holds" and the quiet week's signals otherwise.
+    # W45 signals while the day under test "holds" a load alert and the quiet week's signals otherwise (so the
+    # runs of the other keys stay as on the base tree).
     holding = {"now": True}
     w45 = load_signals(w45_history(), [W45_GOAL], W45_DAY)
     quiet = load_signals(w45_history(quiet=True), [W45_GOAL], W45_DAY)
     monkeypatch.setattr(
-        scheduler_module, "load_signals", lambda *args, **kwargs: w45 if holding["now"] else quiet
+        scheduler_module,
+        "load_signals",
+        lambda *args, **kwargs: w45 if holding["now"] and key in LOAD_ALERTS else quiet,
     )
 
     async def day_run(day: date, holds: bool, from_hour: int = 0, to_hour: int = 12) -> list[str]:

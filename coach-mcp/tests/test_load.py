@@ -95,6 +95,16 @@ def test_history_off_is_unknown():
     assert load_signals(FakeHistory(), [], W45_DAY).detraining.holds is False
 
 
+def test_endurance_goal_tie_on_the_target_date_takes_the_lowest_id():
+    def goal(id_):
+        return {**W45_GOAL, "id": id_, "title": f"g{id_}", "target_date": "2027-05-01"}
+
+    for goals in ([goal(2), goal(7), goal(5)], [goal(7), goal(5), goal(2)]):
+        assert load.endurance_goal(goals).id == 2
+    undated = [{**goal(1), "target_date": None}, {**goal(4), "target_date": None}, {**goal(3), "target_date": None}]
+    assert load.endurance_goal(undated).id == 1  # no date at all: still the lowest id
+
+
 def test_endurance_goal_picks_the_earliest_target_date():
     def goal(id_, metric, target_value=None, target_date=None, status="active"):
         return {"id": id_, "title": f"g{id_}", "metric": metric, "target_value": target_value,

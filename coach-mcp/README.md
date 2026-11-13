@@ -424,7 +424,8 @@ docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sq
 
 The second command must print `schema version 9`. Then deploy the older version (the commit before PR 38; see
 "Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 10 and
-nothing changed. To go back to an even older version, run this 10 → 9 procedure first and then the ones below.
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+back to an even older version, run this 10 → 9 procedure first and then the ones below.
 
 **Going back to a version without two-way Telegram** (schema 9 → 8). An older image refuses a database with
 schema 9 (`database schema version 9 is newer`). Before deploying the older version, drop the table
