@@ -34,6 +34,7 @@ class Reason(StrEnum):
     NOT_PLANNED = "not_planned"  # moved, but the session is not planned
     SAME_DATE = "same_date"  # moved to the date it already has
     PAST_DATE = "past_date"  # moved to a date before today
+    ALREADY_MARKED = "already_marked"  # expect_planned, but the session is done or skipped (status)
     TEXT_EMPTY = "text_empty"  # the note is empty after trimming
     TEXT_NUL = "text_nul"  # the note contains a NUL character
     TEXT_TOO_LONG = "text_too_long"  # the note is longer than NOTE_MAX after trimming (length)
@@ -47,6 +48,7 @@ class Refusal:
     copy_id: int | None = None  # MOVED_TO, COPY_SUPERSEDED
     copy_day: date | None = None  # MOVED_TO, COPY_SUPERSEDED
     length: int | None = None  # TEXT_TOO_LONG: characters after trimming
+    status: str | None = None  # ALREADY_MARKED: done or skipped
 
 
 @dataclass(frozen=True)
@@ -83,11 +85,14 @@ def mark_session(
     *,
     new_date: date | None = None,
     note: str | None = None,
+    expect_planned: bool = False,
 ) -> Marked | Refusal:
     """Set ``status`` (planned, done, skipped, or moved with ``new_date``) and store ``note`` with the session.
 
     ``new_date`` is given with ``moved`` and only then; anything else is a programming error (``ValueError``). The
-    note is checked first, then the session, in the order of ``Reason``.
+    note is checked first, then the session, in the order of ``Reason``. With ``expect_planned`` only a planned
+    session is changed (the athlete's button and the automatic confirmation); a done or skipped one is refused as
+    ``ALREADY_MARKED``.
     """
     if status not in STATUSES or (status == "moved") != (new_date is not None):
         raise ValueError("mark_session: new_date goes with status 'moved' and only with it")
@@ -112,6 +117,8 @@ def mark_session(
             if copy is not None and copy["status"] == "superseded":
                 return Refusal(Reason.COPY_SUPERSEDED, session_id, copy_id=copy_id, copy_day=copy_day)
             return Refusal(Reason.MOVED_TO, session_id, copy_id=copy_id, copy_day=copy_day)
+        if expect_planned and row["status"] != "planned":
+            return Refusal(Reason.ALREADY_MARKED, session_id, status=row["status"])
         day = date.fromisoformat(row["date"])
         if new_date is not None:
             if row["status"] != "planned":

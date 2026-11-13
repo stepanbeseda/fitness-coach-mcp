@@ -572,6 +572,7 @@ REFUSAL_ERRORS = [
     (plan.Refusal(plan.Reason.NOT_PLANNED, 5), "only a planned session can be moved"),
     (plan.Refusal(plan.Reason.SAME_DATE, 5), "new_date must differ from the session date"),
     (plan.Refusal(plan.Reason.PAST_DATE, 5), "new_date must be today or later"),
+    (plan.Refusal(plan.Reason.ALREADY_MARKED, 5, status="done"), "session 5 is already done; nothing changed"),
     (plan.Refusal(plan.Reason.TEXT_EMPTY), "note must not be empty"),
     (plan.Refusal(plan.Reason.TEXT_NUL), "note must not contain NUL characters"),
     (plan.Refusal(plan.Reason.TEXT_TOO_LONG, length=2001), "note must be at most 2000 characters"),
