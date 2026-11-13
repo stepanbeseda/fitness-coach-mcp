@@ -587,5 +587,8 @@ def test_suspect_status_is_independent_of_the_range(store, live):
     incline = by_title(single, "Incline Bench Press (Dumbbell)")
     assert [p.get("suspect") for p in incline["e1rm_kg"]] == [True]
     assert incline["sessions"] == 1 and incline["plateau"] is False
+    assert single["to_check"] == [FIVE_ITEMS[2]]  # the 11-08 suspects are after end_date
+    ended = live_progress(store, live, start_date="2026-09-29", end_date="2026-10-31")
+    assert ended["to_check"] == FIVE_ITEMS[2:]
     for key in ("best", "first_e1rm_kg", "last_e1rm_kg", "change_kg", "change_pct", "weeks_since_best"):
         assert incline[key] is None

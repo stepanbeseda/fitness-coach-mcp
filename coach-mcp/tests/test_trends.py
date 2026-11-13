@@ -1014,3 +1014,17 @@ def test_weekly_suspects_keep_volume_and_sets(store, monkeypatch, week):
     assert [f for f in out["flags"] if f["flag"] == "strength_volume_up"] == [
         f for f in plain["flags"] if f["flag"] == "strength_volume_up"
     ]
+
+
+def test_weekly_suspects_only_list_covered_days(store):
+    out, history = live_report(store, "2026-11-02")
+    assert len(out["strength"]["to_check"]) == 2  # both 11-08 days, covered through 11-11
+    history.cover(d("2026-07-11"), d("2026-11-07"))  # the sync has not reached Sunday 11-08 yet
+    out = report(store, history, LIVE_TODAY, "2026-11-02")
+    assert out["strength"]["days"] == 6
+    assert out["strength"]["to_check"] == [] and suspect_flags(out) == []
+    history.cover(d("2026-11-08"), d("2026-11-11"))  # coverage starts on the suspect day, the rest of the week is out
+    out = report(store, history, LIVE_TODAY, "2026-11-02")
+    assert out["strength"]["days"] == 1
+    assert [i["template_id"] for i in out["strength"]["to_check"]] == ["HT", "CF"]
+    assert [f["template_id"] for f in suspect_flags(out)] == ["HT", "CF"]
