@@ -1147,7 +1147,8 @@ def keyboard_of(language: str, sessions: list[dict[str, Any]]) -> dict[str, Any]
 
 
 def tap(update_id: int, data: Any, *, chat: Any = OWNER, sender: Any = OWNER, kind: str = "private",
-        message_id: Any = 500, markup: Any = None, query_id: Any = "cbq-1", **extra: Any) -> dict[str, Any]:
+        message_id: Any = 500, markup: Any = None, query_id: Any = "cbq-1", origin_extra: dict[str, Any] | None = None,
+        **extra: Any) -> dict[str, Any]:
     origin: dict[str, Any] = {
         "message_id": message_id,
         "from": {"id": int(BOT_ID), "is_bot": True, "first_name": "Coach"},
@@ -1163,6 +1164,7 @@ def tap(update_id: int, data: Any, *, chat: Any = OWNER, sender: Any = OWNER, ki
         "chat_instance": "42",
         "data": data,
     }
+    origin.update(origin_extra or {})
     query.update(extra)
     for body in (origin, query):
         for key in [k for k, v in body.items() if v is DROP]:
@@ -1285,6 +1287,8 @@ FOREIGN_TAPS = {
     "inline-no-message": {"message": DROP, "inline_message_id": "AAQ"},
     "message-not-a-dict": {"message": "briefing"},
     "from-missing": {"from": DROP},
+    "chat-missing": {"origin_extra": {"chat": DROP}},
+    "chat-not-a-dict": {"origin_extra": {"chat": [OWNER]}},
     "query-id-missing": {"query_id": DROP},
     "query-id-empty": {"query_id": ""},
     "query-id-257": {"query_id": "q" * 257},

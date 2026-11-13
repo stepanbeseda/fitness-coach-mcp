@@ -178,8 +178,7 @@ With push on, the switch `COACH_TELEGRAM_INBOUND` not `false` and a private chat
 background task (`src/coach_mcp/inbound.py`) reads the athlete's messages to the bot and answers them by fixed
 rules, without an LLM. It only makes outbound calls: long polling of the Bot API method `getUpdates` (50 s per
 request, at most 10 updates, message and callback query updates) and `sendMessage` for the answers. With a group chat
-id the task
-does not start and the log says `inbound status=off reason=group_chat`.
+id the task does not start and the log says `inbound status=off reason=group_chat`.
 
 A message is handled only when it is a text message of a private chat whose chat id and sender id both equal
 `COACH_TELEGRAM_CHAT_ID` and whose sender is not a bot. Everything else is confirmed to Telegram and dropped: no

@@ -558,6 +558,26 @@ async def test_auto_confirm_does_not_override_a_tap(store, caplog):
 
 
 @pytest.mark.anyio
+async def test_auto_confirm_does_not_override_a_tap_made_after_its_read(store, caplog, monkeypatch):
+    # The session is still planned when the step reads its rows; the athlete taps "skipped" before the write.
+    sid = add_session(store, FINAL_DAY.isoformat())
+    seed_settled(store)
+    real = store.suggestions_for
+
+    def read_then_tap(ids):
+        found = real(ids)
+        assert sid in ids  # the step has read the session as planned
+        assert isinstance(plan.mark_session(store, TODAY, sid, "skipped"), plan.Marked)
+        return found
+
+    monkeypatch.setattr(store, "suggestions_for", read_then_tap)
+    record, _due = await confirm_run(store, caplog, auto_confirm_matched=True, language="en")
+    assert session_statuses(store) == [(sid, "skipped")]
+    assert notes(store) == []
+    assert record.getMessage().endswith(" matched=1 no_activity=0 confirmed=0")
+
+
+@pytest.mark.anyio
 async def test_auto_confirm_off_changes_no_status(store, caplog):
     sid = add_session(store, FINAL_DAY.isoformat())
     seed_settled(store)
