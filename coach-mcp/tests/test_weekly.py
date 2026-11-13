@@ -1,5 +1,6 @@
 """The Monday report text (PR 14): exact output of ``render_weekly`` for a fixture report in both languages."""
 
+import string
 from datetime import date, timedelta
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from coach_mcp.briefing import MAX_MESSAGE_BYTES
 from coach_mcp.goals import get_goal_progress
 from coach_mcp.messages import LANGUAGES, WEEKLY_LANGUAGES, weekly_texts
+from coach_mcp.recommendations import ITEM_KEYS, recommend
 from coach_mcp.scheduler import compose_weekly
 from coach_mcp.weekly import render_weekly
 
@@ -39,6 +41,7 @@ REPORT = {
         {"flag": "future_flag", "week": 1, "baseline": 1, "change": 0, "change_pct": 0},
     ],
 }
+REPORT["recommendations"] = recommend(REPORT)
 PROGRESS = {
     "today": "2026-10-12",
     "goals": [
@@ -65,9 +68,9 @@ PROGRESS = {
 
 
 EN_TITLE = '📊 Weekly report 2026-W41 · 5 Oct–11 Oct'
-EN_BODY = 'Endurance: 4 activities, 5 h 10 min, 42.3 km, load 820 (4-week average 4 h 30 min, load 700)\nStrength (Hevy): 3 workouts, working sets 48, volume 12340 kg (4-week average: sets 45.5, volume 11000 kg)\nSleep: average 7 h 12 min (4-week average 7 h 05 min)\nHRV: average 52.3 ms (4-week average 55 ms)\nResting HR: average 48 bpm (4-week average 47.2 bpm)\nPlan: done 5, skipped 1, moved 0, still planned 0 – completion 83 %\nNew bests: VO2max running 53 (was 52); running 42.3 km in a week (was 40.1 km); endurance time 5 h 10 min in a week (was 4 h 50 min); estimated 1RM Bench Press (Barbell) 100 kg (was 97.5 kg).\nWatch: endurance load 36.7 % above the 4-week average; sleep 36 min a night shorter than the 4-week average; resting HR 5.5 bpm above the 4-week average.\nGoals:\n- Half marathon sub 1:36 (half marathon prediction): now 1:37:16, 4 weeks ago 1:38:10, -14 s a week; at this trend 1:35:56 on 15 Nov, target 1:36:40: on track\n- VO2max 56 (VO2max running): now 52.1, +0.35 a week; at this trend 54.6 on 1 Dec, target 56: behind\n- 5 km (5 km prediction): now 21:30, -2 s a week; no target date\n- Marathon (marathon prediction): not enough data yet (no value in the last 14 days)'
+EN_BODY = 'Endurance: 4 activities, 5 h 10 min, 42.3 km, load 820 (4-week average 4 h 30 min, load 700)\nStrength (Hevy): 3 workouts, working sets 48, volume 12340 kg (4-week average: sets 45.5, volume 11000 kg)\nSleep: average 7 h 12 min (4-week average 7 h 05 min)\nHRV: average 52.3 ms (4-week average 55 ms)\nResting HR: average 48 bpm (4-week average 47.2 bpm)\nPlan: done 5, skipped 1, moved 0, still planned 0 – completion 83 %\nNew bests: VO2max running 53 (was 52); running 42.3 km in a week (was 40.1 km); endurance time 5 h 10 min in a week (was 4 h 50 min); estimated 1RM Bench Press (Barbell) 100 kg (was 97.5 kg).\nWatch: endurance load 36.7 % above the 4-week average; sleep 36 min a night shorter than the 4-week average; resting HR 5.5 bpm above the 4-week average.\nGoals:\n- Half marathon sub 1:36 (half marathon prediction): now 1:37:16, 4 weeks ago 1:38:10, -14 s a week; at this trend 1:35:56 on 15 Nov, target 1:36:40: on track\n- VO2max 56 (VO2max running): now 52.1, +0.35 a week; at this trend 54.6 on 1 Dec, target 56: behind\n- 5 km (5 km prediction): now 21:30, -2 s a week; no target date\n- Marathon (marathon prediction): not enough data yet (no value in the last 14 days)\nRecommendations:\n- Endurance load 36.7 % above the 4-week average: this week at most 780 (average +30 %), with at least 2 easy days.\n- Resting HR 5.5 bpm above the 4-week average: easy training only for the first 2 days, intensity only on a green morning verdict.\n- Sleep 36 min a night shorter than the 4-week average: aim for 7 h 00 min a night, go to bed 36 min earlier.'
 CS_TITLE = '📊 Týdenní report 2026-W41 · 5. 10.–11. 10.'
-CS_BODY = 'Vytrvalost: 4 aktivity, 5 h 10 min, 42,3 km, zátěž 820 (průměr 4 týdnů 4 h 30 min, zátěž 700)\nSíla (Hevy): 3 tréninky, pracovní série 48, objem 12340 kg (průměr 4 týdnů: série 45,5, objem 11000 kg)\nSpánek: průměr 7 h 12 min (průměr 4 týdnů 7 h 05 min)\nHRV: průměr 52,3 ms (průměr 4 týdnů 55 ms)\nKlidová tepovka: průměr 48 bpm (průměr 4 týdnů 47,2 bpm)\nPlán: splněno 5, přeskočeno 1, přesunuto 0, zbývá v plánu 0 – plnění 83 %\nNové rekordy: VO2max běh 53 (dříve 52); běh 42,3 km za týden (dříve 40,1 km); vytrvalost 5 h 10 min za týden (dříve 4 h 50 min); odhad 1RM Bench Press (Barbell) 100 kg (dříve 97,5 kg).\nPozor: vytrvalostní zátěž o 36,7 % nad průměrem 4 týdnů; spánek o 36 min za noc kratší než průměr 4 týdnů; klidová tepovka o 5,5 bpm nad průměrem 4 týdnů.\nCíle:\n- Half marathon sub 1:36 (predikce půlmaratonu): teď 1:37:16, před 4 týdny 1:38:10, -14 s za týden; tímto tempem 1:35:56 k 15. 11., cíl 1:36:40: na dobré cestě\n- VO2max 56 (VO2max běh): teď 52,1, +0,35 za týden; tímto tempem 54,6 k 1. 12., cíl 56: zaostává\n- 5 km (predikce 5 km): teď 21:30, -2 s za týden; bez cílového data\n- Marathon (predikce maratonu): zatím málo dat (žádná hodnota za posledních 14 dní)'
+CS_BODY = 'Vytrvalost: 4 aktivity, 5 h 10 min, 42,3 km, zátěž 820 (průměr 4 týdnů 4 h 30 min, zátěž 700)\nSíla (Hevy): 3 tréninky, pracovní série 48, objem 12340 kg (průměr 4 týdnů: série 45,5, objem 11000 kg)\nSpánek: průměr 7 h 12 min (průměr 4 týdnů 7 h 05 min)\nHRV: průměr 52,3 ms (průměr 4 týdnů 55 ms)\nKlidová tepovka: průměr 48 bpm (průměr 4 týdnů 47,2 bpm)\nPlán: splněno 5, přeskočeno 1, přesunuto 0, zbývá v plánu 0 – plnění 83 %\nNové rekordy: VO2max běh 53 (dříve 52); běh 42,3 km za týden (dříve 40,1 km); vytrvalost 5 h 10 min za týden (dříve 4 h 50 min); odhad 1RM Bench Press (Barbell) 100 kg (dříve 97,5 kg).\nPozor: vytrvalostní zátěž o 36,7 % nad průměrem 4 týdnů; spánek o 36 min za noc kratší než průměr 4 týdnů; klidová tepovka o 5,5 bpm nad průměrem 4 týdnů.\nCíle:\n- Half marathon sub 1:36 (predikce půlmaratonu): teď 1:37:16, před 4 týdny 1:38:10, -14 s za týden; tímto tempem 1:35:56 k 15. 11., cíl 1:36:40: na dobré cestě\n- VO2max 56 (VO2max běh): teď 52,1, +0,35 za týden; tímto tempem 54,6 k 1. 12., cíl 56: zaostává\n- 5 km (predikce 5 km): teď 21:30, -2 s za týden; bez cílového data\n- Marathon (predikce maratonu): zatím málo dat (žádná hodnota za posledních 14 dní)\nDoporučení:\n- Vytrvalostní zátěž o 36,7 % nad průměrem 4 týdnů: tento týden nejvýš 780 (průměr +30 %) a aspoň 2 lehké dny.\n- Klidová tepovka o 5,5 bpm nad průměrem 4 týdnů: první 2 dny jen lehký trénink, intenzitu jen při zeleném ranním verdiktu.\n- Spánek o 36 min za noc kratší než průměr 4 týdnů: cíl 7 h 00 min za noc, choď spát o 36 min dřív.'
 
 
 def empty_report(**sections):
@@ -203,3 +206,131 @@ def test_plan_line_names_matched_sessions(language, line):
     assert line.replace(", of them 1 matched with an activity", "").replace(", z toho 1 se záznamem aktivity", "") in (
         zero.split("\n")
     )
+
+
+SENTENCES = {
+    "load_spike": (
+        [{"key": "load_spike", "source": "load_spike", "numbers": {"sets": 77, "baseline_sets": 21.8, "max_sets": 33, "factor": 1.5}}],
+        "- Working sets 77 against the 4-week average 21.8: this week at most 33 (1.5× the average).",
+        "- Pracovní série 77 proti průměru 4 týdnů 21,8: tento týden nejvýš 33 (1,5× průměr).",
+    ),
+    "endurance_load_up": (
+        [{"key": "endurance_load_up", "source": "endurance_load_up", "numbers": {"pct": 36.7, "max_load": 780, "cap_pct": 30.0, "easy_days": 2}}],
+        "- Endurance load 36.7 % above the 4-week average: this week at most 780 (average +30 %), with at least 2 easy days.",
+        "- Vytrvalostní zátěž o 36,7 % nad průměrem 4 týdnů: tento týden nejvýš 780 (průměr +30 %) a aspoň 2 lehké dny.",
+    ),
+    "hrv_down": (
+        [{"key": "hrv_down", "source": "hrv_down", "numbers": {"pct": 20.0, "easy_days": 2}}],
+        "- HRV 20 % below the 4-week average: easy training only for the first 2 days, intensity only on a green morning verdict.",
+        "- HRV o 20 % pod průměrem 4 týdnů: první 2 dny jen lehký trénink, intenzitu jen při zeleném ranním verdiktu.",
+    ),
+    "resting_hr_up": (
+        [{"key": "resting_hr_up", "source": "resting_hr_up", "numbers": {"bpm": 5.5, "easy_days": 2}}],
+        "- Resting HR 5.5 bpm above the 4-week average: easy training only for the first 2 days, intensity only on a green morning verdict.",
+        "- Klidová tepovka o 5,5 bpm nad průměrem 4 týdnů: první 2 dny jen lehký trénink, intenzitu jen při zeleném ranním verdiktu.",
+    ),
+    "sleep_down": (
+        [{"key": "sleep_down", "source": "sleep_down", "numbers": {"minutes": 36, "baseline_h": 7.0}}],
+        "- Sleep 36 min a night shorter than the 4-week average: aim for 7 h 00 min a night, go to bed 36 min earlier.",
+        "- Spánek o 36 min za noc kratší než průměr 4 týdnů: cíl 7 h 00 min za noc, choď spát o 36 min dřív.",
+    ),
+    "detraining_running": (
+        [{"key": "detraining_running", "source": "detraining", "numbers": {"km_week": 0.0, "baseline_km": 10.2, "runs": 3, "km": 10, "goal": "race_marathon"}}],
+        "- Running 0 km a week against the usual 10.2 km with a marathon goal: this week 3 easy runs, 10 km in total.",
+        "- Běh 0 km týdně proti obvyklým 10,2 km při cíli maraton: tento týden 3 lehké běhy, celkem 10 km.",
+    ),
+    "detraining_acwr": (
+        [{"key": "detraining_acwr", "source": "detraining", "numbers": {"acwr": 0.4, "acwr_limit": 0.8, "days": 14, "easy_sessions": 3, "goal": "race_marathon"}}],
+        "- Load ratio (ACWR) below 0.8 for 14 days (last 0.4) with a marathon goal: add 3 easy endurance sessions this week.",
+        "- Poměr zátěže (ACWR) 14 dní pod 0,8 (naposledy 0,4) při cíli maraton: přidej tento týden 3 lehké vytrvalostní tréninky.",
+    ),
+    "endurance_time_up": (
+        [{"key": "endurance_time_up", "source": "endurance_time_up", "numbers": {"pct": 51.6, "max_time_min": 352, "cap_pct": 30.0}}],
+        "- Endurance time 51.6 % above the 4-week average: this week at most 5 h 52 min (average +30 %).",
+        "- Čas vytrvalosti o 51,6 % nad průměrem 4 týdnů: tento týden nejvýš 5 h 52 min (průměr +30 %).",
+    ),
+    "strength_volume_up": (
+        [{"key": "strength_volume_up", "source": "strength_volume_up", "numbers": {"pct": 254.0}}],
+        "- Strength volume 254 % above the 4-week average: do not raise it further this week.",
+        "- Objem síly o 254 % nad průměrem 4 týdnů: tento týden ho dál nezvyšuj.",
+    ),
+    "endurance_load_down": (
+        [{"key": "endurance_load_down", "source": "endurance_load_down", "numbers": {"pct": 70.0}}],
+        "- Endurance load 70 % below the 4-week average: if that was not the plan, add one easy session this week.",
+        "- Vytrvalostní zátěž o 70 % pod průměrem 4 týdnů: pokud to nebyl záměr, přidej tento týden jeden lehký trénink.",
+    ),
+    "strength_record_suspect": (
+        [{"key": "strength_record_suspect", "source": "strength_record_suspect", "numbers": {"records": [{"exercise": "Hip Thrust (Barbell)", "date": "2026-11-08", "weight_kg": 140.0, "reps": 5}], "more": 0}}],
+        "- Check these records in Hevy and fix the ones logged wrong: Hip Thrust (Barbell) 8 Nov 140 kg × 5.",
+        "- Zkontroluj v Hevy tyto záznamy a oprav chybně zapsané: Hip Thrust (Barbell) 8. 11. 140 kg × 5.",
+    ),
+    "unconfirmed_sessions n=1": (
+        [{"key": "unconfirmed_sessions", "source": "adherence.planned_matched", "numbers": {"sessions": 1}}],
+        "- Confirm 1 session with a matching activity so the plan numbers are right.",
+        "- Potvrď 1 trénink s odpovídající aktivitou, ať sedí čísla plánu.",
+    ),
+    "unconfirmed_sessions n=2": (
+        [{"key": "unconfirmed_sessions", "source": "adherence.planned_matched", "numbers": {"sessions": 2}}],
+        "- Confirm 2 sessions with a matching activity so the plan numbers are right.",
+        "- Potvrď 2 tréninky s odpovídající aktivitou, ať sedí čísla plánu.",
+    ),
+    "unconfirmed_sessions n=5": (
+        [{"key": "unconfirmed_sessions", "source": "adherence.planned_matched", "numbers": {"sessions": 5}}],
+        "- Confirm 5 sessions with a matching activity so the plan numbers are right.",
+        "- Potvrď 5 tréninků s odpovídající aktivitou, ať sedí čísla plánu.",
+    ),
+    "five suspects": (
+        [{"key": "strength_record_suspect", "source": "strength_record_suspect", "numbers": {"records": [{"exercise": "Hip Thrust", "date": "2026-11-08", "weight_kg": 140.0, "reps": 5}, {"exercise": None, "date": "2026-11-07", "weight_kg": 62.5, "reps": 8}, {"exercise": "Calf Raise", "date": "2026-11-06", "weight_kg": 100.0, "reps": 10}], "more": 2}}],
+        "- Check these records in Hevy and fix the ones logged wrong: Hip Thrust 8 Nov 140 kg × 5; untitled 7 Nov 62.5 kg × 8; Calf Raise 6 Nov 100 kg × 10 +2.",
+        "- Zkontroluj v Hevy tyto záznamy a oprav chybně zapsané: Hip Thrust 8. 11. 140 kg × 5; bez názvu 7. 11. 62,5 kg × 8; Calf Raise 6. 11. 100 kg × 10 +2.",
+    ),
+}
+HEADERS = {"en": "Recommendations:", "cs": "Doporučení:"}
+EMPTY_PROGRESS = {"today": "x", "goals": [], "goals_without_metric": 0}
+HRV_ITEM = {"key": "hrv_down", "source": "hrv_down", "numbers": {"pct": 20.0, "easy_days": 2}}
+
+
+@pytest.mark.parametrize("language", ["en", "cs"])
+@pytest.mark.parametrize("case", list(SENTENCES))
+def test_recommendation_sentence(case, language):
+    items, en, cs = SENTENCES[case]
+    message = render_weekly({**empty_report(), "recommendations": items}, EMPTY_PROGRESS, language)
+    assert message.body.split("\n")[-2:] == [HEADERS[language], en if language == "en" else cs]
+
+
+def test_no_block_when_nothing_fires():
+    for report in (empty_report(), {**empty_report(), "recommendations": []}):
+        message = render_weekly(report, {"today": "2026-10-12", "goals": [], "goals_without_metric": 2}, "en")
+        assert message.body == (
+            "No stored data for this week (the nightly history is off or still loading).\n"
+            "Goals without a measurable metric: 2."
+        )
+
+
+def test_unknown_recommendation_key_is_skipped():
+    future = {"key": "future", "source": "x", "numbers": {}}
+    one = render_weekly({**empty_report(), "recommendations": [future, HRV_ITEM]}, EMPTY_PROGRESS, "en")
+    assert one.body.split("\n")[-2:] == [
+        "Recommendations:",
+        "- HRV 20 % below the 4-week average: easy training only for the first 2 days, "
+        "intensity only on a green morning verdict.",
+    ]
+    only = render_weekly({**empty_report(), "recommendations": [future]}, EMPTY_PROGRESS, "en")
+    assert "Recommendations:" not in only.body
+
+
+def test_unknown_goal_metric_skips_the_item():
+    item = SENTENCES["detraining_running"][0][0]
+    item = {**item, "numbers": {**item["numbers"], "goal": "race_ultra"}}
+    message = render_weekly({**empty_report(), "recommendations": [item]}, EMPTY_PROGRESS, "en")
+    assert "Recommendations:" not in message.body
+
+
+@pytest.mark.parametrize("language", ["en", "cs"])
+def test_every_item_key_has_a_sentence_with_its_numbers(language):
+    sentences = weekly_texts(language).recommendation
+    assert set(sentences) == set(ITEM_KEYS)
+    for case, (items, _en, _cs) in SENTENCES.items():
+        item = items[0]
+        fields = {name for _, name, _, _ in string.Formatter().parse(sentences[item["key"]]) if name}
+        assert fields <= set(item["numbers"]), case

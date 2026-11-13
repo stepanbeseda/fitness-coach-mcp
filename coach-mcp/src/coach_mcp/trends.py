@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import load, strength, tools
+from . import load, recommendations, strength, tools
 from .history import ENDURANCE_SPORTS, SPORTS
 from .history_view import HistoryDay, HistoryReader, HistoryView, history_range
 from .store import Store
@@ -308,7 +308,7 @@ def get_weekly_report(
         [{"flag": "detraining", **detraining_signal.out()}] if final and detraining_signal.holds else []
     )
     strength_section, strength_bests, strength_flags = _strength(view, monday, sunday, baseline_mondays, partial)
-    return {
+    report: dict[str, Any] = {
         "week": {
             "start": monday.isoformat(),
             "end": sunday.isoformat(),
@@ -325,6 +325,8 @@ def get_weekly_report(
         "new_bests": _new_bests(view, this, monday, final) + strength_bests,
         "flags": _flags(this, final, stats) + detraining_flags + strength_flags,
     }
+    report["recommendations"] = recommendations.recommend(report)  # last key: rules over the finished report
+    return report
 
 
 def _strength(

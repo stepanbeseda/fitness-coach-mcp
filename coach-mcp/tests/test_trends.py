@@ -7,12 +7,13 @@ from typing import Any
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
-from history_helpers import seed_w45
-from view_values import LIVE_TODAY, W45_DAY, W45_END, FakeHistory, best, seed_live_strength, sport
+from history_helpers import exercise, seed_strength, seed_w45
+from view_values import LIVE_TODAY, W45_DAY, W45_END, W45_SETS, FakeHistory, best, seed_live_strength, sport
 
 from conftest import TODAY
 from coach_mcp import strength, trends
 from coach_mcp.trends import DAILY_METRICS, METRIC_NAMES, TOTAL_METRICS
+from coach_mcp.weekly import render_weekly
 
 
 @pytest.fixture
@@ -382,6 +383,13 @@ def test_weekly_report_every_section_from_seeded_db(store, history):
         {"flag": "sleep_down", "week": 6.5, "baseline": 7.5, "change": -1.0, "change_pct": -13.3},
         {"flag": "hrv_down", "week": 55.7, "baseline": 60.0, "change": -4.3, "change_pct": -7.1},
     ]  # resting HR is +4 bpm: below its threshold of 5
+    assert list(out)[-1] == "recommendations"
+    assert out["recommendations"] == [
+        {"key": "endurance_load_up", "source": "endurance_load_up",
+         "numbers": {"pct": 48.0, "max_load": 162, "cap_pct": 30.0, "easy_days": 2}},
+        {"key": "hrv_down", "source": "hrv_down", "numbers": {"pct": 7.1, "easy_days": 2}},
+        {"key": "sleep_down", "source": "sleep_down", "numbers": {"minutes": 60, "baseline_h": 7.5}},
+    ]  # endurance_time_up is hidden by endurance_load_up, which has the same cause
 
 
 def test_weekly_report_lists_a_sport_that_only_the_baseline_has(store, history):
@@ -465,6 +473,7 @@ def test_weekly_report_marks_sections_without_data(store, history):
         "adherence": {"available": False},
         "new_bests": [],
         "flags": [],
+        "recommendations": [],
     }
 
 
@@ -1118,3 +1127,50 @@ def test_detraining_flag_needs_a_final_week(store):
     report_ = w45_report(store, today=W45_END)  # Sunday 2026-11-08: the week is still partial
     assert report_["week"]["partial"] is True
     assert {f["flag"] for f in report_["flags"]}.isdisjoint({"detraining", "load_spike"})
+
+
+def seed_w45_bests(store):
+    """PR 38's W45 week, with the five Bench Press days made bests: the newest is far above the others."""
+    seed_w45(store)
+    for k, count in enumerate(reversed(W45_SETS)):
+        seed_strength(
+            store, f"w45-{k}", W45_END - timedelta(days=4 + 7 * k),
+            [exercise("T1", count, count * 100.0, best=(100.0, 5, 116.7) if k == 0 else (60.0, 5, 70.0), title="Bench Press")],
+            updated="2026-10-02T10:00:00.000000Z",
+        )
+
+
+W45_RECOMMENDATIONS_CS = (
+    "Doporučení:\n"
+    "- Pracovní série 77 proti průměru 4 týdnů 21,8: tento týden nejvýš 33 (1,5× průměr).\n"
+    "- Běh 0 km týdně proti obvyklým 10,2 km při cíli maraton: tento týden 3 lehké běhy, celkem 10 km.\n"
+    "- Zkontroluj v Hevy tyto záznamy a oprav chybně zapsané: Bench Press 4. 11. 100 kg × 5."
+)
+
+
+def test_weekly_report_w45_recommendations(store):
+    seed_w45_bests(store)
+    out = w45_report(store)
+    names = [f["flag"] for f in out["flags"]]
+    assert [n for n in names if n in {"strength_volume_up", "strength_record_suspect", "load_spike"}] == [
+        "strength_volume_up", "strength_record_suspect", "load_spike"
+    ]  # the flag order PR 37 and PR 38 agreed on
+    assert [i["key"] for i in out["recommendations"]] == ["load_spike", "detraining_running", "strength_record_suspect"]
+    assert out["recommendations"][0]["numbers"] == {"sets": 77, "baseline_sets": 21.8, "max_sets": 33, "factor": 1.5}
+    assert out["recommendations"][1]["numbers"] == {
+        "km_week": 0.0, "baseline_km": 10.2, "runs": 3, "km": 10, "goal": "race_marathon"
+    }
+    assert out["recommendations"][2]["numbers"] == {
+        "records": [{"exercise": "Bench Press", "date": "2026-11-04", "weight_kg": 100.0, "reps": 5}], "more": 0
+    }
+    assert render_weekly(out, {"goals": []}, "cs").body.endswith(W45_RECOMMENDATIONS_CS)
+
+
+def test_weekly_report_recommends_confirming_matched_sessions(store, history):
+    ids = store.replace_planned(W40, W40 + timedelta(days=6), W40, [{"date": W40, "type": "running", "description": "x"}])[1]
+    store.upsert_suggestions([(ids[0], "matched", True, '{"count":1}')], TODAY)
+    out = report(store, history)
+    assert out["adherence"]["planned_matched"] == 1
+    assert out["recommendations"][-1] == {
+        "key": "unconfirmed_sessions", "source": "adherence.planned_matched", "numbers": {"sessions": 1}
+    }
