@@ -18,6 +18,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .values import finite
+
 # Replaced by `from .load import ACWR_LOW, SPIKE_FACTOR, WINDOW_DAYS` after the rebase onto PR 38 (spec §11).
 ACWR_LOW = 0.8
 SPIKE_FACTOR = 1.5
@@ -49,7 +51,7 @@ def _get(mapping: Mapping[str, Any], key: str) -> Any:
 
 
 def _numbers(*values: Any) -> bool:
-    return all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in values)
+    return all(finite(v) is not None for v in values)  # values.py is the one place that checks finiteness
 
 
 def _pct(flag: Mapping[str, Any]) -> float | None:

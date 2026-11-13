@@ -472,6 +472,7 @@ def test_weekly_report_marks_sections_without_data(store, history):
         "adherence": {"available": False},
         "new_bests": [],
         "flags": [],
+        "recommendations": [],
     }
 
 
