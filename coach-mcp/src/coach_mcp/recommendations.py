@@ -16,14 +16,11 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
+from .load import ACWR_LOW, SPIKE_FACTOR, WINDOW_DAYS
 from .values import finite
-
-# Replaced by `from .load import ACWR_LOW, SPIKE_FACTOR, WINDOW_DAYS` after the rebase onto PR 38 (spec §11).
-ACWR_LOW = 0.8
-SPIKE_FACTOR = 1.5
-WINDOW_DAYS = 14
 
 MAX_RECOMMENDATIONS = 3  # sentences in the Monday report and items in get_weekly_report
 MAX_RECORDS = 3  # suspect exercise-days named in the one record-check sentence, then "+N"
@@ -128,11 +125,22 @@ def _pct_only(key: str) -> Params:
     return params
 
 
+def _is_day(value: Any) -> bool:
+    """A flag date the render can format: an ISO day string (the render parses it with ``date.fromisoformat``)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _record_suspects(_: Mapping[str, Any], flags: Sequence[Mapping[str, Any]]) -> tuple[str, Numbers] | None:
     records = [
         {"exercise": f.get("exercise"), "date": f.get("date"), "weight_kg": f.get("weight_kg"), "reps": f.get("reps")}
         for f in flags
-        if isinstance(f.get("date"), str) and _numbers(f.get("weight_kg"), f.get("reps"))
+        if _is_day(f.get("date")) and _numbers(f.get("weight_kg"), f.get("reps"))
     ]
     if not records:
         return None

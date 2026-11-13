@@ -6,7 +6,7 @@ not computed from the code under test.
 
 import pytest
 
-from coach_mcp import recommendations, trends
+from coach_mcp import load, recommendations, trends
 from coach_mcp.recommendations import ITEM_KEYS, RULES, recommend
 
 FINAL = {"start": "2026-11-02", "end": "2026-11-08", "iso_week": "2026-W45", "partial": False}
@@ -303,3 +303,37 @@ def test_w45_synthetic():
 
 def test_cap_pct_is_the_flag_threshold():
     assert recommendations.CAP_PCT == trends.FLAG_PCT
+
+
+def test_thresholds_come_from_load():
+    assert (recommendations.ACWR_LOW, recommendations.SPIKE_FACTOR, recommendations.WINDOW_DAYS) == (
+        load.ACWR_LOW, load.SPIKE_FACTOR, load.WINDOW_DAYS
+    )
+
+
+@pytest.mark.parametrize("day", [None, "2026-13-01", "", "08.11.2026", 20261108], ids=["none", "month13", "empty", "czech", "int"])
+def test_suspect_with_a_bad_date_gives_no_item(day):
+    assert recommend(report([suspect("Squat", day, 120.0, 5)])) == []
+
+
+def test_suspect_with_a_bad_date_is_left_out_of_the_records():
+    items = recommend(report([suspect("Squat", "2026-13-01", 120.0, 5), suspect("Row", "2026-11-04", 80.0, 8)]))
+    assert items == [
+        {"key": "strength_record_suspect", "source": "strength_record_suspect",
+         "numbers": {"records": [{"exercise": "Row", "date": "2026-11-04", "weight_kg": 80.0, "reps": 8}], "more": 0}}
+    ]
+
+
+@pytest.mark.parametrize(("baseline", "expected"), [(0.99, "detraining_acwr"), (1.0, "detraining_running"),
+                                                    (1.9, "detraining_running")])
+def test_detraining_running_needs_a_whole_kilometre_of_baseline(baseline, expected):
+    flag = {**DETRAINING, "running_km": {**DETRAINING["running_km"], "baseline": baseline}}
+    items = recommend(report([flag]))
+    assert keys(items) == [expected]
+    if expected == "detraining_running":
+        assert items[0]["numbers"]["km"] == 1 and items[0]["numbers"]["baseline_km"] == baseline
+
+
+@pytest.mark.parametrize("matched", [True, False, 1.0, "2", None], ids=["true", "false", "float", "str", "none"])
+def test_matched_count_must_be_an_integer(matched):
+    assert recommend(report([], matched=matched)) == []
