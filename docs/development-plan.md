@@ -46,6 +46,11 @@ chapter and a table row; existing chapters are never rewritten, only the
   `docs/coach-instructions.md` requires showing the proposal first. No tool
   hard-deletes the athlete's data (removing a calendar entry is the only
   destructive operation today).
+  *Amended on 2026-11-13 (PR 36):* a tap on the inline buttons of the morning push in the owner's private chat
+  is the athlete's confirmation, like a bot command. One opt-in exception writes without a confirmation:
+  `COACH_AUTO_CONFIRM_MATCHED` (default `false`). When it is `true`, the nightly reconciliation marks `done` a
+  planned session whose suggestion is `matched` and `final`, and links a note to it. Nothing is ever marked
+  `skipped` automatically.
 - **Tool results are untrusted data.** *Added 2026-10-18 (PR 34).* Text that
   tool results carry from third parties (Garmin activity and workout names and
   descriptions, Hevy titles and notes, calendar events and invites when Google
@@ -153,6 +158,10 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 33 | Versioned images and rollback | — | done |
 | 34 | Security model and gateway design note | 30 | done |
 | 35 | Accurate showcase docs and a readable diagram | 30, 31, 32, 33, 34 | done |
+| 36 | One-tap session confirmation | 13, 22, 23, 26 | **in progress** (branch `mao/pr36-one-tap-confirmation`) |
+| 37 | Hevy record quality check | 09, 24 | **in progress** (branch `mao/pr37-hevy-record-check`) |
+| 38 | Detraining and load-spike alerts | 04, 05, 09, 14 | **in progress** (branch `mao/pr38-detraining-load-spike-alerts`) |
+| 39 | Monday report recommendations | 05, 09, 14, 36, 37, 38 | **in progress** (branch `mao/pr39-monday-recommendations`) |
 
 Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
 10, 11, 12, 13, 14, 09, 07, 15, 16, 17, 18, then 19, 20, 21 and last 22 (the
@@ -3101,6 +3110,275 @@ addendum, APPROVED. Spec check: 0 blocking, 5 non-blocking. Open non-blocking:
 the cosmetic points in section 5. The counts "32 delivered" and "43 checklist
 items" hold once this docs PR sets rows 30 to 35 to `done`. Nothing needs the
 test host; Firefox and Safari were not measured. No deploy.
+
+### PR 36 — One-tap session confirmation
+
+Past planned sessions get a nightly suggestion (`matched` / `no_activity`, PR 13), but the status changes only when
+the coach calls `update_session` or the athlete sends `/done <id>` (PR 22), so done sessions stay `planned`,
+`to_confirm` fills up and the weekly report shows them as still planned. The morning Telegram push gets inline
+buttons: one row for each of yesterday's sessions that is still `planned`, of any type and whatever its suggestion
+(`matched`, `no_activity` or none), with "done" and "skipped". A tap from the owner's private chat counts as the
+athlete's confirmation, like `/done` (PR 22). It arrives as a `callback_query` in `coach-mcp/src/coach_mcp/inbound.py`
+and goes through the same Plan rules (`coach-mcp/src/coach_mcp/plan.py`, PR 23). The tapped row then shows the
+result. A tap on a session that is no longer `planned` changes nothing and says so. Buttons go only on the
+scheduled push and `send-briefing`, and only while the inbound part is on (`inbound_enabled`). The message text
+stays as it is.
+
+An opt-in switch `COACH_AUTO_CONFIRM_MATCHED` (default `false`) lets the nightly reconciliation step
+(`HistoryJob._reconcile` in `coach-mcp/src/coach_mcp/history.py`) mark `done` every planned session whose
+suggestion is `matched` and `final`. Each such session gets a linked note from the `messages.py` catalogue
+naming the source and the evidence. Nothing is ever marked `skipped` automatically, a `no_activity` session is
+left to the buttons and the coach, and no extra message tells the athlete. The Monday report adds to its plan
+line the number of still-planned sessions of the week that have a `matched` suggestion. The report goes out
+right after the briefing, so Sunday's tap always comes later. `completion_rate` stays done / (done + skipped).
+No schema change (schema stays 9), no new tool, secret or dependency.
+
+Out of scope: buttons for sessions older than yesterday, buttons on `/dnes` replies, automatic `skipped`, a
+briefing line about automatic confirmations, moving sessions from Telegram, changes to the matching itself.
+
+**Done when:**
+1. With the inbound part on, the morning push (scheduled and `send-briefing`) carries one keyboard row for each
+   of yesterday's still-`planned` sessions, whatever its type and suggestion. There is no keyboard when there is
+   no such session or when the inbound part is off. The message text is unchanged (tests, both catalogues).
+2. `getUpdates` asks for `callback_query` as well. A tap from the owner's private chat marks the session `done`
+   or `skipped` through Plan, answers the callback and replaces the tapped row with the result. A tap from any
+   other chat or sender, or with malformed data, changes nothing and is never logged with its data. A tap on a
+   session that is no longer `planned` changes nothing, and the athlete gets a reply in both catalogues (tests
+   with the fake Telegram transport).
+3. `COACH_AUTO_CONFIRM_MATCHED` (default `false`, in `config.py`, `.env.example` and `docker-compose.yml`): when
+   `true`, the nightly reconciliation marks `done` every planned session with a `matched` and `final` suggestion
+   and links a catalogue note to it. It never marks `skipped`, and with `false` no status changes. The run log
+   line gains `confirmed=N`, and a failure of this step does not change the run's outcome (tests).
+4. The weekly `adherence` gains the count of still-planned sessions with a `matched` suggestion. The Monday plan
+   line shows it in both catalogues, and `completion_rate` is unchanged (tests).
+5. Every new athlete-facing string (button labels, tap results, the refusal, the note, the weekly count) is in
+   both catalogues, pinned by literal text. Log lines carry outcome words only.
+6. Docs updated in the same PR: `coach-mcp/README.md` (env table, two-way Telegram, plan reconciliation),
+   `README.md` (the Security model sentence "Plan reconciliation only *suggests* a session status"),
+   `docs/coach-instructions.md` (to_confirm workflow), `docs/operations.md`, and `INSTRUCTIONS` in
+   `coach-mcp/src/coach_mcp/server.py`. No text still says a suggestion never changes a status unless it is
+   qualified by the switch.
+7. The four-command check is green.
+8. On the test host: a tap on the morning push marks the session (shown by `/plan` and `get_coach_context`) and
+   replaces its row. This also confirms the Bot API facts that cannot be run offline: `callback_query` delivery,
+   `answerCallbackQuery` and the edit of the reply markup.
+
+**Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item A1, batch wave 1);
+questions and answers round 1.
+
+### PR 37 — Hevy record quality check
+
+Some strength records in the stored Hevy history are logged inconsistently: a dumbbell weight entered as the
+sum of both dumbbells, or a cable exercise done on a different machine. One such day becomes the e1RM "best",
+a false "new best" in the weekly report, or a lasting false `plateau`. In the live data the Incline Bench Press
+(Dumbbell) jumps from 25 kg to 50 kg on 2026-10-03. Triceps Pushdown 45 kg on 2026-10-03 (its first session)
+makes a false plateau. Mark such exercise-days as `suspect` in `coach-mcp`, keep them out of the e1RM records,
+and list them in a `to_check` list so the coach can ask the athlete.
+
+The rule lives in `coach-mcp/src/coach_mcp/strength.py`, deterministic, with constants and no settings. The
+unit is one exercise-day, the day's best set, because raw sets are not stored (PR 09). A day's e1RM is compared
+with the median of the up to 3 previous sessions of that exercise. Earlier suspects count in that median, so a
+lasting new level stops being flagged after two sessions. The first session of an exercise is compared with the
+median of the next up to 3 sessions, but only once at least 2 sessions follow it. A rise of more than 35 % or a
+fall of more than 30 % makes the day suspect. The classification runs over the whole stored series of the
+exercise and is independent of the requested range. A first session can change status when later sessions
+arrive.
+
+`get_strength_progress` keeps every point in its series and marks the suspect points with `"suspect": true`.
+Its `best`, first, last and change values, `weeks_since_best` and `plateau` come from the other points only. It
+returns a top-level `to_check` list with the suspects in the range. Each item has the exercise, date, weight,
+reps, e1RM, the median it was compared with and the change in %.
+
+`get_weekly_report` leaves suspects out of the strength new bests: neither the week's best nor the earlier best
+can be a suspect. When the strength section is available, it lists the week's suspects in `strength.to_check`.
+It also adds one flag per suspect day, `strength_record_suspect`, in the common flag shape (`week` is the e1RM,
+`baseline` the median, plus `change` and `change_pct`). The flag also carries `exercise`, `template_id`, `date`,
+`weight_kg` and `reps`. PR 39 turns this flag into a recommendation sentence. The Telegram text of the Monday
+report changes in this PR only because the suspect new bests disappear.
+
+`docs/coach-instructions.md`, `coach-mcp/README.md`, the tool descriptions and `INSTRUCTIONS` in
+`coach-mcp/src/coach_mcp/server.py` tell the coach three things. It asks the athlete about every `to_check`
+item before using the numbers. It never presents a suspect as a record. A wrong value is fixed in Hevy, in the
+app or with Hevy `update-workout` after the athlete's confirmation, and the nightly sync picks the edit up.
+
+Out of scope:
+- A way to confirm a suspect as correct: no tool, no table, no migration (owner decision).
+- Changes to volume, sets, per-muscle-group numbers or the `strength_volume_up` flag.
+- Suspects in `get_coach_context`.
+- A Telegram sentence for the new flag (PR 39).
+- Rep-range plateau and rep records (review item C3).
+- Any write to Hevy from `coach-mcp`.
+
+**Done when:**
+1. A test with a seeded copy of the live series (2026-09-29 to 2026-11-08) shows these exercise-days as
+   suspect, and no other day: Triceps Pushdown 2026-10-03, Incline Bench Press (Dumbbell) 2026-09-29 and
+   2026-10-03, Hip Thrust (Barbell) 2026-11-08 and Single Leg Standing Calf Raise (Dumbbell) 2026-11-08.
+   Prototype: `.claude/mao-log/PR-37-proto/rule.out`.
+2. Rule edge cases have tests:
+   - exactly +35 % and exactly −30 % are not suspect, with no float boundary error;
+   - a first session with fewer than 2 following sessions is not judged;
+   - an earlier suspect counts in the median;
+   - the status of a point is the same for any requested range.
+3. In the seeded case, `get_strength_progress` returns Triceps Pushdown with `plateau: false` and Incline Bench
+   Press (Dumbbell) with `best` 56.0 kg e1RM (2026-10-10). Suspect points stay in the series with
+   `"suspect": true`, and `to_check` lists the suspects of the range with the fields above (test).
+4. `get_weekly_report` for the week of 2026-09-28 no longer lists Incline Bench Press (Dumbbell) as a new e1RM
+   best. In both directions, a suspect is neither this week's best nor the earlier best. A week with a suspect
+   returns `strength.to_check` and a `strength_record_suspect` flag with the fields above. The Telegram weekly
+   render skips the unknown flag without error (tests).
+5. Volume, sets, per-muscle-group values and `strength_volume_up` are unchanged for seeded data with suspects
+   (test). `tests/history_golden.json` is regenerated, and its diff only adds the new keys (`to_check`,
+   `strength.to_check`); the PR states this.
+6. `docs/coach-instructions.md`, `coach-mcp/README.md`, the `get_strength_progress` and `get_weekly_report`
+   descriptions and `INSTRUCTIONS` describe `suspect`, `to_check` and the new flag: ask the athlete, fix the
+   value in Hevy, never present a suspect as a record. No tool, schema or env change.
+7. `scripts/check.sh --tag pr37` ends with `CHECK OK` for the reviewed tree.
+8. On the test host, after the owner approves the deploy, `get_strength_progress` shows Incline Bench Press
+   (Dumbbell) 2026-10-03 and Triceps Pushdown 2026-10-03 in `to_check`, and Triceps Pushdown without
+   `plateau`.
+
+**Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item C1; batch
+2026-11-13, wave 1); questions and answers round 1 (owner: no stored confirmation, fixes only in Hevy;
+every other default).
+
+### PR 38 — Detraining and load-spike alerts
+
+The coach review of 2026-11-12 (item B3) found that a week like W45, with no running against a 10.2 km/week
+baseline and a marathon goal, plus 77 working sets against 21.8, passes with only the weekly flags
+`endurance_load_down` and `strength_volume_up`. Neither flag is tied to the goal, and the morning briefing says
+nothing. Add two deterministic state alerts to the morning briefing (`coach-mcp/src/coach_mcp/briefing.py`,
+`ALERT_KEYS`). Each fires once when it newly holds, like the existing alerts, and does not change the
+green / yellow / red verdict. The two alerts:
+
+- **`detraining`**: an endurance goal is active, meaning an active goal whose metric is `race_5k`, `race_10k`,
+  `race_half_marathon`, `race_marathon` or `vo2max_running` (goals without a metric do not count). In addition,
+  either (a) every stored daily ACWR of the last 14 days is below 0.8, with at least 10 stored values, or
+  (b) the running distance of the last 14 days is below half of the usual distance (the 4-week weekly baseline × 2).
+  The message names the condition that held, its numbers and the goal with the earliest target date.
+- **`load_spike`**: the working sets of the last 7 days ending yesterday (warm-ups excluded, as today) are more
+  than 1.5× the mean of the four preceding 7-day windows that the Hevy history fully covers. At least 2 such
+  windows are needed. The alert does not depend on a goal.
+
+`get_weekly_report` (`trends.py`) gets weekly flags with the same names: `detraining` for the reported ISO week
+(with the goal, the ACWR values and running km against the baseline), and `load_spike` on working sets of the week
+against the complete baseline weeks among the previous four (final week, at least 2 baseline weeks). PR 39
+consumes these flags. The Monday report adds one line per flag to its existing "Watch:" list, with numbers and the
+goal, in every catalogue of `messages.py`. Thresholds are constants in code, with no new configuration. An unknown
+input (history off, too few stored values, no Hevy coverage) leaves the condition unknown: no alert and no stored
+state. `alert_state` lists its keys in a CHECK constraint, so migration 10 rebuilds that table with the two new
+keys. Existing rows are kept, and the 10 → 9 downgrade recipe is tested on scratch data.
+
+Out of scope: Foster monotony and strain (they need sRPE from PR 40). The code leaves one function computing the
+load signals, which PR 40 extends. Also out of scope: changing the verdict (PR 41), recomputing ACWR or adding Hevy
+load to it, recommendation sentences (PR 39), and changes to `strength_volume_up` or `acwr_out_of_range`.
+
+**Done when:**
+1. The detraining rule is a pure function with tests for firing by ACWR, firing by running volume, not firing
+   without an endurance goal, not firing at or above the thresholds, and unknown with too little data. The W45
+   history (0 km against 10.2 km/week, ACWR 0.4, marathon goal) fires it, and the message carries the numbers and
+   the goal.
+2. The load-spike rule has tests for firing above 1.5×, not firing at or below 1.5×, and unknown with fewer than
+   2 covered baseline windows. The W45 history (77 against 21.8 working sets) fires it, and the message carries
+   the numbers.
+3. Both alerts are states: they fire once when they newly hold, stay silent while they keep holding, and fire
+   again after they cleared (tests). The push, `get_daily_briefing` and the Telegram on-demand briefing show the
+   same alerts for the same inputs (test).
+4. `get_weekly_report` returns the flags `detraining` and `load_spike` for a seeded W45 and not for a quiet week.
+   The Monday report shows both lines in `en` and `cs` (tests).
+5. Migration 10 adds the two keys to `alert_state` with all existing rows kept (test with `MIGRATIONS[:N]`). The
+   10 → 9 downgrade recipe in `coach-mcp/README.md` is run on scratch data.
+6. `README.md`, `coach-mcp/README.md`, `INSTRUCTIONS` and `docs/coach-instructions.md` (how the coach reacts to
+   both alerts) are updated.
+7. The four-command check is green (`scripts/check.sh --tag pr38`).
+8. On the test host: after the deploy, `get_daily_briefing` and `get_weekly_report` for W45 show both signals with
+   the owner's numbers and goal.
+
+**Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item B3, wave 1);
+questions and answers round 1 (all defaults; detraining by ACWR or a drop in running volume).
+
+### PR 39 — Monday report recommendations
+
+The Monday report (PR 14) lists the week's numbers and its "Watch:" items but does not say what to do with them.
+The coach review of 2026-11-12 (item E1) asks for a few concrete, deterministic recommendations. A new pure module
+`coach-mcp/src/coach_mcp/recommendations.py` holds a rule table with one row per source. The sources are the weekly
+flags of `get_weekly_report`: the existing `endurance_load_up`, `endurance_load_down`, `endurance_time_up`,
+`sleep_down`, `hrv_down`, `resting_hr_up` and `strength_volume_up`, plus `strength_record_suspect` (PR 37) and
+`detraining` / `load_spike` (PR 38). One further source is PR 36's weekly count of still-planned sessions with a
+`matched` suggestion (n ≥ 1). Each row has a key, a priority, the keys it hides and the numbers it takes from the
+report. The rules hold in this order, safety first:
+
+1. `load_spike`
+2. `endurance_load_up`
+3. `hrv_down`
+4. `resting_hr_up`
+5. `sleep_down`
+6. `detraining`
+7. `endurance_time_up`
+8. `strength_volume_up`
+9. `endurance_load_down`
+10. `strength_record_suspect`
+11. unconfirmed sessions
+
+Rules with the same cause give one sentence: `load_spike` hides `strength_volume_up`, `detraining` hides
+`endurance_load_down`, `endurance_load_up` hides `endurance_time_up`, and `hrv_down` hides `resting_hr_up`.
+After the hidden rules are dropped, the list is cut to `MAX_RECOMMENDATIONS = 3` (a constant). All the suspect
+records of a week make one sentence that names at most 3 exercise-days, then "+N". Later flags (wave 2: deload,
+muscle gap) add a row and a sentence pair only.
+
+Every number in a sentence comes from the reported week and its 4-week averages. No sentence asks for more than
+the athlete's usual level plus the threshold of the flag:
+- A return after `detraining` aims at the usual weekly running volume, rounded (W45: 3 easy runs, 10 km). It has
+  an ACWR variant for the other condition and names the goal by its metric, never by its free-text title.
+- `load_spike` is capped at 1.5× the average sets (W45: 33).
+- `endurance_load_up` and `endurance_time_up` are capped at the average +30 %.
+- `sleep_down` aims at the average sleep.
+- The other sentences carry the measured value only.
+
+The words live in every catalogue of `messages.py` (`WeeklyTexts`); the rules and numbers live in code. The
+default sentences are the table in `.claude/mao-log/PR-39-questions-1.md`, and the spec fixes their wording.
+`weekly.render_weekly` adds a "Recommendations:" / "Doporučení:" block, one line per sentence, as the last part
+of the message, after the goals. When nothing fires, the block is left out. The "Watch:" line stays as it is.
+`get_weekly_report` gets a `recommendations` list with the same order and cap. Each item has the key, its source
+flag and its numbers, and no prose, so the coach in claude.ai and the Telegram message say the same thing.
+
+Flag-based recommendations need a final week, like the flags themselves. Nothing is stored or written, there is
+no schema change, no setting and no new tool.
+
+Out of scope:
+- Reading next week's planned sessions.
+- Writing sessions or notes.
+- The morning briefing.
+- A recommendation journal (PR 49) and sRPE or monotony (PR 40).
+- Sentences for a low completion rate or for unmatched overdue sessions.
+- Any LLM-written text.
+
+**Done when:**
+1. `recommend(report)` is a pure function. Tests cover:
+   - every source firing alone;
+   - the priority order;
+   - each of the four hiding pairs;
+   - the cap of 3;
+   - several suspects merging into one recommendation;
+   - an unknown flag being ignored;
+   - no output for an empty or partial week except the unconfirmed-sessions rule.
+2. Every source has one recommendation sentence in `en` and `cs`, pinned in tests by literal expected text,
+   including both `detraining` variants and the Czech plural forms of the session count.
+3. A seeded W45 (0 km running against 10.2 km a week, ACWR 0.4, marathon goal, 77 working sets against 21.8, a
+   suspect record) gives in order `load_spike` (at most 33 sets), `detraining` running (3 easy runs, 10 km) and
+   the suspect check (test).
+4. The Monday report ends with the "Recommendations:" block after the goals. The block is absent when nothing
+   fires, and the "Watch:" line is unchanged. Exact message bodies are tested in both catalogues.
+5. `get_weekly_report` returns `recommendations` in the same order and cap, with keys and numbers and no prose
+   (test). `tests/history_golden.json` is regenerated, and its diff only adds that key.
+6. `coach-mcp/README.md` (Monday report, tool row), `docs/operations.md` (Monday report),
+   `docs/coach-instructions.md` (start the weekly review from `recommendations`), the `get_weekly_report`
+   description and `INSTRUCTIONS` are updated.
+7. `scripts/check.sh --tag pr39` ends with `CHECK OK` for the reviewed tree.
+8. On the test host, after the owner approves the deploy, `get_weekly_report` for W45 returns the recommendations
+   above, and `send-weekly-report` (or the next Monday message) shows the block in the owner's chat.
+
+**Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item E1, batch wave 1);
+questions and answers round 1 (all defaults).
 
 ## 5. Open items
 
