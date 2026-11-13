@@ -629,3 +629,38 @@ rebase); no escalation. A usage limit interrupted the run twice.
   the title would count one directory. Verify with `gh pr list --author "app/dependabot" --json number,title,files`
   and compare the file list. The same batch showed the guard working: the hevy-mcp PR #52 failed `check-pins.sh` as
   designed until its compose tag is bumped by hand. (PR 32 journal, criterion 8)
+
+## Batch of 2026-11-13 (PR 36 to 39)
+
+Wave 1 of the coach review of 2026-11-12, four chapters composed in the run (plan PR #61, `751a3fd`), `--merge`,
+merge order 37, 38, 36, 39 (#62 to #65; schema 9 to 10 with PR 38). One spec attempt each; spec checks found 2
+blocking items in PR 36 and 1 in PR 38 (PR 37 and PR 39 ran on the light track without a spec check). Implementation
+took one or two rounds and review one or two rounds; no escalation. The round-1 reviews of PR 36 and PR 37 found
+untested guards again (the guard-branch entry above); both were test-only follow-ups.
+
+- **A spec that adds a key to a recorded output names the golden cases that change.** PR 36's spec said "no golden
+  regeneration", but its `adherence.planned_matched` key is in five weekly cases of `tests/history_golden.json`, so
+  its first gate failed on that one file (a spec error; the fix was the regeneration and a key diff). PR 37 hit the
+  same shape with four exact-dict tests that compare a whole dict and needed `to_check: []`. A spec that adds a key
+  to a tool result lists the golden cases and the exact-dict tests that change, or says the golden is regenerated and
+  what its key diff must contain. (PR 36 gate 1; PR 37 journal)
+- **After a rebase the golden is main's file, regenerated, and key-diffed against main.** PR 38 and PR 39 both
+  conflicted in `tests/history_golden.json` after the earlier merges. What held: take main's file, regenerate it on
+  the rebased tree, and diff it against main's file; the diff holds only the keys this PR adds (PR 38: byte-identical;
+  PR 36: `planned_matched` only; PR 39: `recommendations` only). A golden whose diff holds another PR's keys is a
+  finding, not a merge. (PR 36, PR 38 and PR 39 rebases)
+- **A mutation script that edits the worktree in place leaves its mutants in the worktree while it runs.** PR 39's
+  round-2 script changed the files of the worktree with `sed -i` and restored them with `git checkout --`. Nothing
+  reached a commit, but a preview or a parallel agent reading the worktree during the run would have seen mutants.
+  Mutants run on a copy (`git archive HEAD` into a `mktemp -d` directory), and `git status --porcelain` of the
+  worktree is empty before and after. (PR 39 review 2, N1; the general entry "Mutants under a running preview")
+- **A test-host criterion that reads today's state names evidence that cannot disappear.** PR 38 criterion 8 first
+  pointed at the morning alerts. Those look at the last 14 and 7 days, and running resumed on 2026-11-09 and
+  2026-11-11, so the alert can legitimately be absent after the deploy. The evidence became the weekly report of the
+  fixed week 2026-11-02, which can be checked on any day after the deploy. A criterion that depends on the athlete's
+  data names a fixed past window, or says what an absence means. (PR 38 spec D14 and criterion 8)
+- **A flag or alert list that two PRs extend gets an order test in the second one.** The order of PR 37's and PR 38's
+  weekly flags was not pinned; PR 38's review 2 found it (N1), and round 1 could not have seen it, because PR 37's
+  flags did not exist on its base. The orchestrator carried the note through the batch file into PR 39's section-11
+  round, which pins `strength_volume_up`, `strength_record_suspect`, `load_spike` in a test. (PR 38 review 2, N1;
+  BATCH-2026-11-13 cross-PR notes)

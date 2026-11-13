@@ -158,10 +158,10 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 33 | Versioned images and rollback | — | done |
 | 34 | Security model and gateway design note | 30 | done |
 | 35 | Accurate showcase docs and a readable diagram | 30, 31, 32, 33, 34 | done |
-| 36 | One-tap session confirmation | 13, 22, 23, 26 | **in progress** (branch `mao/pr36-one-tap-confirmation`) |
-| 37 | Hevy record quality check | 09, 24 | **in progress** (branch `mao/pr37-hevy-record-check`) |
-| 38 | Detraining and load-spike alerts | 04, 05, 09, 14 | **in progress** (branch `mao/pr38-detraining-load-spike-alerts`) |
-| 39 | Monday report recommendations | 05, 09, 14, 36, 37, 38 | **in progress** (branch `mao/pr39-monday-recommendations`) |
+| 36 | One-tap session confirmation | 13, 22, 23, 26 | done |
+| 37 | Hevy record quality check | 09, 24 | done |
+| 38 | Detraining and load-spike alerts | 04, 05, 09, 14 | done |
+| 39 | Monday report recommendations | 05, 09, 14, 36, 37, 38 | done |
 
 Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
 10, 11, 12, 13, 14, 09, 07, 15, 16, 17, 18, then 19, 20, 21 and last 22 (the
@@ -3166,6 +3166,35 @@ briefing line about automatic confirmations, moving sessions from Telegram, chan
 **Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item A1, batch wave 1);
 questions and answers round 1.
 
+**Delivered:** 2026-11-13, PR #64 (`mao/pr36-one-tap-confirmation`),
+squash-merged into `main` as `e07a29a`, the third PR of wave 1 to merge (after
+PR 37 and PR 38, the proposed order). Implemented on `751a3fd` and rebased onto
+`0b6d769` before review round 2: one conflict in `scheduler.py` kept on both
+sides, `tests/history_golden.json` taken from main and regenerated (key diff:
+only `adherence.planned_matched` in five weekly cases). Gate 1 failed on that
+golden because the spec said "no golden regeneration" while the change adds the
+key; a spec error, fixed by the regeneration. The morning push gets one row per
+yesterday's `planned` session with "done" and "skipped" (`confirm.py`,
+`push.py` `Button` and `PushMessage.keyboard`, `compose_briefing(keyboard=…)`);
+a tap from the owner's private chat marks the session through
+`plan.mark_session`, answers the callback, replaces the tapped row and stores
+the status before any Telegram call. Foreign chats, foreign senders and
+malformed data change nothing. The weekly adherence and the Monday plan line
+count still-`planned` sessions that have a match (`adherence.planned_matched`).
+Plan section 1 amendment: a button tap is the confirmation; the opt-in
+`COACH_AUTO_CONFIRM_MATCHED` (default off) lets the nightly job mark final
+matches `done`. No migration; schema stays 10. Check:
+`CHECK OK tree=79aa94192076 garmin=472 gateway=134 coach=1935 e2e=OK` (gate 3,
+the reviewed tree). Review: CHANGES in round 1 (guard `isinstance(where,
+Mapping)` and the night side of "a tap always wins" untested; mutants R6 and R2
+killed by test-only follow-ups), APPROVED in round 2. Non-blocking note: no test
+pins that `alert_updates` are equal with and without the keyboard (section 5,
+for PR 41). Needs the test host: criterion 8, a tap on the morning push on the
+live stack after the wave is deployed (`/plan`, `get_coach_context`,
+`docker compose logs coach-mcp | grep "inbound cb="`); the Bot API behaviour
+(`callback_query`, `answerCallbackQuery`, `editMessageReplyMarkup`) could not be
+run offline. Deploy: `coach-mcp` with the wave (`DEPLOY-2026-11-13.md`, B5).
+
 ### PR 37 — Hevy record quality check
 
 Some strength records in the stored Hevy history are logged inconsistently: a dumbbell weight entered as the
@@ -3241,6 +3270,32 @@ Out of scope:
 2026-11-13, wave 1); questions and answers round 1 (owner: no stored confirmation, fixes only in Hevy;
 every other default).
 
+**Delivered:** 2026-11-13, PR #62 (`mao/pr37-hevy-record-check`),
+squash-merged into `main` as `e3cb629`, the first PR of wave 1 to merge;
+implemented and reviewed on `751a3fd`, no rebase. `coach-mcp/src/coach_mcp/strength.py`
+classifies each exercise-day against the median of up to three previous
+sessions: a rise above +35 % or a fall below -30 % is `suspect` (constants, no
+settings; the first session is judged only with at least two later sessions,
+and earlier suspects count in the median). `get_strength_progress` keeps suspect
+points in the series with `"suspect": true`, leaves them out of `best`, first,
+last, change, `weeks_since_best` and `plateau`, and returns a top-level
+`to_check` list (`[]` when unavailable). `get_weekly_report` counts no suspect
+as a new best and adds one `strength_record_suspect` flag per suspect day
+(`exercise`, `template_id`, `date`, `weight_kg`, `reps` on top of the common
+flag shape) and `strength.to_check`; the Telegram weekly text skips the unknown
+flag. Tool docstrings, `INSTRUCTIONS`, `docs/coach-instructions.md` and
+`coach-mcp/README.md` say to ask about every `to_check` item and never to
+present a suspect as a record. No migration; schema stays 9. Four exact-dict
+tests gained `to_check: []`; the key diff of `tests/history_golden.json` is the
+only golden change. Check: `CHECK OK tree=e27c63fe6b31 garmin=472 gateway=134
+coach=1778 e2e=OK`. Review: CHANGES in round 1 (test gaps on the `to_check` end
+bound and the `cov.covers` guard; mutants R1 and R2 survived), fixed by a
+test-only round, APPROVED in round 2 (`d60c065`). Needs the test host:
+criterion 8 after the owner deploys `coach-mcp`: `get_strength_progress` with
+`start_date` 2026-09-01 lists Incline Bench Press (Dumbbell) and Triceps
+Pushdown 2026-10-03 in `to_check`, and Pushdown without a plateau. Deploy: plain
+`coach-mcp` redeploy; nothing is stored, so nothing is migrated.
+
 ### PR 38 — Detraining and load-spike alerts
 
 The coach review of 2026-11-12 (item B3) found that a week like W45, with no running against a 10.2 km/week
@@ -3295,6 +3350,36 @@ load to it, recommendation sentences (PR 39), and changes to `strength_volume_up
 
 **Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item B3, wave 1);
 questions and answers round 1 (all defaults; detraining by ACWR or a drop in running volume).
+
+**Delivered:** 2026-11-13, PR #63 (`mao/pr38-detraining-load-spike-alerts`),
+squash-merged into `main` as `0b6d769`, the second PR of wave 1 to merge.
+Implemented on `751a3fd`; after review round 1 rebased onto `e3cb629` (PR 37)
+with five conflict hunks in `server.py` and `trends.py` kept on both sides, and
+`tests/history_golden.json` taken from main and regenerated (byte-identical,
+key diff OK). Follow-up commit `bd9e708` adds tests for the four surviving
+non-equivalent mutants of round 1 (O1 to O4). Two morning alerts are new,
+`detraining` (a goal is set and running is under its baseline, or the ACWR is
+high; the conditions that held are named in the state) and `load_spike` (the
+strength week against its baseline), each firing once when it newly holds, like
+the existing alerts (`briefing.py`, alert keys, state rows in `alert_state`);
+the thresholds are importable from `coach_mcp.load`. The weekly report carries
+the same two flags, with "Watch:" lines, in the order `…, detraining,
+strength_volume_up, load_spike`. Schema 9 to 10: migration 10
+(`LOAD_ALERTS_VERSION`) rebuilds `alert_state` with the new CHECK and keeps every
+row; the downgrade recipe 10 to 9 in `coach-mcp/README.md` deletes only the two
+new keys' rows and was run verbatim on scratch data
+(`PR-38-proto/readme_recipe.out`, `migration10.out`). Check:
+`CHECK OK tree=f772108b99b2 garmin=472 gateway=134 coach=1829 e2e=OK` (gate 2;
+gate 1 on tree `8df905831ae0` had `coach=1804`). Review: APPROVED in round 1 (0
+blocking), round 2 delta review after the rebase APPROVED (0 blocking); its
+N1 (flag order of PR 37 and PR 38 not pinned) went to PR 39. Spec check: 1
+blocking (a single test), fixed before implementation. Needs the test host:
+criterion 8 after the deploy, `get_weekly_report(week="2026-11-02")` shows
+`detraining` (goal "Uběhnout maraton", `race_marathon`) and `load_spike`
+(`week` 77, `baseline` 21.8). The morning alert may be absent live, because
+running resumed on 2026-11-09 and 2026-11-11; the evidence is the weekly report
+of that fixed week (spec D14). Deploy: schema 10 with the wave; the release notes
+name the 10 to 9 recipe.
 
 ### PR 39 — Monday report recommendations
 
@@ -3379,6 +3464,33 @@ Out of scope:
 
 **Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item E1, batch wave 1);
 questions and answers round 1 (all defaults).
+
+**Delivered:** 2026-11-13, PR #65 (`mao/pr39-monday-recommendations`),
+squash-merged into `main` as `eba9917`, the last PR of wave 1. Implemented on
+`751a3fd`; review round 1 APPROVED on tree `d409d6a56706` (section 11 of the
+spec left out on purpose). Then rebased onto `e07a29a` (PR 36) with conflicts in
+`README`, `server.py`, `trends.py`, `weekly.py`, `test_weekly.py` and
+`tests/history_golden.json`, both sides kept; the golden's key diff against main
+adds only `recommendations`. The section 11 round, after the rebase, added the
+date parse fix in `weekly._record_suspects` (a missing or invalid flag date,
+review O1), tests for three surviving mutants (the suspect date type check, the
+1 km detraining boundary, the unconfirmed count not a bool) and the pinned flag
+order `strength_volume_up`, `strength_record_suspect`, `load_spike` (PR 38
+review 2, N1). New pure module `coach-mcp/src/coach_mcp/recommendations.py`
+holds the rule table (key, source, priority, supersedes, parameters, cap);
+`get_weekly_report` ends with the new key `recommendations` (always present,
+possibly `[]`), and the Monday chat message ends with a `Doporučení:` block. No
+migration; schema stays 10. Check:
+`CHECK OK tree=20d19ff06e6a garmin=472 gateway=134 coach=2023 e2e=OK` (gate 2;
+ruff and mypy green, 2023 passed). Review: APPROVED in round 1, delta review
+APPROVED in round 2 on the same tree; N1 (the mutation script edited the
+worktree in place) became a project lesson, N2 (golden output name in the spec)
+was cosmetic. Needs the test host: the recommendations appear in the owner's
+live `get_weekly_report` for week `2026-11-02` (keys `load_spike`,
+`detraining_running`, `strength_record_suspect`) and the Monday message ends with
+the `Doporučení:` block, verified in the audit log; then `send-weekly-report` in
+the live checkout (it sends the last complete week). Deploy: with the wave; no
+migration.
 
 ## 5. Open items
 
@@ -3818,3 +3930,36 @@ questions and answers round 1 (all defaults).
   of PR 14 since 2026-10-09.
   *Resolved on 2026-10-18 (PR 35):* the English README came with the
   open-source release on 2026-10-09 (section 1, "Language").
+
+- **Coach review of 2026-11-12, not in any wave (C3, D3, E3, E4).** Owner
+  decision of 2026-11-13: these four P2/P3 items of the report are in no wave
+  (waves 1 to 3 are PR 36 to 51); each stays open until a later batch takes it.
+  Titles and proposals are the cards of `.claude/mao-log/COACH-REVIEW-2026-11-12.html`
+  (the review file is in the main checkout's mao-log).
+  - **C3 plateau and records by rep range (P2, S).** Epley above 10 reps
+    overstates e1RM, and e1RM says little for isolation work. Proposal: the
+    plateau from the slope of a linear fit of e1RM over a window of at least 4
+    sessions instead of "did not beat the maximum"; for isolation exercises
+    track the reps at the same weight; a rep PR added to `new_bests`. Where:
+    `strength.py` lines 267–290. Done when: Lateral Raise 15 kg × 10 → 12 reads
+    as progress, not a plateau.
+  - **D3 80/20 intensity distribution (P3, M).** It is not known how much time
+    is in Z1–2 and how much above threshold. Proposal: store the time in HR
+    zones per activity (first verify that garmin-mcp returns it for an
+    activity); the weekly report shows the share of low, middle and high
+    intensity and a flag when low intensity falls under 75 %. Where:
+    `garmin-mcp/activities.py`, `history.py`. Done when: W46 shows e.g.
+    "Z1–2 86 %, Z3 10 %, Z4+ 4 %".
+  - **E3 correlations with strength, sRPE and wellness (P3, S).** Add the daily
+    strength sets and volume, the sRPE load (A2) and the wellness answers (B4)
+    to `get_correlations`; closes the open item of PR 16. Done when: the coach
+    can answer "does strength volume relate to HRV one to two days later?".
+  - **E4 strength and body-weight goals (P3, S).** Extend `GOAL_METRICS` with
+    `e1rm:<template_id>` and `body_weight` (from Garmin weigh-ins), so the
+    projection and the Monday report also work for "bench 100 kg by spring".
+    Done when: `set_goal` accepts a strength goal and `get_goal_progress` shows
+    its trend.
+- **PR 36 alert and keyboard test (review 2, for PR 41).** No test pins that
+  `alert_updates` of `compose_briefing` are equal with and without the inline
+  keyboard. PR 41 (B1, verdict per today's session) is the next PR that touches
+  that function; it pins the equality.

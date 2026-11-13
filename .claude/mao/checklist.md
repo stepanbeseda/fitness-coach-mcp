@@ -77,6 +77,10 @@ repeated findings.
   /tmp/fcm-docker.lock` with PR-private image tags, and after a rebase the
   test stage is forced (`--no-cache-filter test`).
 
+- [ ] A spec that adds a key to a tool result names every golden case (`tests/history_golden.json`) and every
+  exact-dict test that changes, or says the golden is regenerated and what its key diff holds; after a rebase the
+  golden is main's file, regenerated, and key-diffed against main's.
+
 ## Failure
 
 - [ ] An error ends with a non-zero exit code or an exception, not a silent
