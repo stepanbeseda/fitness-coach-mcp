@@ -19,9 +19,9 @@ two messages' adapters and the loop.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 

@@ -8,8 +8,8 @@ sleep function are injected. Log lines carry outcome words, counters and excepti
 dates, values, payload text or arguments. After every run the job stores a suggestion (matched / no_activity)
 for the planned sessions of the last seven days (``reconcile``, over the activity days of ``history_view``);
 with ``COACH_AUTO_CONFIRM_MATCHED`` on, it then marks done the planned sessions whose suggestion is matched and
-final, each with a linked note, and otherwise leaves every status as it is. The re-fetch window (``REFETCH_DAYS``, ``MAX_FAILURES``) is defined in
-``history_view``, whose settled flag is its inverse.
+final, each with a linked note, and otherwise leaves every status as it is. The re-fetch window
+(``REFETCH_DAYS``, ``MAX_FAILURES``) is defined in ``history_view``, whose settled flag is its inverse.
 A day whose snapshot had sections in error keeps them in ``recovery_missing``; after the re-fetch window such a
 day is fetched again, a few per night, and only its missing sections are written (``repair_sections``).
 
