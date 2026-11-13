@@ -7,6 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fakes import FakeClock, FakeHistorySource, FakeStrengthSource, StopLoop
+from view_values import W45_END, sport, w45_acwr
 
 from coach_mcp.config import Settings
 from coach_mcp.history import HistoryJob, totals_json
@@ -142,3 +143,26 @@ def seed_sync(store: Store, covered_from: date, synced_on: date) -> None:
     """The ``hevy_sync`` row of a complete listing that ran at 03:30 local time of ``synced_on``."""
     synced_at = datetime(synced_on.year, synced_on.month, synced_on.day, 3, 30, tzinfo=PRAGUE)
     store.record_hevy_sync(covered_from, synced_at.astimezone(UTC), synced_on)
+
+
+def seed_w45(store: Store, *, end: date = W45_END, quiet: bool = False, goal: bool = True) -> None:
+    """The data of ``view_values.w45_history`` through the Store API (same builder rules, see there)."""
+    for offset in range(41, -1, -1):
+        day = end - timedelta(days=offset)
+        weekly = offset % 7 == 4
+        if offset < 14:
+            km = (10.2 if weekly else 0.0) if quiet else 0.0
+        else:
+            km = 10.2 if weekly else 0.0
+        seed_activities(store, day, {"running": sport(distance_km=km)} if km else {})
+        if offset < 14 and (value := w45_acwr(offset, quiet=quiet, acwr=None, acwr_days=None)) is not None:
+            seed_day(store, day, acwr_ratio=value)
+    seed_sync(store, end - timedelta(days=68), end + timedelta(days=1))
+    seed_template(store, "T1", "chest", title="Bench Press")
+    weeks = (20, 22, 23, 22, 22) if quiet else (20, 22, 23, 22, 77)
+    for k, count in enumerate(reversed(weeks)):
+        seed_strength(store, f"w45-{k}", end - timedelta(days=4 + 7 * k), [exercise("T1", count, count * 100.0)])
+    if goal:
+        store.insert_goal(
+            {"title": "Run a marathon", "metric": "race_marathon", "target_value": 14399.0, "target_date": "2027-10-03"}
+        )

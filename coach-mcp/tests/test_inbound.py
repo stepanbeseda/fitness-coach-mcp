@@ -15,6 +15,8 @@ import httpx2
 import pytest
 from fakes import FakeGarmin, FakeTelegram, StopLoop
 from garmin_payloads import garmin_data
+from history_helpers import seed_w45
+from view_values import W45_LINES
 
 from coach_mcp import inbound as inbound_module
 from coach_mcp import plan
@@ -612,6 +614,17 @@ async def test_a_reply_goes_to_the_owner_as_plain_text(tmp_path):
 
 
 # ------------------------------------------------------- criterion 2: /dnes
+
+
+@pytest.mark.parametrize("language", ["en", "cs"])
+async def test_today_w45_shows_the_load_alerts(tmp_path, language):
+    bench = Bench(tmp_path, language=language)
+    seed_w45(bench.store, end=D - timedelta(days=1))
+    expected = (await compose_briefing(bench.store, FakeGarmin(garmin_data()), D, language)).message.text
+    reply = await bench.say("/dnes")
+    assert reply == expected
+    assert all(line in reply for line in W45_LINES[language])
+    assert bench.store.alert_states() == {}
 
 
 @pytest.mark.parametrize("language", ["en", "cs"])

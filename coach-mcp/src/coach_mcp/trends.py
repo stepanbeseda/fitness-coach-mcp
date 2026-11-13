@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import strength, tools
+from . import load, strength, tools
 from .history import ENDURANCE_SPORTS, SPORTS
 from .history_view import HistoryDay, HistoryReader, HistoryView, history_range
 from .store import Store
@@ -284,7 +284,8 @@ def get_weekly_report(
 
     baseline_mondays = [monday - dt.timedelta(days=7 * n) for n in range(BASELINE_WEEKS, 0, -1)]
     view = history if history is not None else HistoryView(store)
-    by_day = {day.date: day for day in view.days(baseline_mondays[0], sunday)}
+    # The detraining window and its running baseline reach 41 days before Sunday (_Week only looks dates up).
+    by_day = {day.date: day for day in view.days(monday - dt.timedelta(days=35), sunday)}
     this = _Week(monday, by_day)
     baselines = [_Week(m, by_day) for m in baseline_mondays]
     complete_baselines = [w for w in baselines if w.complete]
@@ -302,6 +303,10 @@ def get_weekly_report(
         "hrv": _daily_stat(this, baselines, "hrv_last_night_ms"),
         "resting": _daily_stat(this, baselines, "resting_hr"),
     }
+    detraining_signal = load.detraining(list(by_day.values()), sunday, load.endurance_goal(store.list_goals("active")))
+    detraining_flags = (
+        [{"flag": "detraining", **detraining_signal.out()}] if final and detraining_signal.holds else []
+    )
     strength_section, strength_bests, strength_flags = _strength(view, monday, sunday, baseline_mondays, partial)
     return {
         "week": {
@@ -318,7 +323,7 @@ def get_weekly_report(
         "resting_hr": resting,
         "adherence": adherence,
         "new_bests": _new_bests(view, this, monday, final) + strength_bests,
-        "flags": _flags(this, final, stats) + strength_flags,
+        "flags": _flags(this, final, stats) + detraining_flags + strength_flags,
     }
 
 
@@ -379,6 +384,9 @@ def _strength(
     ):
         flags.append(_flag("strength_volume_up", volume))
     flags.extend(s.flag() for s in week)
+    spike = load.load_spike(this.sets, [w.sets for w in baselines])
+    if final and spike.holds:
+        flags.append({**_flag("load_spike", sets), "baseline_weeks": sets.baseline_weeks, "ratio": spike.ratio})
 
     earlier = history.strength(None, monday - dt.timedelta(days=1)).days
     bests: list[dict[str, Any]] = []

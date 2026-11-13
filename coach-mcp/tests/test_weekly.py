@@ -165,3 +165,24 @@ def test_compose_weekly_reads_the_store(store):
     assert weekly.week == "2026-W41" and weekly.goals == 1
     assert "- Half marathon sub 1:36 (half marathon prediction): now 1:37:16" in weekly.message.body
     assert get_goal_progress(store, date(2026, 10, 12))["goals"][0]["available"] is True
+
+
+W45_FLAGS = [
+    {"flag": "detraining", "conditions": ["acwr", "running"], "start": "2026-10-26", "end": "2026-11-08",
+     "goal": {"id": 1, "title": "Run a marathon", "metric": "race_marathon", "target_value": "3:59:59",
+              "target_date": "2027-10-03"},
+     "acwr_days": 13, "acwr_max": 0.7, "acwr_last": 0.4,
+     "running_km": {"window": 0.0, "week": 0.0, "baseline": 10.2, "usual": 20.4, "baseline_weeks": 4}},
+    {"flag": "load_spike", "week": 77, "baseline": 21.8, "change": 55.2, "change_pct": 254.0, "baseline_weeks": 4,
+     "ratio": 3.54},
+]
+WATCH_LINES = {
+    "en": 'Watch: detraining toward "Run a marathon" (3:59:59, by 3 Oct 2027): ACWR below 0.8 on all 13 stored days of the last 14 (latest 0.40); running 0 km in 14 days against the usual 20.4 km; working sets 77, 3.5\u00d7 the 4-week average of 21.8.',
+    "cs": "Pozor: detrénink před cílem \u201eRun a marathon\u201c (3:59:59, do 3. 10. 2027): ACWR pod 0,8 ve všech 13 uložených dnech z posledních 14 (naposledy 0,40); běh 0 km za 14 dní proti obvyklým 20,4 km; pracovní série 77, 3,5\u00d7 průměr 4 týdnů (21,8).",
+}
+
+
+@pytest.mark.parametrize("language", ["en", "cs"])
+def test_watch_lines_for_load_flags(language):
+    body = render_weekly(empty_report(flags=W45_FLAGS), PROGRESS, language).body
+    assert WATCH_LINES[language] in body.splitlines()

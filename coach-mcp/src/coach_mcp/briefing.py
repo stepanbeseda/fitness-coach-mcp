@@ -5,7 +5,7 @@ recovery snapshot. A missing input never makes the verdict greener: it caps it a
 yellow and is named in the message. Alerts are conditions evaluated once a day; an
 alert is *new* when it holds now and did not hold at the previous evaluation, except event alerts
 (yesterday's missed workout in Garmin's calendar and yesterday's planned session without an activity), which
-are new whenever they hold.
+are new whenever they hold. The load alerts (detraining, load spike) come from the stored history (``load.py``).
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
+from .load import ACWR_LOW, WINDOW_DAYS
 from .messages import DEFAULT_LANGUAGE, Texts, texts
 from .push import PushMessage
 from .reconcile import MATCHED_TYPES
@@ -23,6 +24,7 @@ from .values import finite
 
 if TYPE_CHECKING:
     from .garmin import GarminData, LastSync
+    from .load import LoadSignals
 
 Level = Literal["green", "yellow", "red"]
 
@@ -34,10 +36,14 @@ ALERT_KEYS = (
     "missed_workout",
     "missed_planned_session",
     "garmin_auth",
+    "detraining",
+    "load_spike",
 )
 # Event alerts are about a different object each day (yesterday's workouts and planned sessions), so they are
 # not edge-triggered: "it held yesterday too" must not hide today's new event.
 EVENT_ALERTS = frozenset({"missed_workout", "missed_planned_session"})
+# Conditions from the stored history (load.py), not from Garmin's live read; both are states.
+LOAD_ALERTS = frozenset({"detraining", "load_spike"})
 # Garmin acwrStatus values that mean "outside the optimal range" (each catalogue in ``messages`` names
 # them). Any other value (including "OPTIMAL") never fires; the raw string never reaches the message.
 ACWR_OUT = frozenset({"LOW", "HIGH", "VERY_HIGH"})
@@ -274,6 +280,7 @@ def alert_conditions(
     data: GarminData,
     nights_below: int | None,
     yesterday_sessions: Sequence[Mapping[str, Any]] = (),
+    load: LoadSignals | None = None,
 ) -> dict[str, bool | None]:
     """``{key: True | False | None}`` in ``ALERT_KEYS`` order; None means the condition is unknown."""
     out: dict[str, bool | None] = {}
@@ -315,6 +322,9 @@ def alert_conditions(
         out["garmin_auth"] = False
     else:
         out["garmin_auth"] = None
+
+    out["detraining"] = None if load is None else load.detraining.holds
+    out["load_spike"] = None if load is None else load.load_spike.holds
     return out
 
 
@@ -419,6 +429,7 @@ def _alert_text(
     nights_below: int | None,
     missed_sessions: Sequence[str] = (),
     missed_stale: bool = False,
+    load: LoadSignals | None = None,
 ) -> str:
     sep = t.decimal_separator
     if key == "hrv_below_baseline":
@@ -440,7 +451,76 @@ def _alert_text(
     if key == "missed_planned_session":
         template = t.alert_missed_session_stale if missed_stale else t.alert_missed_session
         return template.format(sessions="; ".join(missed_sessions))
+    if key == "detraining":
+        assert load is not None
+        return t.alert_detraining.format(**detraining_parts(t, load.detraining.out()))
+    if key == "load_spike":
+        assert load is not None
+        return t.alert_load_spike.format(**load_spike_parts(t, load.load_spike.out()))
     return t.alert_garmin_auth
+
+
+def _number(value: Any, t: Texts, formatter: Any = None) -> str:
+    number = finite(value)
+    return "?" if number is None else (formatter or fmt)(number, t.decimal_separator)
+
+
+def _goal_date(t: Texts, value: Any) -> str | None:
+    try:
+        d = date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+    return None if d is None else t.goal_by.format(date=f"{t.day_title(d)} {d.year}")
+
+
+def detraining_parts(t: Texts, fields: Mapping[str, Any]) -> dict[str, str]:
+    """The placeholders of the detraining texts from ``Detraining.out()`` (= the weekly flag), read defensively."""
+    goal = fields.get("goal")
+    goal = goal if isinstance(goal, Mapping) else {}
+    parts = []
+    target = goal.get("target_value")
+    if isinstance(target, str):
+        parts.append(target)
+    elif finite(target) is not None:
+        parts.append(_number(target, t))
+    if (by := _goal_date(t, goal.get("target_date"))) is not None:
+        parts.append(by)
+    km = fields.get("running_km")
+    km = km if isinstance(km, Mapping) else {}
+    conditions = fields.get("conditions")
+    conditions = conditions if isinstance(conditions, Sequence) else []
+    reasons = []
+    if "acwr" in conditions:
+        reasons.append(
+            t.detraining_acwr.format(
+                limit=fmt(ACWR_LOW, t.decimal_separator),
+                days=_number(fields.get("acwr_days"), t),
+                window=WINDOW_DAYS,
+                last=_number(fields.get("acwr_last"), t, fmt_ratio),
+            )
+        )
+    if "running" in conditions:
+        reasons.append(
+            t.detraining_running.format(
+                km=_number(km.get("window"), t), window=WINDOW_DAYS, usual=_number(km.get("usual"), t)
+            )
+        )
+    return {
+        "goal": _one_line(goal.get("title") or t.untitled, 60),
+        "details": f" ({', '.join(parts)})" if parts else "",
+        "reasons": "; ".join(reasons),
+    }
+
+
+def load_spike_parts(t: Texts, fields: Mapping[str, Any]) -> dict[str, str]:
+    """The placeholders of the load-spike texts from ``LoadSpike.out()`` (= the weekly flag), read defensively."""
+    weeks = fields.get("baseline_weeks")
+    return {
+        "sets": _number(fields.get("week"), t),
+        "ratio": _number(fields.get("ratio"), t),
+        "baseline": _number(fields.get("baseline"), t),
+        "weeks": str(weeks) if isinstance(weeks, int) else "?",
+    }
 
 
 def _guard_bytes(text: str, limit: int) -> str:
@@ -466,6 +546,7 @@ def render(
     missed_sessions: Sequence[str] = (),
     missed_stale: bool = False,
     language: str = DEFAULT_LANGUAGE,
+    load: LoadSignals | None = None,
 ) -> PushMessage:
     t = texts(language)
     sep = t.decimal_separator
@@ -526,7 +607,7 @@ def render(
     if new_alerts:
         lines.append(t.alerts)
         lines.extend(
-            f"- {_alert_text(t, key, data, day, nights_below, missed_sessions, missed_stale)}" for key in new_alerts
+            f"- {_alert_text(t, key, data, day, nights_below, missed_sessions, missed_stale, load)}" for key in new_alerts
         )
 
     alerting = bool(new_alerts)
@@ -570,12 +651,13 @@ def build_briefing(
     yesterday_sessions: Sequence[Mapping[str, Any]] = (),
     checked_at: Mapping[int, str] | None = None,
     language: str = DEFAULT_LANGUAGE,
+    load: LoadSignals | None = None,
 ) -> Briefing:
     t = texts(language)
     nights = nights_below_baseline(data.hrv_trend, day)
     criteria = criteria_from_snapshot(data.snapshot, nights)
     verdict, missing = decide_verdict({key: criteria[key]["level"] for key in CRITERIA})
-    conditions = alert_conditions(day, data, nights, yesterday_sessions)
+    conditions = alert_conditions(day, data, nights, yesterday_sessions, load)
     new = {
         key: is_new(holds, alert_rows.get(key), day, event=key in EVENT_ALERTS) for key, holds in conditions.items()
     }
@@ -603,6 +685,7 @@ def build_briefing(
         _missed_session_names(t, yesterday_sessions),
         missed_stale=stale,
         language=language,
+        load=load,
     )
     payload = {
         "date": day.isoformat(),

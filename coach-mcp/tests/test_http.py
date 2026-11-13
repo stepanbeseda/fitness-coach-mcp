@@ -26,6 +26,7 @@ from coach_mcp.__main__ import configure_logging
 from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminData, GarminReader
 from coach_mcp.push import TelegramPush
+from coach_mcp.scheduler import compose_briefing
 from coach_mcp.server import create_app
 from coach_mcp.store import SCHEMA_VERSION, Store
 from coach_mcp.tools import SEARCH_QUERY_ERROR
@@ -47,8 +48,9 @@ from history_helpers import (
     seed_strength,
     seed_sync,
     seed_template,
+    seed_w45,
 )
-from view_values import sport
+from view_values import W45_DAY, W45_LINES, sport
 from weather_payloads import WEATHER_T0, open_meteo_payload
 
 EXPECTED_TOOLS = {
@@ -434,11 +436,27 @@ async def test_daily_briefing_over_http(settings, store):
         ("missed_workout", True, True),
         ("missed_planned_session", False, False),
         ("garmin_auth", False, False),
+        ("detraining", False, False),  # no goal: known false
+        ("load_spike", None, False),  # no Hevy coverage: unknown
     ]
     assert briefing["garmin_today"] == ["Lehký běh 40 min"]
     assert list(briefing["push"]) == ["text"]
     assert briefing["push"]["text"].split("\n")[0] == "\U0001f7e1 \u26a0\ufe0f YELLOW · morning briefing 7 Oct"  # English by default
     assert garmin.days == [TODAY]
+
+
+@pytest.mark.anyio
+async def test_daily_briefing_w45_load_alerts(settings, store):
+    seed_w45(store)
+    garmin = FakeGarmin(yellow_data())
+    expected = (await compose_briefing(store, garmin, W45_DAY, settings.language)).message.text
+    app = create_app(settings, store, today=lambda: W45_DAY, garmin=garmin)
+    async with running_client(app) as client:
+        briefing = payload(await call_tool(client, "get_daily_briefing", {}))
+    assert briefing["push"]["text"] == expected
+    assert all(line in expected for line in W45_LINES[settings.language])
+    alerts = {a["key"]: (a["holds"], a["new"]) for a in briefing["alerts"]}
+    assert alerts["detraining"] == (True, True) and alerts["load_spike"] == (True, True)
 
 
 @pytest.mark.anyio

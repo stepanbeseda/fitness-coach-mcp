@@ -21,6 +21,7 @@ OAuth 2.1 gateway on your own server:
   - a deterministic morning briefing (green / yellow / red), optionally pushed to Telegram;
   - answers to what you write to the Telegram bot: today's briefing, this week's plan, done / skipped, notes;
   - goal progress (race predictions, VO2max) and a Monday weekly report in Telegram;
+  - detraining and strength load-spike alerts tied to the endurance goal, in the morning briefing and the weekly report;
   - nightly Garmin and Hevy history for trends beyond 28 days, a weekly report, strength progress (estimated
     1RM) and correlations;
   - plan reconciliation against recorded activities;

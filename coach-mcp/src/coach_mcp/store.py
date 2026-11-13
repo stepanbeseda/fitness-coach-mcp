@@ -225,6 +225,20 @@ CREATE TABLE telegram_inbound (
   advanced_at    TEXT NOT NULL
 );
 """,
+    # Load alerts (PR 38): the alert keys detraining and load_spike (alert_state is rebuilt with all its rows).
+    """
+CREATE TABLE alert_state_new (
+  key          TEXT PRIMARY KEY
+               CHECK (key IN ('hrv_below_baseline','resting_hr_elevated','acwr_out_of_range','missed_workout','garmin_auth','missed_planned_session','detraining','load_spike')),
+  value        INTEGER NOT NULL CHECK (value IN (0, 1)),
+  evaluated_on TEXT NOT NULL,
+  fired_on     TEXT
+);
+INSERT INTO alert_state_new (key, value, evaluated_on, fired_on)
+  SELECT key, value, evaluated_on, fired_on FROM alert_state;
+DROP TABLE alert_state;
+ALTER TABLE alert_state_new RENAME TO alert_state;
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)

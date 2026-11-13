@@ -14,6 +14,7 @@ from briefing_helpers import GREEN_SESSION
 from coach_mcp import briefing
 from coach_mcp.briefing import (
     ALERT_KEYS,
+    LOAD_ALERTS,
     alert_conditions,
     criteria_from_snapshot,
     decide_verdict,
@@ -22,6 +23,7 @@ from coach_mcp.briefing import (
 )
 from coach_mcp.briefing import build_briefing as _build_briefing
 from coach_mcp.garmin import LastSync
+from coach_mcp.load import load_signals
 from coach_mcp.messages import CS, EN
 from garmin_payloads import (
     DAY,
@@ -37,7 +39,14 @@ from garmin_payloads import (
     yellow_data,
 )
 
+from view_values import W45_DAY, W45_GOAL, W45_LINES, FakeHistory, w45_history
+
 YESTERDAY = "2026-10-06"
+
+# The load signals of PR 38 (alert_conditions reads them through ``load``, never Garmin).
+W45_SIGNALS = load_signals(w45_history(), [W45_GOAL], W45_DAY)
+QUIET_SIGNALS = load_signals(w45_history(quiet=True), [W45_GOAL], W45_DAY)
+UNKNOWN_SIGNALS = load_signals(FakeHistory(), [W45_GOAL], W45_DAY)
 # Every rendering assertion in this module is about the Czech catalogue.
 build_briefing = partial(_build_briefing, language="cs")
 
@@ -224,8 +233,9 @@ def test_nights_below_baseline_missing_baseline_ends_the_streak():
 
 def conditions(**overrides: Any) -> dict[str, bool | None]:
     yesterday_sessions = overrides.pop("yesterday_sessions", ())
+    load = overrides.pop("load", None)
     data = garmin_data(**overrides)
-    return alert_conditions(DAY, data, nights_below_baseline(data.hrv_trend, DAY), yesterday_sessions)
+    return alert_conditions(DAY, data, nights_below_baseline(data.hrv_trend, DAY), yesterday_sessions, load)
 
 
 def ys(type_="running", status="planned", result=None, description="Intervaly 6×800 m", id_=1) -> dict[str, Any]:
@@ -325,6 +335,15 @@ ALERT_CASES = [
     ("garmin_auth", {"auth": "ok", "calls": {"get_hrv_trend": "auth_error", "get_recovery_snapshot": "ok"}}, True),
     ("garmin_auth", {"auth": "ok"}, False),
     ("garmin_auth", {"auth": None, "calls": {"get_hrv_trend": "error"}}, None),
+    # detraining and load_spike: history inputs through ``load``, not Garmin's (none given: unknown)
+    ("detraining", {"load": W45_SIGNALS}, True),
+    ("detraining", {"load": QUIET_SIGNALS}, False),
+    ("detraining", {"load": UNKNOWN_SIGNALS}, None),
+    ("detraining", {}, None),
+    ("load_spike", {"load": W45_SIGNALS}, True),
+    ("load_spike", {"load": QUIET_SIGNALS}, False),
+    ("load_spike", {"load": UNKNOWN_SIGNALS}, None),
+    ("load_spike", {}, None),
 ]
 
 
@@ -472,6 +491,8 @@ def test_render_yellow_with_missing_and_alerts_exact():
             {"key": "missed_workout", "holds": True, "new": True},
             {"key": "missed_planned_session", "holds": False, "new": False},
             {"key": "garmin_auth", "holds": False, "new": False},
+            {"key": "detraining", "holds": None, "new": False},
+            {"key": "load_spike", "holds": None, "new": False},
         ],
         "garmin": {
             "auth": "ok",
@@ -764,7 +785,7 @@ def test_build_briefing_payload_shape():
     }
     assert b.payload["garmin"]["auth"] == "ok"
     # all conditions known and false: updates carry every key with (False, False)
-    assert b.alert_updates == dict.fromkeys(ALERT_KEYS, (False, False))
+    assert b.alert_updates == dict.fromkeys([k for k in ALERT_KEYS if k not in LOAD_ALERTS], (False, False))
     unknown = build_briefing(DAY, garmin_data(auth=None, snapshot=None, hrv_trend=None, scheduled=None), [], {})
     assert unknown.alert_updates == {"missed_planned_session": (False, False)}
     # the new condition reads the coach store, not Garmin, so it is known even when Garmin is not
@@ -1001,3 +1022,73 @@ def test_missed_check_predates_sync_unit():
     assert briefing.missed_check_predates_sync([ys(result="matched")], {}, last) is False
     assert briefing.missed_check_predates_sync([ys(status="done", result="no_activity")], {}, last) is False
     assert briefing.missed_check_predates_sync([ys("mobility", result="no_activity")], {}, last) is False
+
+
+# ------------------------------------------------- load alerts (PR 38)
+
+@pytest.mark.parametrize("lang", ["en", "cs"])
+def test_load_alerts_render_numbers_and_goal(lang):
+    plain = _build_briefing(DAY, garmin_data(), [], {}, language=lang)
+    b = _build_briefing(DAY, garmin_data(), [], {}, language=lang, load=W45_SIGNALS)
+    assert tuple(b.message.body.splitlines()[-2:]) == W45_LINES[lang]
+    assert "\u26a0\ufe0f" in b.message.title
+    assert b.verdict == plain.verdict
+    assert b.alert_updates["detraining"] == b.alert_updates["load_spike"] == (True, True)
+    assert [a["new"] for a in b.payload["alerts"] if a["key"] in LOAD_ALERTS] == [True, True]
+
+
+_DETRAINING_HEAD = {
+    "en": '- Endurance training is fading while you work toward "Run a marathon" (3:59:59, by 3 Oct 2027): ',
+    "cs": "- Vytrvalostní trénink upadá, přestože máš cíl \u201eRun a marathon\u201c (3:59:59, do 3. 10. 2027): ",
+}
+_ACWR_REASON = {
+    "en": "ACWR below 0.8 on all 13 stored days of the last 14 (latest 0.40)",
+    "cs": "ACWR pod 0,8 ve všech 13 uložených dnech z posledních 14 (naposledy 0,40)",
+}
+_RUNNING_REASON = {
+    "en": "running 7 km in 14 days against the usual 20.4 km",
+    "cs": "běh 7 km za 14 dní proti obvyklým 20,4 km",
+}
+
+
+@pytest.mark.parametrize("lang", ["en", "cs"])
+@pytest.mark.parametrize(("history", "reason"), [
+    ({"window_km": 20.4}, _ACWR_REASON),  # ACWR alone: the running reason is not named
+    ({"acwr": 0.8, "window_km": 7.0}, _RUNNING_REASON),  # running alone: the ACWR reason is not named
+])
+def test_detraining_line_names_only_the_condition_that_held(lang, history, reason):
+    signals = load_signals(w45_history(**history), [W45_GOAL], W45_DAY)
+    b = _build_briefing(DAY, garmin_data(), [], {}, language=lang, load=signals)
+    assert b.message.body.splitlines()[-2] == _DETRAINING_HEAD[lang] + reason[lang] + "."
+
+
+@pytest.mark.parametrize("lang", ["en", "cs"])
+def test_detraining_line_without_goal_target_has_no_empty_brackets(lang):
+    goal = {**W45_GOAL, "target_value": None, "target_date": None}
+    b = _build_briefing(DAY, garmin_data(), [], {}, language=lang, load=load_signals(w45_history(), [goal], W45_DAY))
+    line = [line for line in b.message.body.splitlines() if "Run a marathon" in line][0]
+    assert "()" not in line
+    assert line.startswith({"en": '- Endurance training is fading while you work toward "Run a marathon": ',
+                            "cs": "- Vytrvalostní trénink upadá, přestože máš cíl \u201eRun a marathon\u201c: "}[lang])  # fmt: skip
+
+
+@pytest.mark.parametrize(("row", "new"), [
+    ({"value": 1, "evaluated_on": YESTERDAY, "fired_on": YESTERDAY}, False),
+    ({"value": 0, "evaluated_on": YESTERDAY, "fired_on": None}, True),
+    ({"value": 1, "evaluated_on": YESTERDAY, "fired_on": DAY.isoformat()}, True),  # fired today: a restart
+])
+def test_load_alerts_are_states(row, new):
+    rows = {"detraining": row, "load_spike": row}
+    b = _build_briefing(DAY, garmin_data(), [], rows, language="en", load=W45_SIGNALS)
+    assert {a["key"]: a["new"] for a in b.payload["alerts"] if a["key"] in LOAD_ALERTS} == dict.fromkeys(LOAD_ALERTS, new)
+    for line in W45_LINES["en"]:
+        assert (line in b.message.body) is new
+
+
+def test_load_alerts_unknown_without_signals():
+    b = build_briefing(DAY, garmin_data(), [], {})
+    assert [a["holds"] for a in b.payload["alerts"] if a["key"] in LOAD_ALERTS] == [None, None]
+    assert not LOAD_ALERTS & set(b.alert_updates)
+    empty = build_briefing(DAY, garmin_data(), [], {}, load=load_signals(FakeHistory(), [], DAY))
+    assert empty.alert_updates["detraining"] == (False, False)  # no goal: known false
+    assert "load_spike" not in empty.alert_updates  # no Hevy coverage: unknown
