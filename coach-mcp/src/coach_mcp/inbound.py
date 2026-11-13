@@ -190,7 +190,7 @@ class InboundPoller:
         if token is None:
             log.warning("inbound poll=no_token")
             return "no_token", []
-        body: dict[str, Any] = {"timeout": wait, "limit": POLL_LIMIT, "allowed_updates": ["message"]}
+        body: dict[str, Any] = {"timeout": wait, "limit": POLL_LIMIT, "allowed_updates": ["message", "callback_query"]}
         if offset is not None:
             body["offset"] = offset
         timeout = httpx2.Timeout(10.0, read=wait + 15.0)
@@ -369,6 +369,8 @@ def refusal_reply(t: Texts, r: ReplyTexts, refusal: plan.Refusal) -> str:
             return r.session_future.format(id=sid, day=t.day_title(refusal.day))
         case plan.Reason.NOT_PLANNED | plan.Reason.SAME_DATE | plan.Reason.PAST_DATE:  # moves: no bot command
             return r.cannot_change.format(id=sid)
+        case plan.Reason.ALREADY_MARKED:
+            return (r.already_done if refusal.status == "done" else r.already_skipped).format(id=sid)
         case plan.Reason.TEXT_EMPTY | plan.Reason.TEXT_NUL:
             return r.note_refused
         case plan.Reason.TEXT_TOO_LONG:

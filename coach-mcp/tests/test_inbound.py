@@ -181,7 +181,7 @@ async def test_first_start_discards_the_backlog_and_then_handles_new_messages(tm
     assert [(p.get("offset"), p["timeout"]) for p in bench.telegram.polls] == [(None, 0), (50, 0), (60, 0), (63, 0)]
     assert await bench.say("po startu", 63) == "Note saved (7 Oct)."
     assert bench.telegram.polls[-1] == {
-        "timeout": 50, "limit": 10, "allowed_updates": ["message"], "offset": 63,
+        "timeout": 50, "limit": 10, "allowed_updates": ["message", "callback_query"], "offset": 63,
     }
     assert bench.notes() == [("2026-10-07", "po startu")]
 
@@ -336,7 +336,7 @@ async def test_another_bot_starts_from_scratch(tmp_path, caplog):
     bench.token_file.write_text(OTHER_TOKEN + "\n", encoding="utf-8")
     bench.telegram.pending.append(message(3, SECRET))  # what the new bot had queued: its set-up messages
     assert await bench.poller.step() == 0.0
-    assert bench.telegram.polls[0] == {"timeout": 0, "limit": 10, "allowed_updates": ["message"]}
+    assert bench.telegram.polls[0] == {"timeout": 0, "limit": 10, "allowed_updates": ["message", "callback_query"]}
     assert bench.store.inbound_state()["bot_id"] == OTHER_BOT_ID and bench.offset() == 4
     assert bench.notes() == [] and "inbound status=started discarded=1" in caplog.text
     assert all(url == f"https://api.telegram.org/bot{OTHER_TOKEN}/getUpdates" for url in bench.telegram.urls)
@@ -884,6 +884,8 @@ def every_refusal() -> list[plan.Refusal]:
         plan.Refusal(plan.Reason.NOT_PLANNED, 5),
         plan.Refusal(plan.Reason.SAME_DATE, 5),
         plan.Refusal(plan.Reason.PAST_DATE, 5),
+        plan.Refusal(plan.Reason.ALREADY_MARKED, 5, status="done"),
+        plan.Refusal(plan.Reason.ALREADY_MARKED, 5, status="skipped"),
         plan.Refusal(plan.Reason.TEXT_EMPTY),
         plan.Refusal(plan.Reason.TEXT_NUL),
         plan.Refusal(plan.Reason.TEXT_TOO_LONG, length=2001),
@@ -901,6 +903,8 @@ REFUSAL_REPLIES = {
         "Session #5 cannot be changed.",
         "Session #5 cannot be changed.",
         "Session #5 cannot be changed.",
+        "Session #5 is already done; nothing changed.",
+        "Session #5 is already skipped; nothing changed.",
         "The note could not be saved.",
         "The note could not be saved.",
         "The note is too long (2001 characters, at most 2000). Nothing was saved.",
@@ -915,6 +919,8 @@ REFUSAL_REPLIES = {
         "Trénink #5 nejde změnit.",
         "Trénink #5 nejde změnit.",
         "Trénink #5 nejde změnit.",
+        "Trénink #5 už je splněný; nic se nezměnilo.",
+        "Trénink #5 už je přeskočený; nic se nezměnilo.",
         "Poznámku se nepodařilo uložit.",
         "Poznámku se nepodařilo uložit.",
         "Poznámka je moc dlouhá (2001 znaků, nejvýš 2000). Nic se neuložilo.",
