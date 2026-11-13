@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 import httpx2

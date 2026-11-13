@@ -203,7 +203,7 @@ changes nothing); anything else is answered without text and changes nothing. `/
 carry no buttons. The log line of a tap is `inbound cb=done|skip|noop|bad_data|- status=ok|refused|bad_data|failed
 answer=… edit=… ms=…` (`sent`, `transient`, `rejected`, `no_token`, `crashed` or `skipped`), never the data,
 the session id or a chat id. The delivery of `callback_query`, the answer and the redraw follow the Bot API
-documentation and are verified on the live bot after deploy.
+documentation and were not run against the real bot before the first deploy.
 
 | Message | Effect | Answer |
 |---|---|---|
