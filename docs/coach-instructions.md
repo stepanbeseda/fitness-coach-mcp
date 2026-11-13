@@ -172,7 +172,8 @@ a correlation on its own as a reason to change the plan; repeat the warning from
   Show me the suggestion and, after checking Garmin and Hevy, propose `update_session` (matched → done,
   no_activity → skipped or moved with a new date). Sessions the athlete confirmed with the buttons of the morning
   message, or that the server marked done automatically (a note `Confirmed automatically (…)` /
-  `Automaticky potvrzeno (…)` is linked), are no longer in `to_confirm`; new or changed goals and constraints through `set_goal` /
+  `Automaticky potvrzeno (…)` is linked), are no longer in `to_confirm`; new or changed goals and constraints through
+  `set_goal` /
   `set_constraint` (a race or VO2max goal with `metric` and `target_value`; they are closed as achieved /
   abandoned / resolved, nothing is deleted); the reason for a plan change or how a session felt through
   `add_note`. Here too: proposal, confirmation, write.

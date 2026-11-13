@@ -177,7 +177,8 @@ not configured or wrong argument.
 With push on, the switch `COACH_TELEGRAM_INBOUND` not `false` and a private chat id (a positive number), a third
 background task (`src/coach_mcp/inbound.py`) reads the athlete's messages to the bot and answers them by fixed
 rules, without an LLM. It only makes outbound calls: long polling of the Bot API method `getUpdates` (50 s per
-request, at most 10 updates, message and callback query updates) and `sendMessage` for the answers. With a group chat id the task
+request, at most 10 updates, message and callback query updates) and `sendMessage` for the answers. With a group chat
+id the task
 does not start and the log says `inbound status=off reason=group_chat`.
 
 A message is handled only when it is a text message of a private chat whose chat id and sender id both equal
@@ -364,7 +365,8 @@ For each run the log has one line for Garmin:
 `history status=… fetched=… failed=… pending=… given_up=… ms=… repaired=… matched=… no_activity=… confirmed=…`
 (`repaired` = days whose missing sections loaded in a repair call of this run; `reconcile=error kind=…` when plan
 reconciliation fails; `confirmed=N` = sessions marked done by the automatic confirmation, `confirmed=off` with
-`COACH_AUTO_CONFIRM_MATCHED` off, `confirmed=error kind=…` when it fails; the history run does not fail because of it), one for the race predictions
+`COACH_AUTO_CONFIRM_MATCHED` off, `confirmed=error kind=…` when it fails; the history run does not fail because of
+it), one for the race predictions
 `history status=… part=predictions days=… ms=…` (days stored; only when a call was due) and one for Hevy:
 `history status=… part=strength workouts=… deleted=… templates=… failed=… skipped=… ms=…` (no data or values;
 `skipped` = events from Hevy that could not be used). The race-prediction and Hevy parts run before plan
@@ -383,7 +385,8 @@ sessions of the same sport on one day: activities are first assigned to sessions
 to planned ones in plan order. A suggestion has `final: false` while the day can still be reloaded (until the third
 day after it, late watch sync). The server changes a session's status only with `COACH_AUTO_CONFIRM_MATCHED=true`:
 the nightly run then marks done every planned session whose suggestion is `matched` and `final` and links a note
-naming the source and the evidence; otherwise `get_plan` and `get_coach_context` show the suggestion only for sessions in status `planned`, the coach checks it and, after confirmation, writes
+naming the source and the evidence; otherwise `get_plan` and `get_coach_context` show the suggestion only for sessions
+in status `planned`, the coach checks it and, after confirmation, writes
 `update_session`. A strength session is matched with a strength record from the watch (`strength_training`) or
 with a Hevy workout on the same day (evidence `source: hevy` with the number of sets and volume); a day not yet
 covered by the Hevy strength history is matched only with the watch. Without the nightly history
