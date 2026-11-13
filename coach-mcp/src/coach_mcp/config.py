@@ -147,6 +147,7 @@ class Settings:
     history_time: dt.time = dt.time(3, 30)
     history_backfill_days: int = 90
     history_call_delay_seconds: int = 15
+    auto_confirm_matched: bool = False  # Nightly: mark done the planned sessions with a final match (opt-in).
     # Home location for get_weather_forecast (rounded to two decimals; personal: never in a repr or a log).
     home_latitude: float | None = field(default=None, repr=False)
     home_longitude: float | None = field(default=None, repr=False)
@@ -228,6 +229,9 @@ class Settings:
         raw_weekly = _opt(env, "COACH_WEEKLY_PUSH", "true").lower()
         if raw_weekly not in ("true", "false"):
             raise ValueError("COACH_WEEKLY_PUSH must be true or false")
+        raw_auto = _opt(env, "COACH_AUTO_CONFIRM_MATCHED", "false").lower()
+        if raw_auto not in ("true", "false"):
+            raise ValueError("COACH_AUTO_CONFIRM_MATCHED must be true or false")
 
         raw_history = _opt(env, "COACH_HISTORY_ENABLED", "true").lower()
         if raw_history not in ("true", "false"):
@@ -268,6 +272,7 @@ class Settings:
             history_time=history_time,
             history_backfill_days=backfill_days,
             history_call_delay_seconds=call_delay,
+            auto_confirm_matched=raw_auto == "true",
             home_latitude=home_latitude,
             home_longitude=home_longitude,
         )

@@ -160,6 +160,7 @@ def test_blank_briefing_values_fall_back_to_defaults():
         "COACH_BRIEFING_CUTOFF",
         "COACH_BRIEFING_RETRY_MINUTES",
         "COACH_WEEKLY_PUSH",
+        "COACH_AUTO_CONFIRM_MATCHED",
         "COACH_HISTORY_ENABLED",
         "COACH_HISTORY_TIME",
         "COACH_HISTORY_BACKFILL_DAYS",
@@ -389,3 +390,13 @@ def test_read_bot_id(tmp_path, content, bot_id):
     if content is not None:
         path.write_text(content, encoding="utf-8")
     assert read_bot_id(path) == bot_id
+
+
+def test_auto_confirm_matched_switch():
+    assert Settings.from_env({}).auto_confirm_matched is False
+    assert Settings.from_env({"COACH_AUTO_CONFIRM_MATCHED": ""}).auto_confirm_matched is False
+    assert Settings.from_env({"COACH_AUTO_CONFIRM_MATCHED": "true"}).auto_confirm_matched is True
+    assert Settings.from_env({"COACH_AUTO_CONFIRM_MATCHED": "TRUE"}).auto_confirm_matched is True
+    assert Settings.from_env({"COACH_AUTO_CONFIRM_MATCHED": "false"}).auto_confirm_matched is False
+    with pytest.raises(ValueError, match="COACH_AUTO_CONFIRM_MATCHED must be true or false"):
+        Settings.from_env({"COACH_AUTO_CONFIRM_MATCHED": "yes"})

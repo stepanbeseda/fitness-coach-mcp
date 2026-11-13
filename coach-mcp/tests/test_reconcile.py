@@ -15,6 +15,7 @@ from hevy_payloads import day_workout, events_page, updated
 from history_helpers import local, make_job, next_run, run_first, run_job, seed_activities, seed_day
 from view_values import sport
 
+from coach_mcp import plan
 from coach_mcp import strength as strength_module
 from coach_mcp.history_view import Coverage, DayStrength, with_hevy_strength
 from coach_mcp.reconcile import MATCHED_TYPES, RECONCILE_DAYS, DayActivities, Suggestion, suggest
@@ -221,7 +222,7 @@ async def test_reconcile_step_stores_suggestions_for_the_last_seven_days(store, 
     assert {g["evaluated_on"] for g in got.values()} == {"2026-10-07"}
     assert all(status == "planned" for _, status in session_statuses(store))  # A1: no status changes
     (record,) = history_lines(caplog)
-    assert record.getMessage().endswith(" matched=2 no_activity=1")
+    assert record.getMessage().endswith(" matched=2 no_activity=1 confirmed=off")
 
 
 @pytest.mark.anyio
@@ -435,7 +436,7 @@ async def test_hevy_workout_matches_a_planned_strength_session_in_one_run(store,
     assert json.loads(got["evidence"]) == {"count": 1, "sets": 4, "source": "hevy", "sport": "strength", "volume_kg": 2000.0}
     assert all(status == "planned" for _, status in session_statuses(store))  # still only a suggestion
     messages = [r.getMessage() for r in history_lines(caplog)]
-    assert "part=strength" in messages[0] and messages[1].endswith(" matched=1 no_activity=0")
+    assert "part=strength" in messages[0] and messages[1].endswith(" matched=1 no_activity=0 confirmed=off")
 
 
 @pytest.mark.anyio
@@ -467,8 +468,119 @@ async def test_strength_crash_keeps_the_garmin_line_and_reconcile(store, monkeyp
     )
     assert clock.sleeps == [60.0, 3600.0, 3600.0]  # the crash is retried in an hour
     lines = [r.getMessage() for r in history_lines(caplog)]
-    assert lines[0].startswith("history status=done fetched=0") and lines[0].endswith(" matched=1 no_activity=0")
+    assert lines[0].startswith("history status=done fetched=0") and lines[0].endswith(" matched=1 no_activity=0 confirmed=off")
     assert lines[1] == "history status=crashed kind=RuntimeError"
     assert not any("part=strength" in line for line in lines)
     assert store.suggestions_for([session_id])[session_id]["result"] == "matched"  # the reconcile step still ran
     assert "SECRET-PARSE-TEXT" not in caplog.text
+
+
+# --------------------------------------------------------------- automatic confirmation (PR 36)
+
+FINAL_DAY = date(2026, 10, 1)  # totals fetched on TODAY = day + 6: the suggestion is final
+AUTO_NOTES = {
+    "en": "Confirmed automatically (Garmin): run, 5.05 km, 31 min.",
+    "cs": "Automaticky potvrzeno (Garmin): běh, 5,05 km, 31 min.",
+}
+
+
+def seed_settled(store, totals=None, day_=FINAL_DAY):
+    """Yesterday is already stored (nothing to fetch); ``day_`` has the given totals, fetched today."""
+    seed_day(store, date(2026, 10, 6))
+    seed_activities(store, date(2026, 10, 6), {})
+    seed_activities(store, day_, {"running": sport(1, 31.0, 5.05)} if totals is None else totals, fetched_on=TODAY)
+
+
+def notes(store) -> list[tuple[str, str, int | None]]:
+    conn = sqlite3.connect(store.path)
+    try:
+        return conn.execute("SELECT date, text, session_id FROM notes ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+
+async def confirm_run(store, caplog, **settings):
+    caplog.set_level(logging.INFO, logger="coach_mcp.history")
+    job, clock = make_job(store, FakeHistorySource(), local(TODAY, 10, 0), history_backfill_days=1, **settings)
+    delay = await run_first(job, clock)
+    (record,) = history_lines(caplog)
+    return record, (clock.now() + timedelta(seconds=delay)).astimezone(local(TODAY, 0).tzinfo)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("language", ["en", "cs"])
+async def test_auto_confirm_marks_final_matches_done_with_a_note(store, caplog, language):
+    sid = add_session(store, FINAL_DAY.isoformat())
+    seed_settled(store)
+    record, _due = await confirm_run(store, caplog, auto_confirm_matched=True, language=language)
+    got = at(store, [sid])[sid]
+    assert (got["result"], got["final"], got["evaluated_on"]) == ("matched", 1, TODAY.isoformat())
+    assert session_statuses(store) == [(sid, "done")]
+    assert notes(store) == [(TODAY.isoformat(), AUTO_NOTES[language], sid)]
+    assert record.getMessage().endswith(" matched=1 no_activity=0 confirmed=1")
+    assert record.levelno == logging.INFO
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("case", ["not_final", "no_activity_final", "mobility", "stale_row"])
+async def test_auto_confirm_leaves_everything_else(store, caplog, case):
+    seed_settled(store)
+    if case == "not_final":  # yesterday's run: fetched the day after, not final yet
+        seed_activities(store, date(2026, 10, 6), {"running": sport(1, 31.0, 5.05)})
+        sid = add_session(store, "2026-10-06")
+    elif case == "no_activity_final":
+        seed_activities(store, date(2026, 10, 2), {}, fetched_on=TODAY)
+        sid = add_session(store, "2026-10-02")
+    elif case == "mobility":
+        sid = add_session(store, FINAL_DAY.isoformat(), type_="mobility")
+    else:  # a matched / final row of an earlier run for a day that gets no suggestion any more (never fetched)
+        sid = add_session(store, "2026-10-03")
+        store.upsert_suggestions([(sid, "matched", True, json.dumps(evidence()))], date(2026, 10, 6))
+    record, _due = await confirm_run(store, caplog, auto_confirm_matched=True, language="en")
+    assert session_statuses(store) == [(sid, "planned")]
+    assert notes(store) == []
+    assert record.getMessage().endswith(" confirmed=0")
+    if case == "no_activity_final":
+        assert (at(store, [sid])[sid]["result"], at(store, [sid])[sid]["final"]) == ("no_activity", 1)
+    if case == "stale_row":
+        assert at(store, [sid])[sid]["evaluated_on"] == "2026-10-06"
+
+
+@pytest.mark.anyio
+async def test_auto_confirm_does_not_override_a_tap(store, caplog):
+    sid = add_session(store, FINAL_DAY.isoformat(), status="skipped")  # the athlete tapped "skipped"
+    seed_settled(store)
+    store.upsert_suggestions([(sid, "matched", True, json.dumps(evidence()))], TODAY)
+    record, _due = await confirm_run(store, caplog, auto_confirm_matched=True, language="en")
+    assert session_statuses(store) == [(sid, "skipped")]
+    assert notes(store) == []
+    assert record.getMessage().endswith(" confirmed=0")
+
+
+@pytest.mark.anyio
+async def test_auto_confirm_off_changes_no_status(store, caplog):
+    sid = add_session(store, FINAL_DAY.isoformat())
+    seed_settled(store)
+    record, _due = await confirm_run(store, caplog, language="en")
+    assert (at(store, [sid])[sid]["result"], at(store, [sid])[sid]["final"]) == ("matched", 1)
+    assert session_statuses(store) == [(sid, "planned")] and notes(store) == []
+    assert record.getMessage().endswith(" matched=1 no_activity=0 confirmed=off")
+
+
+@pytest.mark.anyio
+async def test_auto_confirm_failure_keeps_the_run_outcome(store, caplog, monkeypatch):
+    sid = add_session(store, FINAL_DAY.isoformat())
+    seed_settled(store)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("SECRET-CONFIRM-TEXT")
+
+    monkeypatch.setattr(plan, "mark_session", boom)
+    record, due = await confirm_run(store, caplog, auto_confirm_matched=True, language="en")
+    message = record.getMessage()
+    assert record.levelno == logging.WARNING
+    assert message.startswith("history status=done ")
+    assert message.endswith(" matched=1 no_activity=0 confirmed=error kind=RuntimeError")
+    assert "SECRET-CONFIRM-TEXT" not in caplog.text
+    assert session_statuses(store) == [(sid, "planned")]
+    assert due == local(date(2026, 10, 8), 3, 30)  # the same next run as without the switch
