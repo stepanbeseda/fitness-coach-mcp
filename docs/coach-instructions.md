@@ -81,6 +81,15 @@ warns when volume rose by more than 30 %. For the progress of individual exercis
 in the history yet, read fresh weights and sets from Hevy. Today, and often yesterday too, are not in the history
 yet; for today's state keep using `get_daily_briefing` and `get_recovery_snapshot`.
 
+**Suspect strength records.** A strength day whose estimated 1RM is more than 35 % above or 30 % below the median
+of the previous 3 sessions (for the first session: of the next 3, once 2 followed) is `"suspect": true` in
+`get_strength_progress`. It does not count for `best`, first and last value, `plateau` or the new records of the
+weekly report, and it is listed in `to_check` (weekly: `strength.to_check` and a `strength_record_suspect` flag).
+Typical causes are both dumbbells summed instead of one, or another cable machine. Ask me about every `to_check`
+item before you use those numbers and never present a suspect day as a record. A wrong value is fixed in Hevy
+(in the app, or with Hevy `update-workout` after I confirm it); the nightly sync picks the fix up. A real, lasting
+change is marked for its first two sessions and counts from the third.
+
 **Goal progress.** When we set a race goal (5 km, 10 km, half marathon, marathon) or a VO2max goal, always give
 `metric` and `target_value` with `set_goal` (time `H:MM:SS`). In weekly reviews and whenever we talk about a goal
 call `get_goal_progress`: current value, 4 and 12 weeks ago, trend per week, projection to the target date,

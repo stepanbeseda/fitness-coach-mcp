@@ -1,15 +1,17 @@
 """Strength history from Hevy: pure rules for summarising workouts, reading workout events and evaluating
 event pages (used by the history job), and the weekly sums and ``get_strength_progress`` over the strength days
 of the history view (``history_view``, which sums the stored summaries); no clock, no network; raw sets are
-never stored.
+never stored. A day whose best e1RM jumps far from its neighbours is marked suspect (a likely entry error) and
+counts neither for a best nor for the progress summary.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Container, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time as dt_time, timedelta
+from statistics import median
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -22,6 +24,10 @@ EVENTS_PAGE_SIZE = 10  # hevy-mcp's maximum page_size
 MAX_EVENT_PAGES = 200
 MAX_E1RM_REPS = 12  # Epley is not used above 12 reps
 MAX_TITLE = 200
+SUSPECT_UP_PCT = 35.0  # a day this far above the median of its neighbours is suspect
+SUSPECT_DOWN_PCT = 30.0
+SUSPECT_WINDOW = 3  # sessions in the reference median
+SUSPECT_MIN_FOLLOWING = 2  # the first session is judged only against this many later ones
 
 # ------------------------------------------------------------ write side: summaries
 
@@ -211,13 +217,107 @@ def since_text(instant: datetime) -> str:
     return instant.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ------------------------------------------------------------ suspect records
+
+
+def suspect_changes(values: Sequence[float]) -> dict[int, tuple[float, float]]:
+    """Index -> (reference e1RM, change %) of the suspect points of one exercise's day values, oldest first."""
+    out: dict[int, tuple[float, float]] = {}
+    for i, value in enumerate(values):
+        if i > 0:
+            reference = median(values[max(0, i - SUSPECT_WINDOW) : i])
+        elif len(values) > SUSPECT_MIN_FOLLOWING:
+            reference = median(values[1 : 1 + SUSPECT_WINDOW])
+        else:
+            continue
+        if not reference > 0:
+            continue
+        pct = round((value - reference) * 100 / reference, 1)
+        if pct > SUSPECT_UP_PCT or pct < -SUSPECT_DOWN_PCT:
+            out[i] = (reference, pct)
+    return out
+
+
+@dataclass(frozen=True)
+class SuspectDay:
+    """One exercise-day whose best e1RM is far from its neighbours."""
+
+    template_id: str
+    title: str | None
+    day: date
+    weight_kg: float
+    reps: int
+    e1rm_kg: float
+    reference: float
+    change_pct: float
+
+    def item(self) -> dict[str, Any]:
+        return {
+            "exercise": self.title,
+            "template_id": self.template_id,
+            "date": self.day.isoformat(),
+            "weight_kg": self.weight_kg,
+            "reps": self.reps,
+            "e1rm_kg": self.e1rm_kg,
+            "reference_e1rm_kg": round(self.reference, 1),
+            "change_pct": self.change_pct,
+        }
+
+    def flag(self) -> dict[str, Any]:
+        return {
+            "flag": "strength_record_suspect",
+            "week": self.e1rm_kg,
+            "baseline": round(self.reference, 1),
+            "change": round(self.e1rm_kg - self.reference, 1),
+            "change_pct": self.change_pct,
+            "exercise": self.title,
+            "template_id": self.template_id,
+            "date": self.day.isoformat(),
+            "weight_kg": self.weight_kg,
+            "reps": self.reps,
+        }
+
+
+def classify_suspects(totals: Mapping[date, DayStrength]) -> dict[tuple[str, date], SuspectDay]:
+    """The suspect days of every exercise in ``totals``, keyed by (template id, day)."""
+    per_template: dict[str, list[tuple[date, dict[str, Any], str | None]]] = {}
+    for day in sorted(totals):
+        for tid, entry in totals[day].exercises.items():
+            if entry["best"] is not None:
+                per_template.setdefault(tid, []).append((day, entry["best"], entry["title"]))
+    out: dict[tuple[str, date], SuspectDay] = {}
+    for tid, days in per_template.items():
+        for i, (reference, pct) in suspect_changes([best["e1rm_kg"] for _, best, _ in days]).items():
+            day, best, title = days[i]
+            out[(tid, day)] = SuspectDay(tid, title, day, best["weight_kg"], best["reps"], best["e1rm_kg"], reference, pct)
+    return out
+
+
+def suspect_days(history: HistoryReader) -> dict[tuple[str, date], SuspectDay]:
+    """The suspect days of the whole stored series, independent of any requested range."""
+    return classify_suspects(history.strength(None, date.max).days)
+
+
+def check_order(suspects: Iterable[SuspectDay]) -> list[SuspectDay]:
+    """Newest day first, then exercise title, then template id."""
+    return sorted(suspects, key=lambda s: (-s.day.toordinal(), s.title or "", s.template_id))
+
+
 # --------------------------------------------------------------- read side: weeks
 
 
 class StrengthWeek:
     """The covered days of one ISO week and their sums."""
 
-    def __init__(self, monday: date, totals: Mapping[date, DayStrength], cov: Coverage) -> None:
+    def __init__(
+        self,
+        monday: date,
+        totals: Mapping[date, DayStrength],
+        cov: Coverage,
+        *,
+        exclude: Container[tuple[str, date]] = frozenset(),
+    ) -> None:
+        """``exclude``: (template id, day) pairs left out of ``best`` only; every sum counts them."""
         self.monday = monday
         self.days = 0
         self.workouts = 0
@@ -242,6 +342,8 @@ class StrengthWeek:
             for group, volume in total.muscle_volume.items():
                 self.muscle_volume[group] = self.muscle_volume.get(group, 0.0) + volume
             for tid, entry in total.exercises.items():
+                if (tid, day) in exclude:
+                    continue
                 known = self.best.get(tid)
                 if entry["best"] is not None and better(entry["best"], known[0] if known else None):
                     self.best[tid] = (entry["best"], day, entry["title"])
@@ -254,40 +356,58 @@ class StrengthWeek:
 # -------------------------------------------------------------- get_strength_progress
 
 
-def _point(day: date, best: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+def _point(day: date, best: Mapping[str, Any], suspect: bool) -> dict[str, Any]:
+    point: dict[str, Any] = {
         "date": day.isoformat(),
         "e1rm_kg": best["e1rm_kg"],
         "weight_kg": best["weight_kg"],
         "reps": best["reps"],
     }
+    if suspect:
+        point["suspect"] = True
+    return point
 
 
 def _exercise_progress(
     tid: str, title: str | None, group: str, points: list[dict[str, Any]], end: date, plateau_weeks: int
 ) -> dict[str, Any]:
-    best = points[0]
-    for point in points:
-        if point["e1rm_kg"] > best["e1rm_kg"]:
-            best = point
-    first, last = points[0]["e1rm_kg"], points[-1]["e1rm_kg"]
-    change = last - first
-    window_start = end - timedelta(days=7 * plateau_weeks - 1)
-    inside = [p["e1rm_kg"] for p in points if date.fromisoformat(p["date"]) >= window_start]
-    before = [p["e1rm_kg"] for p in points if date.fromisoformat(p["date"]) < window_start]
+    """The summary values come from the points that are not suspect; ``sessions`` and ``e1rm_kg`` keep all."""
+    valid = [p for p in points if not p.get("suspect")]
+    summary: dict[str, Any] = {
+        "best": None,
+        "first_e1rm_kg": None,
+        "last_e1rm_kg": None,
+        "change_kg": None,
+        "change_pct": None,
+        "weeks_since_best": None,
+        "plateau": False,
+    }
+    if valid:
+        best = valid[0]
+        for point in valid:
+            if point["e1rm_kg"] > best["e1rm_kg"]:
+                best = point
+        first, last = valid[0]["e1rm_kg"], valid[-1]["e1rm_kg"]
+        change = last - first
+        window_start = end - timedelta(days=7 * plateau_weeks - 1)
+        inside = [p["e1rm_kg"] for p in valid if date.fromisoformat(p["date"]) >= window_start]
+        before = [p["e1rm_kg"] for p in valid if date.fromisoformat(p["date"]) < window_start]
+        summary = {
+            "best": best,
+            "first_e1rm_kg": first,
+            "last_e1rm_kg": last,
+            "change_kg": round(change, 1),
+            "change_pct": round(change * 100 / first, 1) if len(valid) > 1 and first != 0 else None,
+            "weeks_since_best": (end - date.fromisoformat(best["date"])).days // 7,
+            "plateau": len(inside) >= 2 and bool(before) and max(inside) <= max(before),
+        }
     return {
         "template_id": tid,
         "title": title,
         "muscle_group": group,
         "sessions": len(points),
         "e1rm_kg": points,
-        "best": best,
-        "first_e1rm_kg": first,
-        "last_e1rm_kg": last,
-        "change_kg": round(change, 1),
-        "change_pct": round(change * 100 / first, 1) if len(points) > 1 and first != 0 else None,
-        "weeks_since_best": (end - date.fromisoformat(best["date"])).days // 7,
-        "plateau": len(inside) >= 2 and bool(before) and max(inside) <= max(before),
+        **summary,
     }
 
 
@@ -303,7 +423,8 @@ def get_strength_progress(
     history: HistoryReader | None = None,
 ) -> dict[str, Any]:
     start, end = history_range(today, start_date, end_date)
-    hist = (history if history is not None else HistoryView(store)).strength(start, end)
+    view = history if history is not None else HistoryView(store)
+    hist = view.strength(start, end)
     cov = hist.coverage
     if cov is None:
         return {
@@ -314,7 +435,9 @@ def get_strength_progress(
             "reason": "strength history from Hevy has not been collected yet",
             "coverage": None,
             "exercises": [],
+            "to_check": [],
         }
+    suspects = suspect_days(view)
     totals = hist.days
     series: dict[str, list[dict[str, Any]]] = {}
     titles: dict[str, str | None] = {}
@@ -323,7 +446,7 @@ def get_strength_progress(
             if titles.get(tid) is None:
                 titles[tid] = entry["title"]
             if entry["best"] is not None:
-                series.setdefault(tid, []).append(_point(day, entry["best"]))
+                series.setdefault(tid, []).append(_point(day, entry["best"], (tid, day) in suspects))
     wanted = (exercise or "").strip()
     if wanted:
         series = {
@@ -332,6 +455,7 @@ def get_strength_progress(
             if tid == wanted or wanted.casefold() in (titles.get(tid) or "").casefold()
         }
     ordered = sorted(series, key=lambda tid: (-len(series[tid]), titles.get(tid) or "", tid))
+    to_check = check_order(s for (tid, day), s in suspects.items() if tid in series and start <= day <= end)
     return {
         "start": start.isoformat(),
         "end": end.isoformat(),
@@ -343,4 +467,5 @@ def get_strength_progress(
             _exercise_progress(tid, titles.get(tid), hist.group(tid), series[tid], end, plateau_weeks)
             for tid in ordered[:limit]
         ],
+        "to_check": [s.item() for s in to_check],
     }

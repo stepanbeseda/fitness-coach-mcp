@@ -134,3 +134,34 @@ class FakeHistory:
             for day, values in sorted(self._predictions.items())
             if _in(day, start, end)
         ]
+
+
+# ------------------------------------------------------------ the live series of PR 37
+
+LIVE_TODAY = date(2026, 11, 13)
+LIVE_STRENGTH: list[tuple[str, str, str, list[tuple[str, float, int, float]]]] = [
+    # (template_id, title, muscle group, [(date, weight_kg, reps, e1rm_kg)])  -- live e1RM series, read 2026-11-13
+    ("LP", "Lat Pulldown (Cable)", "lats", [("2026-09-29", 100.0, 5, 78.0), ("2026-10-03", 100.0, 5, 76.0), ("2026-10-10", 100.0, 5, 80.0), ("2026-10-17", 100.0, 5, 83.3), ("2026-10-29", 100.0, 5, 86.7), ("2026-11-06", 100.0, 5, 93.3)]),
+    ("LR", "Lateral Raise (Dumbbell)", "shoulders", [("2026-10-03", 100.0, 5, 20.0), ("2026-10-10", 100.0, 5, 20.0), ("2026-10-17", 100.0, 5, 20.5), ("2026-11-02", 100.0, 5, 20.0), ("2026-11-06", 100.0, 5, 21.0)]),
+    ("SC", "Seated Incline Curl (Dumbbell)", "biceps", [("2026-10-03", 100.0, 5, 40.0), ("2026-10-10", 100.0, 5, 40.0), ("2026-10-17", 100.0, 5, 46.7), ("2026-10-29", 100.0, 5, 46.7), ("2026-11-06", 100.0, 5, 40.0)]),
+    ("TP", "Triceps Pushdown", "triceps", [("2026-10-03", 45.0, 12, 63.0), ("2026-10-10", 100.0, 5, 44.3), ("2026-10-17", 100.0, 5, 40.0), ("2026-10-29", 100.0, 5, 42.0), ("2026-11-06", 100.0, 5, 52.0)]),
+    ("CR", "Chest Supported Incline Row (Dumbbell)", "upper_back", [("2026-10-10", 100.0, 5, 53.3), ("2026-10-17", 100.0, 5, 53.3), ("2026-10-29", 100.0, 5, 56.0), ("2026-11-06", 100.0, 5, 54.7)]),
+    ("IB", "Incline Bench Press (Dumbbell)", "chest", [("2026-09-29", 25.0, 10, 33.3), ("2026-10-03", 50.0, 8, 63.3), ("2026-10-10", 40.0, 12, 56.0), ("2026-10-17", 40.0, 12, 56.0)]),
+    ("BP", "Bench Press (Barbell)", "chest", [("2026-10-29", 100.0, 5, 88.7), ("2026-11-06", 100.0, 5, 96.0)]),
+    ("BS", "Bulgarian Split Squat (Dumbbell)", "quadriceps", [("2026-10-31", 100.0, 5, 44.3), ("2026-11-08", 100.0, 5, 39.0)]),
+    ("PP", "Cable Core Pallof Press", "abdominals", [("2026-10-31", 100.0, 5, 26.7), ("2026-11-08", 100.0, 5, 26.7)]),
+    ("PT", "Cable Pull Through", "glutes", [("2026-10-31", 100.0, 5, 42.0), ("2026-11-08", 100.0, 5, 40.0)]),
+    ("FP", "Face Pull", "shoulders", [("2026-11-02", 100.0, 5, 50.7), ("2026-11-06", 100.0, 5, 42.0)]),
+    ("GS", "Goblet Squat", "quadriceps", [("2026-10-31", 100.0, 5, 33.3), ("2026-11-08", 100.0, 5, 33.3)]),
+    ("HT", "Hip Thrust (Barbell)", "glutes", [("2026-10-31", 60.0, 10, 80.0), ("2026-11-08", 90.0, 8, 114.0)]),
+    ("SP", "Shoulder Press (Dumbbell)", "shoulders", [("2026-10-29", 100.0, 5, 53.3), ("2026-11-06", 100.0, 5, 56.0)]),
+    ("CF", "Single Leg Standing Calf Raise (Dumbbell)", "calves", [("2026-10-31", 17.5, 12, 24.5), ("2026-11-08", 25.0, 12, 35.0)]),
+]
+
+
+def seed_live_strength(history: FakeHistory) -> None:
+    """The live series (one workout per point, 3 sets of 1500 kg) and the live coverage 2026-07-11 .. 2026-11-11."""
+    for tid, title, group, points in LIVE_STRENGTH:
+        for day, weight, reps, estimate in points:
+            history.lift(date.fromisoformat(day), tid, 3, 1500.0, best(weight, reps, estimate), group=group, title=title)
+    history.cover(date(2026, 7, 11), date(2026, 11, 11))

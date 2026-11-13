@@ -14,7 +14,7 @@ from hevy_payloads import (
     updated,
 )
 from mcp.server.mcpserver.exceptions import ToolError
-from view_values import FakeHistory, best
+from view_values import LIVE_TODAY, FakeHistory, best, seed_live_strength
 
 from coach_mcp import strength
 from coach_mcp.history_view import Coverage
@@ -479,6 +479,7 @@ def test_strength_progress_without_sync_is_unavailable(store, history):
         "reason": "strength history from Hevy has not been collected yet",
         "coverage": None,
         "exercises": [],
+        "to_check": [],
     }
 
 
@@ -493,3 +494,98 @@ def test_strength_progress_date_errors(store, history):
     assert progress(store, history, start_date="2024-10-06", end_date="2026-10-06")["available"] is True  # 731 days
     with pytest.raises(ToolError, match="start_date"):
         progress(store, history, start_date="yesterday")
+
+
+# ------------------------------------------------------------- suspect records (PR 37)
+
+KEYS = ("exercise", "template_id", "date", "weight_kg", "reps", "e1rm_kg", "reference_e1rm_kg", "change_pct")
+# The five suspect days of the live series, newest first: (exercise, id, date, weight, reps, e1RM, reference, change %).
+FIVE = [
+    ("Hip Thrust (Barbell)", "HT", "2026-11-08", 90.0, 8, 114.0, 80.0, 42.5),
+    ("Single Leg Standing Calf Raise (Dumbbell)", "CF", "2026-11-08", 25.0, 12, 35.0, 24.5, 42.9),
+    ("Incline Bench Press (Dumbbell)", "IB", "2026-10-03", 50.0, 8, 63.3, 33.3, 90.1),
+    ("Triceps Pushdown", "TP", "2026-10-03", 45.0, 12, 63.0, 42.0, 50.0),
+    ("Incline Bench Press (Dumbbell)", "IB", "2026-09-29", 25.0, 10, 33.3, 56.0, -40.5),
+]
+FIVE_ITEMS = [dict(zip(KEYS, row, strict=True)) for row in FIVE]
+
+
+@pytest.fixture
+def live() -> FakeHistory:
+    history = FakeHistory()
+    seed_live_strength(history)
+    return history
+
+
+def live_progress(store, history, **kwargs: Any) -> dict[str, Any]:
+    args: dict[str, Any] = {"exercise": None, "start_date": None, "end_date": None, "plateau_weeks": 4, "limit": 20}
+    return get_strength_progress(store, LIVE_TODAY, history=history, **{**args, **kwargs})
+
+
+def by_title(out: dict[str, Any], title: str) -> dict[str, Any]:
+    return next(e for e in out["exercises"] if e["title"] == title)
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([100.0, 135.0], {}),  # exactly +35 %; the naive ratio 135 / 100 - 1 > 0.35 is True
+        ([100.0, 135.1], {1: (100.0, 35.1)}),
+        ([100.0, 70.0], {}),  # exactly -30 %
+        ([100.0, 69.9], {1: (100.0, -30.1)}),
+        ([35.0, 24.5], {}),  # the live calf-raise ratio: -0.30000000000000004 as a float
+        ([11.7, 15.8], {}),  # unrounded 35.04 %: the threshold applies to the change rounded to 0.1 %
+        ([100.0, 200.0], {1: (100.0, 100.0)}),  # a first session with one following session is not judged
+        ([100.0, 200.0, 200.0], {0: (200.0, -50.0), 1: (100.0, 100.0)}),
+        ([100.0, 100.0, 100.0, 200.0, 200.0, 200.0], {3: (100.0, 100.0), 4: (100.0, 100.0)}),  # earlier suspects count
+        ([], {}),
+        ([100.0], {}),
+    ],
+)
+def test_suspect_rule_cases(values, expected):
+    assert strength.suspect_changes(values) == expected
+
+
+def test_live_series_marks_exactly_the_five_suspect_days(store, live):
+    out = live_progress(store, live, start_date="2026-09-29", end_date="2026-11-08")
+    marked = {(e["title"], p["date"]) for e in out["exercises"] for p in e["e1rm_kg"] if p.get("suspect")}
+    assert marked == {(row[0], row[2]) for row in FIVE}
+    assert out["to_check"] == FIVE_ITEMS
+    assert all(list(item) == list(KEYS) for item in out["to_check"])
+
+
+def test_live_progress_leaves_suspects_out(store, live):
+    out = live_progress(store, live)
+    assert (out["start"], out["end"]) == ("2026-08-15", "2026-11-12")
+    pushdown = by_title(out, "Triceps Pushdown")
+    assert pushdown["sessions"] == 5
+    assert [p["date"] for p in pushdown["e1rm_kg"] if p.get("suspect")] == ["2026-10-03"]
+    assert pushdown["best"] == {"date": "2026-11-06", "e1rm_kg": 52.0, "weight_kg": 100.0, "reps": 5}
+    assert (pushdown["first_e1rm_kg"], pushdown["last_e1rm_kg"]) == (44.3, 52.0)
+    assert (pushdown["change_kg"], pushdown["change_pct"], pushdown["weeks_since_best"]) == (7.7, 17.4, 0)
+    assert pushdown["plateau"] is False  # the suspect 63.0 would make it a plateau
+    incline = by_title(out, "Incline Bench Press (Dumbbell)")
+    assert incline["sessions"] == 4
+    assert [("suspect" in p) for p in incline["e1rm_kg"]] == [True, True, False, False]
+    assert incline["best"] == {"date": "2026-10-10", "e1rm_kg": 56.0, "weight_kg": 40.0, "reps": 12}
+    assert (incline["first_e1rm_kg"], incline["last_e1rm_kg"]) == (56.0, 56.0)
+    assert (incline["change_kg"], incline["change_pct"], incline["weeks_since_best"]) == (0.0, 0.0, 4)
+    assert incline["plateau"] is False
+    assert out["to_check"] == FIVE_ITEMS
+    assert live_progress(store, live, limit=1)["to_check"] == FIVE_ITEMS  # a suspect is never hidden by the limit
+    assert live_progress(store, live, exercise="pushdown")["to_check"] == [FIVE_ITEMS[3]]
+
+
+def test_suspect_status_is_independent_of_the_range(store, live):
+    one_day = live_progress(store, live, start_date="2026-11-08", end_date="2026-11-08")
+    hip = by_title(one_day, "Hip Thrust (Barbell)")
+    assert [p.get("suspect") for p in hip["e1rm_kg"]] == [True]  # a range-only judgement sees one session
+    assert one_day["to_check"] == FIVE_ITEMS[:2]
+    single = live_progress(
+        store, live, start_date="2026-10-03", end_date="2026-10-03", exercise="incline bench"
+    )
+    incline = by_title(single, "Incline Bench Press (Dumbbell)")
+    assert [p.get("suspect") for p in incline["e1rm_kg"]] == [True]
+    assert incline["sessions"] == 1 and incline["plateau"] is False
+    for key in ("best", "first_e1rm_kg", "last_e1rm_kg", "change_kg", "change_pct", "weeks_since_best"):
+        assert incline[key] is None
