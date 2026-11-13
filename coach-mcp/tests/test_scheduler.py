@@ -15,7 +15,7 @@ from fakes import FakeClock, FakeGarmin, FakePush, StopLoop, fake_garmin_app, fa
 
 from coach_mcp import scheduler as scheduler_module
 from coach_mcp.__main__ import configure_logging, main
-from coach_mcp.briefing import ALERT_KEYS, EVENT_ALERTS, LOAD_ALERTS
+from coach_mcp.briefing import ALERT_KEYS, LOAD_ALERTS
 from coach_mcp.config import Settings
 from coach_mcp.garmin import GarminReader, LastSync
 from coach_mcp.load import load_signals
@@ -385,8 +385,9 @@ def alert_data(key: str, day: date, holds: bool):
     return garmin_data(auth=auth, snapshot=snapshot, hrv_trend=hrv_trend, scheduled=sched)
 
 
-# Event alerts (yesterday's missed workout) are reported on every day they hold; see the test below.
-STATE_ALERT_KEYS = tuple(k for k in ALERT_KEYS if k not in EVENT_ALERTS)
+# Event alerts (yesterday's missed workout) are reported on every day they hold; see the test below. The two keys
+# are spelled out (not read from EVENT_ALERTS) so that a state alert wrongly made an event does not drop out of this test.
+STATE_ALERT_KEYS = tuple(k for k in ALERT_KEYS if k not in ("missed_workout", "missed_planned_session"))
 
 
 @pytest.mark.anyio
