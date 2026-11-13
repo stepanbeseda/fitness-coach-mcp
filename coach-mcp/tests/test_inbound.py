@@ -1317,6 +1317,20 @@ async def test_query_id_of_max_length_is_accepted(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("limit", "answer"), [(22, "Recorded: #1 run done."), (21, "Recorded: #1 run don…")], ids=["fits", "clipped"]
+)
+async def test_answer_text_is_clipped_to_the_limit(tmp_path, monkeypatch, limit, answer):
+    # The real bound is 200 characters, which no catalogue answer reaches; a lower bound shows the clip is wired.
+    monkeypatch.setattr(inbound_module, "ANSWER_MAX_CHARS", limit)
+    bench = Bench(tmp_path)
+    _ids, markup = seed_two(bench)
+    await run_tap(bench, tap(100, "d:1", markup=markup))
+    assert status_of(bench, 1) == "done"
+    assert [a["text"] for a in bench.telegram.answers] == [answer]
+    assert len(answer) == limit
+
+
+@pytest.mark.parametrize(
     "data", [DROP, "", "d:0", "d:abc", "z:1", "d:" + "1" * 63, "d:1" + SECRET],
     ids=["missing", "empty", "zero", "letters", "action", "65-bytes", "secret"],
 )
