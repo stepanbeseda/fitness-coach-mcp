@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
-from view_values import FakeHistory, best, sport
+from view_values import LIVE_TODAY, FakeHistory, best, seed_live_strength, sport
 
 from conftest import TODAY
-from coach_mcp import trends
+from coach_mcp import strength, trends
 from coach_mcp.trends import DAILY_METRICS, METRIC_NAMES, TOTAL_METRICS
 
 
@@ -819,6 +819,7 @@ def test_weekly_strength_section_against_four_weeks(store, history):
             "chest": {"sets": 3, "baseline_sets": 3.0, "volume_kg": 1800.0, "baseline_volume_kg": 1500.0},
             "quadriceps": {"sets": 5, "baseline_sets": 4.0, "volume_kg": 4000.0, "baseline_volume_kg": 3200.0},
         },
+        "to_check": [],
     }
 
 
@@ -844,6 +845,7 @@ def test_partly_covered_week_reports_its_covered_days(store, history):
         "volume_kg": {"week": 1500.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
         "sets": {"week": 3.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
         "by_muscle_group": {"chest": {"sets": 3, "baseline_sets": None, "volume_kg": 1500.0, "baseline_volume_kg": None}},
+        "to_check": [],
     }
     assert "strength_volume_up" not in flags_of(out)
 
@@ -936,3 +938,93 @@ def test_new_e1rm_best_is_reported_for_a_partial_week_and_after_the_other_bests(
         {"metric": "e1rm_kg", "exercise": "Bench", "template_id": "T1", "value": 110.0, "previous_best": 105.0, "date": "2026-10-06"}
     ]
     assert out["new_bests"][-1]["metric"] == "e1rm_kg"
+
+
+# ------------------------------------------------------------- suspect records (PR 37)
+
+LIVE_FLAGS = [
+    ("Hip Thrust (Barbell)", "HT", "2026-11-08", 90.0, 8, 114.0, 80.0, 34.0, 42.5),
+    ("Single Leg Standing Calf Raise (Dumbbell)", "CF", "2026-11-08", 25.0, 12, 35.0, 24.5, 10.5, 42.9),
+    ("Incline Bench Press (Dumbbell)", "IB", "2026-10-03", 50.0, 8, 63.3, 33.3, 30.0, 90.1),
+    ("Triceps Pushdown", "TP", "2026-10-03", 45.0, 12, 63.0, 42.0, 21.0, 50.0),
+    ("Incline Bench Press (Dumbbell)", "IB", "2026-09-29", 25.0, 10, 33.3, 56.0, -22.7, -40.5),
+]
+
+
+def live_flag(row):
+    title, tid, day, weight, reps, e1rm, reference, change, pct = row
+    return {
+        "flag": "strength_record_suspect", "week": e1rm, "baseline": reference, "change": change, "change_pct": pct,
+        "exercise": title, "template_id": tid, "date": day, "weight_kg": weight, "reps": reps,
+    }
+
+
+def live_report(store, week):
+    history = FakeHistory()
+    seed_live_strength(history)
+    return report(store, history, LIVE_TODAY, week), history
+
+
+def live_bests(out):
+    return [(b["exercise"], b["value"], b["previous_best"], b["date"]) for b in out["new_bests"] if b["metric"] == "e1rm_kg"]
+
+
+def suspect_flags(out):
+    return [f for f in out["flags"] if f["flag"] == "strength_record_suspect"]
+
+
+def test_weekly_suspects_are_not_new_bests(store):
+    out, _ = live_report(store, "2026-09-28")  # W40
+    assert live_bests(out) == []  # Incline DB has no earlier session
+    assert [i["template_id"] for i in out["strength"]["to_check"]] == ["IB", "TP", "IB"]
+    assert out["strength"]["to_check"][0] == {
+        "exercise": "Incline Bench Press (Dumbbell)", "template_id": "IB", "date": "2026-10-03", "weight_kg": 50.0,
+        "reps": 8, "e1rm_kg": 63.3, "reference_e1rm_kg": 33.3, "change_pct": 90.1,
+    }
+    assert suspect_flags(out) == [live_flag(row) for row in LIVE_FLAGS[2:]]
+    assert suspect_flags(out)[0] == {
+        "flag": "strength_record_suspect", "week": 63.3, "baseline": 33.3, "change": 30.0, "change_pct": 90.1,
+        "exercise": "Incline Bench Press (Dumbbell)", "template_id": "IB", "date": "2026-10-03", "weight_kg": 50.0,
+        "reps": 8,
+    }
+
+    out, _ = live_report(store, "2026-11-02")  # W45: the discriminating week
+    assert live_bests(out) == [
+        ("Bench Press (Barbell)", 96.0, 88.7, "2026-11-06"),
+        ("Lat Pulldown (Cable)", 93.3, 86.7, "2026-11-06"),
+        ("Lateral Raise (Dumbbell)", 21.0, 20.5, "2026-11-06"),
+        ("Shoulder Press (Dumbbell)", 56.0, 53.3, "2026-11-06"),
+        ("Triceps Pushdown", 52.0, 44.3, "2026-11-06"),
+    ]
+    assert [(i["exercise"], i["date"]) for i in out["strength"]["to_check"]] == [(r[0], r[2]) for r in LIVE_FLAGS[:2]]
+    assert suspect_flags(out) == [live_flag(row) for row in LIVE_FLAGS[:2]]
+
+    out, _ = live_report(store, "2026-10-05")  # W41
+    assert out["strength"]["to_check"] == [] and suspect_flags(out) == []
+
+
+@pytest.mark.parametrize("week", ["2026-09-28", "2026-11-02"])
+def test_weekly_suspects_keep_volume_and_sets(store, monkeypatch, week):
+    out, history = live_report(store, week)
+    monkeypatch.setattr(strength, "suspect_days", lambda history: {})
+    plain = report(store, history, LIVE_TODAY, week)
+    section = {k: v for k, v in out["strength"].items() if k != "to_check"}
+    assert plain["strength"]["to_check"] == [] and suspect_flags(plain) == []
+    assert section == {k: v for k, v in plain["strength"].items() if k != "to_check"}
+    assert [f for f in out["flags"] if f["flag"] == "strength_volume_up"] == [
+        f for f in plain["flags"] if f["flag"] == "strength_volume_up"
+    ]
+
+
+def test_weekly_suspects_only_list_covered_days(store):
+    out, history = live_report(store, "2026-11-02")
+    assert len(out["strength"]["to_check"]) == 2  # both 11-08 days, covered through 11-11
+    history.cover(d("2026-07-11"), d("2026-11-07"))  # the sync has not reached Sunday 11-08 yet
+    out = report(store, history, LIVE_TODAY, "2026-11-02")
+    assert out["strength"]["days"] == 6
+    assert out["strength"]["to_check"] == [] and suspect_flags(out) == []
+    history.cover(d("2026-11-08"), d("2026-11-11"))  # coverage starts on the suspect day, the rest of the week is out
+    out = report(store, history, LIVE_TODAY, "2026-11-02")
+    assert out["strength"]["days"] == 1
+    assert [i["template_id"] for i in out["strength"]["to_check"]] == ["HT", "CF"]
+    assert [f["template_id"] for f in suspect_flags(out)] == ["HT", "CF"]

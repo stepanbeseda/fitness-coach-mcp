@@ -59,6 +59,11 @@ INSTRUCTIONS = (
     "use it for weekly reviews (it includes strength volume and sets per muscle group from Hevy). "
     "get_strength_progress returns the estimated 1RM (Epley) per exercise over time from the stored Hevy history "
     "with a plateau flag: use it for strength progression; for the latest workout and exact sets call Hevy. "
+    "A day whose best e1RM is more than 35 % above or 30 % below the median of the previous 3 sessions is "
+    "marked suspect and listed in to_check (weekly: strength.to_check and a strength_record_suspect flag); it "
+    "is no record and not part of best or plateau. Ask the athlete about every to_check item before using its "
+    "numbers, never present a suspect as a record, and fix a wrong value in Hevy (update-workout, only after "
+    "the athlete confirms). "
     "Past planned sessions carry a suggestion from the stored Garmin activities and Hevy workouts (matched with the day's totals "
     "of that sport, or no_activity; final false while a late watch sync can still change it); "
     "get_coach_context lists those of the last 7 days in to_confirm. A suggestion never changes a status: "
@@ -367,8 +372,9 @@ def build_server(
         time, distance and training load by sport, Garmin load at the end of the week, strength volume and
         working sets per muscle group from Hevy, sleep, HRV, resting heart rate, plan adherence from the
         coach plan, new bests (VO2max, weekly distance and load, estimated 1RM per exercise) and flags such
-        as training load or strength volume up more than 30 %. Sections without data are marked available:
-        false. Reads the stored history only."""
+        as training load or strength volume up more than 30 %. A suspect strength day (an e1RM far from the
+        previous sessions) is no new best; it is listed in strength.to_check with a strength_record_suspect
+        flag. Sections without data are marked available: false. Reads the stored history only."""
         return trends.get_weekly_report(store, today(), week=week)
 
     @tool("get_strength_progress", _read("Strength progress"))
@@ -392,7 +398,9 @@ def build_server(
         estimated one-rep max by Epley (weight x (1 + reps / 30); a single counts as its weight; warm-up sets and
         sets above 12 reps do not count) of the best set of every training day in the range, the best, first and
         last value, and a plateau flag when the last plateau_weeks weeks (at least two sessions) did not beat the
-        best before them. Default: the 90 days ending yesterday. Returns numbers only; render charts yourself."""
+        best before them. Default: the 90 days ending yesterday. A day more than 35 % above or 30 % below the
+        median of the previous 3 sessions is marked suspect (a likely entry error), left out of best, first, last
+        and plateau and listed in to_check: ask the athlete about it. Returns numbers only; render charts yourself."""
         return strength.get_strength_progress(
             store,
             today(),

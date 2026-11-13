@@ -329,13 +329,16 @@ def _strength(
 
     A week has a section when at least one of its days is covered by the Hevy history; baselines are the
     complete covered weeks among the previous four, and the volume flag needs a final week like the others.
+    A suspect day (``strength.suspect_days``) is no new best and no earlier best; it is listed in ``to_check``
+    and flagged, and every volume and set sum keeps it.
     """
     hist = history.strength(baseline_mondays[0], sunday)
     cov = hist.coverage
     if cov is None:
         return dict(STRENGTH_NO_DATA), [], []
     totals = hist.days
-    this = strength.StrengthWeek(monday, totals, cov)
+    suspects = strength.suspect_days(history)
+    this = strength.StrengthWeek(monday, totals, cov, exclude=suspects)
     if this.days == 0:
         return dict(STRENGTH_NO_DATA), [], []
     baselines = [w for m in baseline_mondays if (w := strength.StrengthWeek(m, totals, cov)).complete]
@@ -363,6 +366,8 @@ def _strength(
         "sets": sets.out(),
         "by_muscle_group": by_group,
     }
+    week = strength.check_order(s for s in suspects.values() if monday <= s.day <= sunday and cov.covers(s.day))
+    section["to_check"] = [s.item() for s in week]
 
     flags: list[dict[str, Any]] = []
     final = this.complete and not partial
@@ -373,6 +378,7 @@ def _strength(
         and volume.change_pct > FLAG_PCT
     ):
         flags.append(_flag("strength_volume_up", volume))
+    flags.extend(s.flag() for s in week)
 
     earlier = history.strength(None, monday - dt.timedelta(days=1)).days
     bests: list[dict[str, Any]] = []
@@ -380,8 +386,10 @@ def _strength(
         previous = max(
             (
                 entry["best"]["e1rm_kg"]
-                for total in earlier.values()
-                if (entry := total.exercises.get(tid)) is not None and entry["best"] is not None
+                for earlier_day, total in earlier.items()
+                if (entry := total.exercises.get(tid)) is not None
+                and entry["best"] is not None
+                and (tid, earlier_day) not in suspects
             ),
             default=None,
         )

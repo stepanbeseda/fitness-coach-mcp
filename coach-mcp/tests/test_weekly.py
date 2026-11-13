@@ -94,6 +94,12 @@ def test_unknown_bests_and_flags_are_skipped():
                         flags=[{"flag": "future_flag", "change": 0, "change_pct": 0}])
     body = render_weekly(only_unknown, PROGRESS, "en").body
     assert "New bests" not in body and "Watch" not in body
+    suspect = {"flag": "strength_record_suspect", "week": 63.3, "baseline": 33.3, "change": 30.0, "change_pct": 90.1,
+               "exercise": "Incline Bench Press (Dumbbell)", "template_id": "IB", "date": "2026-10-03",
+               "weight_kg": 50.0, "reps": 8}  # the first flag of the live W40 report (PR 37)
+    for language in ("en", "cs"):
+        message = render_weekly(dict(REPORT, new_bests=[], flags=[suspect]), PROGRESS, language)
+        assert "Watch" not in message.body and "Incline" not in message.body and "strength_record_suspect" not in message.text
 
 
 def test_empty_report_has_a_no_data_line_and_the_goal_count():

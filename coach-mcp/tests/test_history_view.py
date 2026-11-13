@@ -462,6 +462,7 @@ async def test_the_job_stores_the_primary_group_and_the_weekly_report_counts_it(
         "volume_kg": {"week": 1500.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
         "sets": {"week": 3.0, "baseline": None, "baseline_weeks": 0, "change": None, "change_pct": None},
         "by_muscle_group": {"chest": {"sets": 3, "baseline_sets": None, "volume_kg": 1500.0, "baseline_volume_kg": None}},
+        "to_check": [],
     }
 
 
