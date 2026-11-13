@@ -433,11 +433,15 @@ class FakeTelegram:
     rest is returned in id order, at most ``limit``. ``script`` entries (a ``httpx2.Response`` or an exception)
     are answered first, one per ``getUpdates``. ``send_codes`` are the statuses of ``sendMessage`` in order
     (the last one repeats). With ``hang`` an empty long poll never returns (it ends by cancellation).
+    ``answerCallbackQuery`` and ``editMessageReplyMarkup`` bodies are recorded in ``answers`` and ``edits``, answered
+    with ``answer_codes`` / ``edit_codes`` in order (the last one repeats; an exception in the list is raised by that
+    call). Any other method fails the test.
     """
 
     def __init__(
         self, updates: list[dict[str, Any]] | None = None, *, script: list[Any] | None = None,
         send_codes: list[int] | None = None, hang: bool = False,
+        answer_codes: list[int | BaseException] | None = None, edit_codes: list[int | BaseException] | None = None,
     ) -> None:
         self.pending: list[dict[str, Any]] = list(updates or [])
         self.script: list[Any] = list(script or [])
@@ -446,6 +450,10 @@ class FakeTelegram:
         self.polls: list[dict[str, Any]] = []
         self.sent: list[dict[str, Any]] = []
         self.urls: list[str] = []
+        self.answer_codes: list[int | BaseException] = list(answer_codes or [200])
+        self.edit_codes: list[int | BaseException] = list(edit_codes or [200])
+        self.answers: list[dict[str, Any]] = []
+        self.edits: list[dict[str, Any]] = []
 
     @property
     def texts(self) -> list[str]:
@@ -460,7 +468,17 @@ class FakeTelegram:
         if request.url.path.endswith("/sendMessage"):
             self.sent.append(body)
             return httpx2.Response(self.send_codes[min(len(self.sent), len(self.send_codes)) - 1], json={"ok": True})
-        assert request.url.path.endswith("/getUpdates")
+        for method, calls, codes in (
+            ("answerCallbackQuery", self.answers, self.answer_codes),
+            ("editMessageReplyMarkup", self.edits, self.edit_codes),
+        ):
+            if request.url.path.endswith(f"/{method}"):
+                calls.append(body)
+                code = codes[min(len(calls), len(codes)) - 1]
+                if isinstance(code, BaseException):
+                    raise code
+                return httpx2.Response(code, json={"ok": True})
+        assert request.url.path.endswith("/getUpdates"), request.url.path
         self.polls.append(body)
         if self.script:
             answer = self.script.pop(0)

@@ -3,7 +3,10 @@
 Only outbound HTTPS, like the push. Accepted is a text message of the private chat whose chat id and sender id both
 equal ``COACH_TELEGRAM_CHAT_ID``; everything else is skipped without a reply. Commands: ``/dnes`` or ``/today``
 (the briefing), ``/plan`` (this week), ``/done <id>``, ``/skip <id>``; any other text becomes a note. The athlete's own
-message is the confirmation that the write tools ask the coach for.
+message is the confirmation that the write tools ask the coach for. A tap on a button of the morning push
+(``callback_query``) from the same private chat and sender marks the session done or skipped through ``plan`` (only
+while it is still planned), is answered with ``answerCallbackQuery`` and its row is redrawn from the store with
+``editMessageReplyMarkup``; any other callback is skipped without an answer.
 
 Every update is handled once: its effect and the next ``getUpdates`` offset are stored before the reply is sent, the
 note (the one effect that must not repeat) in the same transaction as the offset. A database error stops the batch and
@@ -27,13 +30,13 @@ from typing import Any, assert_never
 
 import httpx2
 
-from . import plan, tools
+from . import confirm, plan, tools
 from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _session_line
 from .clock import LocalClock
 from .config import Settings, read_bot_id, read_bot_token
 from .garmin import GarminSource, exception_kind
 from .messages import ReplyTexts, Texts, reply_texts, texts
-from .push import TELEGRAM_API, TextSender
+from .push import TELEGRAM_API, TextSender, inline_markup
 from .scheduler import compose_briefing
 from .store import Store
 
@@ -52,6 +55,8 @@ CONFLICT_WAIT = 60.0
 REJECTED_WAIT = 300.0
 EMPTY_FLOOR = 1.0
 REPLY_RETRY_WAIT = 2.0
+CALLBACK_ID_MAX = 256  # characters; the Bot API documents no length, the bound only keeps an absurd value out
+ANSWER_MAX_CHARS = 200  # answerCallbackQuery text: 0-200 characters
 
 _COMMAND_RE = re.compile(r"/([A-Za-z0-9_]{1,32})(?:@[A-Za-z0-9_]{1,64})?(?:\s+(.*))?", re.DOTALL)
 _ID_RE = re.compile(r"#?([0-9]{1,9})")
@@ -133,6 +138,10 @@ class InboundPoller:
         ignored = 0
         for update in sorted(updates, key=lambda item: item["update_id"]):
             next_id = update["update_id"] + 1
+            query = self._accepted_callback(update)
+            if query is not None:
+                await self._on_callback(query, bot_id, next_id)
+                continue
             message = self._accepted(update)
             if message is None:
                 self._store.advance_inbound(bot_id, next_id, self._now())
@@ -241,6 +250,104 @@ class InboundPoller:
             if attempt == 1:
                 await self._sleep(REPLY_RETRY_WAIT)
         return "sent" if outcome == "sent" else "failed"
+
+    async def _bot_call(self, method: str, body: dict[str, Any]) -> str:
+        """One POST of ``method`` (``answerCallbackQuery`` or ``editMessageReplyMarkup``, never input); returns
+        ``sent``, ``transient``, ``rejected``, ``no_token`` or ``crashed``. One attempt: a late answer is worthless and
+        the stored status stands. The token exists only inside this method."""
+        token = read_bot_token(self._settings.telegram_token_file)
+        if token is None:
+            return "no_token"
+        try:
+            async with httpx2.AsyncClient(timeout=httpx2.Timeout(10.0), transport=self._transport) as http:
+                # stream(): only the status line is needed. Never raise_for_status() or log exc.request (the token).
+                async with http.stream("POST", f"{TELEGRAM_API}/bot{token}/{method}", json=body) as response:
+                    code = response.status_code
+        except (httpx2.TimeoutException, httpx2.RequestError, OSError):
+            return "transient"
+        except Exception:
+            return "crashed"
+        if 200 <= code < 300:
+            return "sent"
+        if code == 429 or code >= 500:
+            return "transient"
+        return "rejected"
+
+    # ------------------------------------------------------------- button taps
+
+    def _accepted_callback(self, update: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """The callback query of ``update`` when the athlete tapped a button of the bot's message in the private
+        chat with the bot; None for anything else."""
+        query = update.get("callback_query")
+        if not isinstance(query, Mapping):
+            return None
+        tapper, origin = query.get("from"), query.get("message")
+        if not isinstance(tapper, Mapping) or not isinstance(origin, Mapping):
+            return None
+        where = origin.get("chat")
+        if not isinstance(where, Mapping) or where.get("type") != "private" or tapper.get("is_bot") is True:
+            return None
+        if not _is_int(where.get("id"), self._owner):
+            return None
+        if not _is_int(tapper.get("id"), self._owner):
+            return None
+        query_id = query.get("id")
+        if not isinstance(query_id, str) or not 0 < len(query_id) <= CALLBACK_ID_MAX:
+            return None
+        return query
+
+    async def _on_callback(self, query: Mapping[str, Any], bot_id: str, next_id: int) -> None:
+        """Handle one accepted tap: store its effect and the offset, then answer it and redraw its keyboard."""
+        began = time.monotonic()
+        edit: dict[str, Any] | None
+        try:
+            action, status, answer_text, edit = self._tap(query, bot_id, next_id)
+        except sqlite3.Error:
+            raise  # the database is the problem, not the tap: ask for the same updates again
+        except Exception as exc:
+            log.error("inbound status=failed kind=%s", exception_kind(exc))
+            action, status, answer_text, edit = "-", "failed", reply_texts(self._settings.language).failed, None
+            self._store.advance_inbound(bot_id, next_id, self._now())
+        answer: dict[str, Any] = {"callback_query_id": query["id"]}
+        if answer_text:
+            answer["text"] = answer_text
+        answered = await self._bot_call("answerCallbackQuery", answer)
+        edited = "skipped" if edit is None else await self._bot_call("editMessageReplyMarkup", edit)
+        log.info("inbound cb=%s status=%s answer=%s edit=%s ms=%.0f", action, status, answered, edited, _ms(began))
+
+    def _tap(self, query: Mapping[str, Any], bot_id: str, next_id: int) -> tuple[str, str, str, dict[str, Any] | None]:
+        """(action word, status word, answer text, editMessageReplyMarkup body or None). Stores the effect, then the
+        offset; never sends."""
+        t, r = texts(self._settings.language), reply_texts(self._settings.language)
+        now = self._clock.now()
+        parsed = confirm.parse_data(query.get("data"))
+        if parsed is None or parsed[0] == "x":
+            self._store.advance_inbound(bot_id, next_id, now)
+            return ("bad_data", "bad_data", "", None) if parsed is None else ("noop", "ok", "", None)
+        letter, session_id = parsed
+        status = confirm.ACTIONS[letter]
+        outcome = plan.mark_session(self._store, now.date(), session_id, status, expect_planned=True)
+        if isinstance(outcome, plan.Refusal):
+            word, text = "refused", refusal_reply(t, r, outcome)
+        else:
+            template = r.tap_done if status == "done" else r.tap_skipped
+            word, text = "ok", template.format(label=confirm.label(t, outcome.session))
+        self._store.advance_inbound(bot_id, next_id, now)
+        return ("done" if letter == "d" else "skip"), word, _clip(text, ANSWER_MAX_CHARS), self._edit_body(t, r, query)
+
+    def _edit_body(self, t: Texts, r: ReplyTexts, query: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The keyboard of the tapped message redrawn from the store (every row shows the stored status), or None
+        when the message has no usable id or keyboard. Only the session ids are read from the received keyboard."""
+        origin = query["message"]
+        message_id = origin.get("message_id")
+        if type(message_id) is not int:
+            return None
+        ids = confirm.ids_of(origin.get("reply_markup"))
+        if not ids:
+            return None
+        sessions = [s for s in (self._store.get_session(i) for i in ids) if s is not None]
+        markup = inline_markup(confirm.rows(t, r, sessions))
+        return {"chat_id": self._owner, "message_id": message_id, "reply_markup": markup}
 
     # ------------------------------------------------------------- messages
 
@@ -397,6 +504,10 @@ def _updates(raw: bytes) -> list[dict[str, Any]] | None:
         if not isinstance(item, dict) or type(item.get("update_id")) is not int or item["update_id"] < 0:
             return None
     return result
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _ms(started: float) -> float:
