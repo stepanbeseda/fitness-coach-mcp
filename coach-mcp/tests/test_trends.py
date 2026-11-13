@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from datetime import date, timedelta
 from typing import Any
 
@@ -366,6 +367,7 @@ def test_weekly_report_every_section_from_seeded_db(store, history):
     }
     assert out["adherence"] == {
         "planned": 1, "done": 2, "skipped": 1, "moved": 0, "overdue_planned": 1, "completion_rate": 0.67,
+        "planned_matched": 0,
         "baseline_completion_rate": 0.75, "baseline_weeks": 2,
     }
     assert out["new_bests"] == [
@@ -704,7 +706,34 @@ def test_weekly_adherence_from_sessions(store, history):
                 store.update_session_status(session_id, status, None, None)
     assert report(store, history)["adherence"] == {
         "planned": 1, "done": 2, "skipped": 1, "moved": 1, "overdue_planned": 1, "completion_rate": 0.67,
+        "planned_matched": 0,
         "baseline_completion_rate": 0.75, "baseline_weeks": 2,  # W36 has no finished session: not counted
+    }
+
+
+def test_weekly_adherence_counts_planned_sessions_with_a_match(store, history):
+    kinds = ["matched final", "matched", "no_activity", "none", "done matched", "superseded matched"]
+    rows = [{"date": W40 + timedelta(days=n), "type": "running", "description": "x"} for n in range(len(kinds))]
+    ids = store.replace_planned(W40, W40 + timedelta(days=6), W40, rows)[1]
+    store.update_session_status(ids[4], "done", None, None)
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE sessions SET status = 'superseded' WHERE id = ?", (ids[5],))
+    before = report(store, history)["adherence"]
+    store.upsert_suggestions(
+        [
+            (ids[0], "matched", True, '{"count":1}'),
+            (ids[1], "matched", False, '{"count":1}'),
+            (ids[2], "no_activity", True, None),
+            (ids[4], "matched", True, '{"count":1}'),
+            (ids[5], "matched", True, '{"count":1}'),
+        ],
+        TODAY,
+    )
+    after = report(store, history)["adherence"]
+    assert (before["planned_matched"], after["planned_matched"]) == (0, 2)
+    assert after["planned"] == 4 and after["completion_rate"] == before["completion_rate"]
+    assert {k: v for k, v in after.items() if k != "planned_matched"} == {
+        k: v for k, v in before.items() if k != "planned_matched"
     }
 
 

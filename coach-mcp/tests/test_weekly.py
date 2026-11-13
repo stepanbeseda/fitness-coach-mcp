@@ -186,3 +186,20 @@ WATCH_LINES = {
 def test_watch_lines_for_load_flags(language):
     body = render_weekly(empty_report(flags=W45_FLAGS), PROGRESS, language).body
     assert WATCH_LINES[language] in body.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("language", "line"),
+    [
+        ("en", "Plan: done 1, skipped 0, moved 0, still planned 2, of them 1 matched with an activity – completion 100 %"),
+        ("cs", "Plán: splněno 1, přeskočeno 0, přesunuto 0, zbývá v plánu 2, z toho 1 se záznamem aktivity – plnění 100 %"),
+    ],
+)
+def test_plan_line_names_matched_sessions(language, line):
+    plan = {"planned": 2, "done": 1, "skipped": 0, "moved": 0, "overdue_planned": 0, "completion_rate": 1.0}
+    body = render_weekly(empty_report(adherence={**plan, "planned_matched": 1}), {"goals": []}, language).body
+    assert line in body.split("\n")
+    zero = render_weekly(empty_report(adherence={**plan, "planned_matched": 0}), {"goals": []}, language).body
+    assert line.replace(", of them 1 matched with an activity", "").replace(", z toho 1 se záznamem aktivity", "") in (
+        zero.split("\n")
+    )
