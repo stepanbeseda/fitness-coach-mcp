@@ -239,6 +239,10 @@ INSERT INTO alert_state_new (key, value, evaluated_on, fired_on)
 DROP TABLE alert_state;
 ALTER TABLE alert_state_new RENAME TO alert_state;
 """,
+    # Session RPE (PR 40): the session effort (Foster CR-10) the coach recorded for a done session.
+    """
+ALTER TABLE sessions ADD COLUMN rpe INTEGER CHECK (rpe IS NULL OR (typeof(rpe) = 'integer' AND rpe BETWEEN 1 AND 10));
+""",
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -345,9 +349,19 @@ def _moved_to(conn: sqlite3.Connection, ids: Sequence[int]) -> dict[int, tuple[i
 
 
 def _set_session_status(
-    conn: sqlite3.Connection, session_id: int, status: str, new_date: date | None, note: tuple[date, str] | None
+    conn: sqlite3.Connection,
+    session_id: int,
+    status: str,
+    new_date: date | None,
+    note: tuple[date, str] | None,
+    rpe: int | None = None,
 ) -> tuple[int | None, int | None]:
-    cur = conn.execute("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?", (status, _now(), session_id))
+    # rpe lives only on a done session: done with a value sets it, done without keeps a stored one, anything else clears it.
+    cur = conn.execute(
+        "UPDATE sessions SET status = ?, rpe = CASE WHEN ? = 'done' THEN COALESCE(?, rpe) ELSE NULL END, "
+        "updated_at = ? WHERE id = ?",
+        (status, status, rpe, _now(), session_id),
+    )
     if cur.rowcount == 0:
         raise LookupError("session not found")
     copy_id = None
@@ -377,10 +391,15 @@ class Transaction:
         return _get(self._conn, "notes", note_id)
 
     def update_session_status(
-        self, session_id: int, status: str, new_date: date | None, note: tuple[date, str] | None
+        self,
+        session_id: int,
+        status: str,
+        new_date: date | None,
+        note: tuple[date, str] | None,
+        rpe: int | None = None,
     ) -> tuple[int | None, int | None]:
         """As ``Store.update_session_status``, inside this transaction."""
-        return _set_session_status(self._conn, session_id, status, new_date, note)
+        return _set_session_status(self._conn, session_id, status, new_date, note, rpe)
 
     def insert_note(self, day: date, text: str, session_id: int | None = None) -> int:
         return _insert_note(self._conn, day, text, session_id)
@@ -568,14 +587,20 @@ class Store:
         return {row["session_id"]: row["updated_at"] for row in rows}
 
     def update_session_status(
-        self, session_id: int, status: str, new_date: date | None, note: tuple[date, str] | None
+        self,
+        session_id: int,
+        status: str,
+        new_date: date | None,
+        note: tuple[date, str] | None,
+        rpe: int | None = None,
     ) -> tuple[int | None, int | None]:
         """Set the status; for 'moved' also insert the planned copy; optionally add a note.
 
-        One transaction. Returns (copy_id, note_id).
+        ``rpe`` (the session effort, 1-10) goes with 'done': done without it keeps a stored value, any other status
+        clears it. One transaction. Returns (copy_id, note_id).
         """
         with self._conn() as conn, conn:
-            return _set_session_status(conn, session_id, status, new_date, note)
+            return _set_session_status(conn, session_id, status, new_date, note, rpe)
 
     # ------------------------------------------------------------ briefing
 

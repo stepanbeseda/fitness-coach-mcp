@@ -207,3 +207,43 @@ def test_a_note_and_its_offset_are_one_transaction(store):
     noted = plan.add_note(store, TODAY, "both", inbound=("111111111", 11, AT))
     assert isinstance(noted, Noted) and store.inbound_state()["next_update_id"] == 11
     assert [n["id"] for n in store.latest_notes(5)] == [noted.note["id"]]
+
+
+# ------------------------------------------------------------------ session RPE (PR 40)
+
+
+def test_done_with_rpe_is_kept_by_a_later_done(store):
+    sid = seed(store, "2026-10-06")
+    marked = plan.mark_session(store, TODAY, sid, "done", rpe=7)
+    assert isinstance(marked, Marked) and marked.session["rpe"] == 7
+    again = plan.mark_session(store, TODAY, sid, "done")  # the Telegram /done path
+    assert isinstance(again, Marked) and again.session["rpe"] == 7
+    assert refused(plan.mark_session(store, TODAY, sid, "done", expect_planned=True)).reason is Reason.ALREADY_MARKED
+    assert store.get_session(sid)["rpe"] == 7
+
+
+@pytest.mark.parametrize(
+    ("status", "new_day", "rpe"),
+    [
+        ("skipped", None, 5),
+        ("planned", None, 5),
+        ("moved", date(2026, 10, 9), 5),
+        ("done", None, 0),
+        ("done", None, 11),
+        ("done", None, True),
+        ("done", None, 7.5),
+    ],
+)
+def test_rpe_goes_with_done_only(store, status, new_day, rpe):
+    sid = seed(store, "2026-10-06")
+    before = store.get_session(sid)
+    with pytest.raises(ValueError, match="rpe 1-10 goes with status 'done' only"):
+        plan.mark_session(store, TODAY, sid, status, new_date=new_day, rpe=rpe)
+    assert store.get_session(sid) == before
+
+
+def test_rpe_boundaries_are_accepted(store):
+    low, high = seed(store, "2026-10-05"), seed(store, "2026-10-06")
+    plan.mark_session(store, TODAY, low, "done", rpe=1)
+    plan.mark_session(store, TODAY, high, "done", rpe=10)
+    assert (store.get_session(low)["rpe"], store.get_session(high)["rpe"]) == (1, 10)

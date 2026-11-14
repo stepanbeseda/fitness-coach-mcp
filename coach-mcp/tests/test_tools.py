@@ -437,6 +437,34 @@ def test_update_session_done_with_note_in_one_call(store):
     assert store.latest_notes(5)[0]["session_id"] == sid
 
 
+def test_update_session_rpe_needs_done(store):
+    sid = seed(store, "2026-10-06")
+    before = store.get_session(sid)
+    assert "rpe is only allowed with status 'done'" in err(
+        tools.update_session, store, TODAY, session_id=sid, status="skipped", rpe=5
+    )
+    assert store.get_session(sid) == before
+
+
+def test_update_session_done_with_rpe_shows_it(store):
+    rated, plain = seed(store, "2026-10-05"), seed(store, "2026-10-06")
+    result = tools.update_session(store, TODAY, session_id=rated, status="done", rpe=6)
+    assert result["session"]["rpe"] == 6
+    tools.update_session(store, TODAY, session_id=plain, status="done")
+    by_id = {s["id"]: s for s in tools.get_plan(store, TODAY, start_date="2026-10-05", end_date="2026-10-11")["sessions"]}
+    assert by_id[rated]["rpe"] == 6 and "rpe" not in by_id[plain]
+
+
+@pytest.mark.parametrize("rpe", [True, 0, 11, 7.5])
+def test_update_session_rpe_out_of_range_direct_call(store, rpe):
+    sid = seed(store, "2026-10-06")
+    before = store.get_session(sid)
+    assert "rpe must be a whole number from 1 to 10" in err(
+        tools.update_session, store, TODAY, session_id=sid, status="done", rpe=rpe
+    )
+    assert store.get_session(sid) == before
+
+
 def test_update_session_moved_creates_linked_copy(store, monkeypatch):
     sid = tools.save_plan(
         store,

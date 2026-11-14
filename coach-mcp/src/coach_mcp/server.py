@@ -315,11 +315,19 @@ def build_server(
         status: Annotated[SessionStatus, Field(description="planned, done, skipped or moved.")],
         new_date: Annotated[str | None, Field(description="YYYY-MM-DD; required for moved, otherwise not allowed.")] = None,
         note: Annotated[str | None, Field(max_length=plan.NOTE_MAX, description="Optional note stored with the session.")] = None,
+        rpe: Annotated[
+            int | None,
+            Field(ge=1, le=10, strict=True, description="Session RPE 1-10 (Foster CR-10) the athlete stated; only with status done."),
+        ] = None,
     ) -> Any:
         """Record what happened to a session after checking Garmin and Hevy: done, skipped, back to
         planned, or moved (with new_date; creates a planned copy on that date). A session dated after today
-        cannot be marked done. An optional note is stored with the session. Only after the athlete confirmed."""
-        return tools.update_session(store, today(), session_id=session_id, status=status, new_date=new_date, note=note)
+        cannot be marked done. An optional note is stored with the session. With status done, an optional rpe
+        (1-10) records how hard the athlete said the session was; it counts in session_load of
+        get_weekly_report. Only after the athlete confirmed."""
+        return tools.update_session(
+            store, today(), session_id=session_id, status=status, new_date=new_date, note=note, rpe=rpe
+        )
 
     @tool("add_note", _write("Add note"))
     async def add_note(

@@ -86,16 +86,20 @@ def mark_session(
     new_date: date | None = None,
     note: str | None = None,
     expect_planned: bool = False,
+    rpe: int | None = None,
 ) -> Marked | Refusal:
     """Set ``status`` (planned, done, skipped, or moved with ``new_date``) and store ``note`` with the session.
 
     ``new_date`` is given with ``moved`` and only then; anything else is a programming error (``ValueError``). The
     note is checked first, then the session, in the order of ``Reason``. With ``expect_planned`` only a planned
     session is changed (the athlete's button and the automatic confirmation); a done or skipped one is refused as
-    ``ALREADY_MARKED``.
+    ``ALREADY_MARKED``. ``rpe`` (1–10, the session effort the athlete stated) goes with ``done`` only; ``done``
+    without it keeps a stored one, every other status clears it.
     """
     if status not in STATUSES or (status == "moved") != (new_date is not None):
         raise ValueError("mark_session: new_date goes with status 'moved' and only with it")
+    if rpe is not None and (status != "done" or isinstance(rpe, bool) or not isinstance(rpe, int) or not 1 <= rpe <= 10):
+        raise ValueError("mark_session: rpe 1-10 goes with status 'done' only")
     body = None
     if note is not None:
         checked = note_text(note)
@@ -130,7 +134,7 @@ def mark_session(
         if status == "done" and day > today:
             return Refusal(Reason.FUTURE, session_id, day=day)
         copy_id_, note_id = tx.update_session_status(
-            session_id, status, new_date, (today, body) if body is not None else None
+            session_id, status, new_date, (today, body) if body is not None else None, rpe=rpe
         )
         return Marked(
             session=_must(tx.get_session(session_id)),

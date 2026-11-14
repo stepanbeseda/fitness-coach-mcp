@@ -17,8 +17,8 @@ from coach_mcp.store import (
 
 # The schema version of the strength tables: the only number that changes when this migration is renumbered.
 STRENGTH_VERSION = 5
-# The latest schema version (load alerts, PR 38); the other number pinned by hand.
-LATEST_VERSION = 10
+# The latest schema version (session RPE, PR 40); the other number pinned by hand.
+LATEST_VERSION = 11
 # The schema version of the load alerts (derived from the migration text, so a rebase renumbers nothing here).
 LOAD_ALERTS_VERSION = next(i + 1 for i, script in enumerate(MIGRATIONS) if "detraining" in script)
 
@@ -542,8 +542,14 @@ def test_notes_fts_migration_indexes_existing_notes(db_path, monkeypatch):
         )[1]
         first = old.insert_note(date(2026, 10, 5), "Bolí mě pravé koleno po běhu")
         second = old.insert_note(date(2026, 10, 6), "Únava, špatný spánek")
-        _, third = old.update_session_status(session_id, "done", None, (date(2026, 10, 7), "Easy run felt fine"))
-        assert third is not None
+        # The Store API's status UPDATE names the rpe column, which this old file lacks: mark it done by hand.
+        third = old.insert_note(date(2026, 10, 7), "Easy run felt fine", session_id)
+        raw = sqlite3.connect(db_path)
+        try:
+            raw.execute("UPDATE sessions SET status = 'done' WHERE id = ?", (session_id,))
+            raw.commit()
+        finally:
+            raw.close()
         assert not any(name.startswith("notes_fts") for name in _tables(db_path))
     new = Store(db_path)
     assert _user_version(db_path) == SCHEMA_VERSION
@@ -1437,6 +1443,8 @@ def test_migration_10_upgrades_a_version_9_file_with_data(db_path, monkeypatch):
         assert set(before) == set(OLD_ALERT_KEYS)
         assert any(row["fired_on"] for row in before.values()) and any(not row["fired_on"] for row in before.values())
         assert _user_version(db_path) == LOAD_ALERTS_VERSION - 1
+    # Reopened with the list that ends at this migration: a later migration (PR 40) must not move the number.
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:LOAD_ALERTS_VERSION])
     new = Store(db_path)
     assert _user_version(db_path) == LOAD_ALERTS_VERSION
     assert new.alert_states() == before
@@ -1486,3 +1494,123 @@ def test_downgrade_10_sql_returns_to_a_version_9_file(db_path, monkeypatch):
         assert _user_version(db_path) == LOAD_ALERTS_VERSION
         again.record_briefing_sent(date(2026, 10, 8), "green", {"detraining": (True, True), "load_spike": (True, True)})
         assert {"detraining", "load_spike"} <= set(again.alert_states())
+
+
+# Position of the session RPE migration (PR 40), derived like the others.
+RPE_VERSION = next(i + 1 for i, script in enumerate(MIGRATIONS) if "ADD COLUMN rpe" in script)
+# Keep in sync with the 11 -> 10 downgrade command in coach-mcp/README.md.
+DOWNGRADE_11_SQL = "BEGIN IMMEDIATE; ALTER TABLE sessions DROP COLUMN rpe; PRAGMA user_version = 10; COMMIT;"
+
+
+def test_migration_11_upgrades_a_version_10_file_with_data(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: RPE_VERSION - 1])
+        old = Store(db_path)
+        _, ids = old.replace_planned(
+            date(2026, 10, 5),
+            date(2026, 10, 11),
+            date(2026, 10, 5),
+            [
+                {"date": date(2026, 10, 6), "type": "strength", "description": "Legs", "duration_min": 60},
+                {"date": date(2026, 10, 7), "type": "running", "description": "Easy run"},
+            ],
+        )
+        # The Store API's status UPDATE names the rpe column, which a version-10 file lacks: mark it done by hand.
+        raw = sqlite3.connect(db_path)
+        try:
+            raw.execute("UPDATE sessions SET status = 'done' WHERE id = ?", (ids[0],))
+            raw.commit()
+        finally:
+            raw.close()
+        old_rows = [old.get_session(i) for i in ids]
+        note_id = old.insert_note(date(2026, 10, 6), "Legs felt heavy", ids[0])
+    new = Store(db_path)
+    assert _user_version(db_path) == RPE_VERSION
+    for i, before in zip(ids, old_rows, strict=True):
+        assert before is not None
+        assert new.get_session(i) == {**before, "rpe": None}
+    assert new.get_note(note_id) is not None
+    conn = sqlite3.connect(db_path)
+    try:
+        for bad in (0, 11, 7.5):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute("UPDATE sessions SET rpe = ? WHERE id = ?", (bad, ids[0]))
+        for good in (1, 10):
+            conn.execute("UPDATE sessions SET rpe = ? WHERE id = ?", (good, ids[0]))
+            assert conn.execute("SELECT rpe, typeof(rpe) FROM sessions WHERE id = ?", (ids[0],)).fetchone() == (
+                good,
+                "integer",
+            )
+    finally:
+        conn.close()
+
+
+def test_downgrade_11_sql_returns_to_a_version_10_file(db_path, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[:RPE_VERSION])
+        new = Store(db_path)
+        _, ids = new.replace_planned(
+            date(2026, 10, 5),
+            date(2026, 10, 11),
+            date(2026, 10, 5),
+            [{"date": date(2026, 10, 6), "type": "running", "description": "Easy run"}],
+        )
+        new.update_session_status(ids[0], "done", None, None, rpe=7)
+        assert (new.get_session(ids[0]) or {}).get("rpe") == 7
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(DOWNGRADE_11_SQL)
+    finally:
+        conn.close()
+    assert _user_version(db_path) == RPE_VERSION - 1
+    with monkeypatch.context() as m:
+        m.setattr(store_module, "MIGRATIONS", MIGRATIONS[: RPE_VERSION - 1])
+        old = Store(db_path)
+        row = old.get_session(ids[0])
+        assert row is not None and row["status"] == "done" and "rpe" not in row
+    monkeypatch.setattr(store_module, "MIGRATIONS", MIGRATIONS[:RPE_VERSION])
+    again = Store(db_path)
+    assert _user_version(db_path) == RPE_VERSION
+    row = again.get_session(ids[0])
+    assert row is not None and row["status"] == "done" and row["rpe"] is None
+
+
+def _state(store, session_id) -> tuple[str, int | None]:
+    row = store.get_session(session_id)
+    assert row is not None
+    return row["status"], row["rpe"]
+
+
+def test_session_rpe_lives_only_on_done(store):
+    _, ids = store.replace_planned(
+        date(2026, 10, 5),
+        date(2026, 10, 11),
+        date(2026, 10, 5),
+        [
+            {"date": date(2026, 10, 6), "type": "running", "description": "A"},
+            {"date": date(2026, 10, 7), "type": "running", "description": "B"},
+            {"date": date(2026, 10, 8), "type": "running", "description": "C"},
+        ],
+    )
+    a, b, c = ids
+    steps = [
+        ("done", 7, ("done", 7)),
+        ("done", None, ("done", 7)),
+        ("done", 8, ("done", 8)),
+        ("skipped", None, ("skipped", None)),
+        ("done", None, ("done", None)),
+        ("done", 5, ("done", 5)),
+        ("planned", None, ("planned", None)),
+    ]
+    for status, rpe, expected in steps:
+        store.update_session_status(a, status, None, None, rpe=rpe)
+        assert _state(store, a) == expected
+    store.update_session_status(b, "done", None, None, rpe=5)
+    store.replace_planned(date(2026, 10, 5), date(2026, 10, 11), date(2026, 10, 5), [])
+    assert _state(store, b) == ("done", 5)
+    copy_id, _ = store.update_session_status(c, "moved", date(2026, 10, 9), None)
+    assert copy_id is not None
+    assert _state(store, c) == ("moved", None)
+    assert _state(store, copy_id) == ("planned", None)
+    store.update_session_status(copy_id, "done", None, None, rpe=6)
+    assert _state(store, copy_id) == ("done", 6)
