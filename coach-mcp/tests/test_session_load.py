@@ -64,12 +64,14 @@ def test_garmin_minutes_need_exactly_one_done_session_of_the_type():
         row(3, MON, "strength", duration_min=60),
         row(4, MON, "strength", duration_min=60),
         row(5, MON, "mobility", duration_min=20),
+        row(6, MON, "other", duration_min=20),  # Garmin has an `other` sport, but only matched types take its minutes
     ]
     by_id = {r.id: r for r in rate(sessions, acts, {})}
     assert (by_id[1].minutes, by_id[1].minutes_source) == (47.5, "garmin")
     assert (by_id[3].minutes, by_id[3].minutes_source) == (60.0, "plan")
     assert (by_id[4].minutes, by_id[4].minutes_source) == (60.0, "plan")
     assert (by_id[5].minutes, by_id[5].minutes_source) == (20.0, "plan")
+    assert (by_id[6].minutes, by_id[6].minutes_source) == (20.0, "plan")
 
 
 @pytest.mark.parametrize(

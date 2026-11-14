@@ -300,14 +300,15 @@ async def _plan_one_session_today(client) -> int:
 
 
 @pytest.mark.anyio
-async def test_update_session_rpe_through_http(app):
+@pytest.mark.parametrize("rpe", [1, 7, 10])  # both limits of the tool schema are accepted
+async def test_update_session_rpe_through_http(app, rpe):
     async with running_client(app) as client:
         sid = await _plan_one_session_today(client)
-        result = await call_tool(client, "update_session", {"session_id": sid, "status": "done", "rpe": 7}, id_=3)
+        result = await call_tool(client, "update_session", {"session_id": sid, "status": "done", "rpe": rpe}, id_=3)
         assert result["isError"] is False
-        assert payload(result)["session"]["rpe"] == 7
+        assert payload(result)["session"]["rpe"] == rpe
         listed = payload(await call_tool(client, "get_plan", {}, id_=4))
-        assert [s["rpe"] for s in listed["sessions"]] == [7]
+        assert [s["rpe"] for s in listed["sessions"]] == [rpe]
 
 
 @pytest.mark.anyio

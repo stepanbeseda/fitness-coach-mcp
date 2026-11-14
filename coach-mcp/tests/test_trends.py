@@ -571,6 +571,18 @@ def test_weekly_report_partial_current_week_has_no_monotony(store, history):
     assert over["session_load"]["monotony"] == 2.45 and flags_of(over)[-1] == "load_monotony"
 
 
+def test_weekly_report_load_monotony_flag_needs_a_final_week(store, history):
+    for monday in (W37, W38, W39, W40):
+        seed_week(history, monday, run=(60, 10.0, 100))
+    seed_week(history, W41, run=(60, 10.0, 100), days=6)  # the week is over, but one day was never fetched
+    for n in range(6):  # Mon-Sat, 300 each: monotony 2.45
+        seed_session(store, W41 + timedelta(days=n), "running", "done", duration_min=60, rpe=5)
+    out = report(store, history, today=d("2026-10-12"), week="2026-10-08")
+    assert out["week"]["partial"] is False
+    assert out["session_load"]["monotony"] == 2.45  # the session loads come from the plan, not from Garmin
+    assert "load_monotony" not in flags_of(out)
+
+
 def test_weekly_baseline_uses_available_weeks_and_counts_them(store, history):
     seed_daily(history, W38, days=3, resting_hr=50)  # a week with a few values still counts
     seed_daily(history, W39, resting_hr=46)
