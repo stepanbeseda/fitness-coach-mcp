@@ -54,14 +54,14 @@ with `cs`):
 ```text
 🟡 ⚠️ YELLOW · morning briefing 12 Oct
 
-Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7–8, cardio in zone 2.
+Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7, cardio in zone 2.
 Readiness: 58 (yellow)
 HRV: 49 ms, baseline 52–68 ms, below baseline 2 nights in a row (yellow)
 Sleep: 6 h 24 min, score 71 (yellow)
 Body Battery at wake: 46 (yellow)
 For full load: readiness at least 70; HRV back to at least 52 ms; sleep at least 7 h; Body Battery at wake at least 50.
 Today's plan:
-- strength: Lower body A: back squat 4×5, RDL 3×8, split squat 3×10 (60 min)
+- strength: Lower body A: back squat 4×5, RDL 3×8, split squat 3×10 (60 min) → reduce: 3×5 instead of 4×5, 2×8 instead of 3×8, 2×10 instead of 3×10, at most RPE 7
 Alerts:
 - Resting HR 54 bpm, 5 above the 7-day average of 49 bpm.
 ```

@@ -4323,7 +4323,3 @@ questions and answers round 1 (all defaults except Q6: the back row only while a
     projection and the Monday report also work for "bench 100 kg by spring".
     Done when: `set_goal` accepts a strength goal and `get_goal_progress` shows
     its trend.
-- **PR 36 alert and keyboard test (review 2, for PR 41).** No test pins that
-  `alert_updates` of `compose_briefing` are equal with and without the inline
-  keyboard. PR 41 (B1, verdict per today's session) is the next PR that touches
-  that function; it pins the equality.
