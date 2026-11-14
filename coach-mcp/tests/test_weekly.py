@@ -334,3 +334,24 @@ def test_every_item_key_has_a_sentence_with_its_numbers(language):
         item = items[0]
         fields = {name for _, name, _, _ in string.Formatter().parse(sentences[item["key"]]) if name}
         assert fields <= set(item["numbers"]), case
+
+
+# ------------------------------------------------------------------ load monotony (PR 40)
+
+MONOTONY_FLAG = {"flag": "load_monotony", "monotony": 2.45, "limit": 2.0, "strain": 4409, "week": 1800}
+
+
+def test_watch_line_for_load_monotony_en():
+    body = render_weekly(empty_report(flags=[MONOTONY_FLAG]), PROGRESS, "en").body
+    assert "Watch: load monotony 2.45 (above 2): the days are too alike in load." in body.splitlines()
+
+
+def test_watch_line_for_load_monotony_cs():
+    body = render_weekly(empty_report(flags=[MONOTONY_FLAG]), PROGRESS, "cs").body
+    assert "Pozor: monotonie zátěže 2,45 (nad 2): dny jsou si zátěží příliš podobné." in body.splitlines()
+
+
+def test_watch_line_for_a_load_monotony_flag_without_numbers():
+    flag = {"flag": "load_monotony", "limit": "x"}
+    body = render_weekly(empty_report(flags=[flag]), PROGRESS, "en").body
+    assert "Watch: load monotony ? (above ?): the days are too alike in load." in body.splitlines()

@@ -177,6 +177,7 @@ def sessions_out(store: Store, rows: list[dict[str, Any]]) -> list[dict[str, Any
                     "intensity": r["intensity"],
                     "duration_min": r["duration_min"],
                     "distance_km": r["distance_km"],
+                    "rpe": r.get("rpe"),
                     "garmin_workout_id": r["garmin_workout_id"],
                     "hevy_routine_id": r["hevy_routine_id"],
                     "moved_from_id": r["moved_from_id"],
@@ -412,13 +413,18 @@ def update_session(
     status: str,
     new_date: str | None = None,
     note: str | None = None,
+    rpe: int | None = None,
 ) -> dict[str, Any]:
     if status != "moved" and new_date is not None:
         raise ToolError("new_date is only allowed with status 'moved'")
     if status == "moved" and new_date is None:
         raise ToolError("new_date is required for status 'moved'")
+    if rpe is not None and status != "done":
+        raise ToolError("rpe is only allowed with status 'done'")
+    if rpe is not None and (isinstance(rpe, bool) or not isinstance(rpe, int) or not 1 <= rpe <= 10):
+        raise ToolError("rpe must be a whole number from 1 to 10")
     target = parse_date(new_date, "new_date") if new_date is not None else None
-    outcome = plan.mark_session(store, today, session_id, status, new_date=target, note=note)
+    outcome = plan.mark_session(store, today, session_id, status, new_date=target, note=note, rpe=rpe)
     if isinstance(outcome, plan.Refusal):
         raise refusal_error(outcome, "note")
     result: dict[str, Any] = {"session": _session_out(store, outcome.session)}

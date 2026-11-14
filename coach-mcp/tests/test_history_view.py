@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from fakes import FakeHistorySource, FakeStrengthSource
-from hevy_payloads import day_workout, events_page, hevy_template, updated
+from hevy_payloads import day_workout, events_page, hevy_exercise, hevy_set, hevy_template, hevy_workout, updated
 from history_helpers import exercise, local, make_job, run_first, seed_activities, seed_day, seed_strength, seed_sync, seed_template
 from mcp.server.mcpserver.exceptions import ToolError
 from view_values import sport
@@ -33,7 +33,7 @@ from coach_mcp.history_view import (
     plan_range,
 )
 from coach_mcp.store import Store
-from coach_mcp.strength import exercises_json
+from coach_mcp.strength import exercises_json, summarize_exercises
 
 
 def d(text: str) -> date:
@@ -338,6 +338,67 @@ def test_day_totals_best_of_a_day_across_workouts_and_title_fallback():
     entry = day_totals(rows, templates)[d("2026-10-05")].exercises["A"]
     assert entry["best"] == {"weight_kg": 115.0, "reps": 1, "e1rm_kg": 121.0}
     assert (entry["sets"], entry["volume_kg"], entry["title"]) == (5, 480.0, "Stored title")
+
+
+def _rated(entry: dict[str, Any], **rpe: Any) -> dict[str, Any]:
+    return {**entry, **rpe}
+
+
+def test_day_totals_combine_rpe_weighted_by_sets():
+    templates = Templates({"A": found("chest"), "B": found("lats")})
+    rows = [
+        row("2026-10-05", _rated(exercise("A", 3, 100.0), rpe_avg=8.5, rpe_max=9.0, rpe_sets=3), exercise("B", 2, 10.0), workout_id="W1"),
+        row("2026-10-05", _rated(exercise("A", 2, 100.0), rpe_avg=7.0, rpe_max=7.5, rpe_sets=2), workout_id="W2"),
+        row("2026-10-06", exercise("A", 2, 100.0), workout_id="W3"),
+    ]
+    totals = day_totals(rows, templates)
+    day, plain_day = totals[d("2026-10-05")], totals[d("2026-10-06")]
+    entry = day.exercises["A"]
+    assert entry["rpe_avg"] == pytest.approx(7.9) and entry["rpe_max"] == 9.0 and entry["rpe_sets"] == 5
+    assert day.rpe_avg == pytest.approx(7.9) and day.rpe_sets == 5
+    assert set(day.exercises["B"]) == {"title", "sets", "volume_kg", "best"}
+    assert plain_day.rpe_avg is None and plain_day.rpe_sets == 0
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"rpe_avg": 0.5, "rpe_max": 9.0, "rpe_sets": 3},
+        {"rpe_avg": 11, "rpe_max": 9.0, "rpe_sets": 3},
+        {"rpe_avg": "8", "rpe_max": 9.0, "rpe_sets": 3},
+        {"rpe_avg": True, "rpe_max": 9.0, "rpe_sets": 3},
+        {"rpe_avg": 8.0, "rpe_max": 10.5, "rpe_sets": 3},
+        {"rpe_avg": 8.0, "rpe_max": 9.0, "rpe_sets": 0},
+        {"rpe_avg": 8.0, "rpe_max": 9.0, "rpe_sets": -1},
+        {"rpe_avg": 8.0, "rpe_max": 9.0, "rpe_sets": 1.5},
+        {"rpe_avg": 8.0, "rpe_max": 9.0},
+    ],
+)
+def test_day_totals_ignore_invalid_stored_rpe(fields):
+    templates = Templates({"A": found("chest")})
+    day = day_totals([row("2026-10-05", _rated(exercise("A", 3, 100.0), **fields))], templates)[d("2026-10-05")]
+    assert not any(key.startswith("rpe") for key in day.exercises["A"])
+    assert day.rpe_avg is None
+
+
+def test_assisted_template_keeps_its_valid_rpe():
+    templates = Templates({"A": found("lats", type_="bodyweight_assisted_reps")})
+    entry = _rated(exercise("A", 3, 600.0, (40, 8, 50.7)), rpe_avg=7.0, rpe_max=8.0, rpe_sets=3)
+    day = day_totals([row("2026-10-05", entry)], templates)[d("2026-10-05")]
+    assert day.exercises["A"]["rpe_sets"] == 3 and day.volume_kg == 0.0 and day.rpe_avg == 7.0
+
+
+def test_rpe_round_trip_from_summary_to_view(store):
+    day = d("2026-10-05")
+    workout = hevy_workout(
+        "W1",
+        "2026-10-05T10:00:00Z",
+        [hevy_exercise("T1", "Bench", [hevy_set(100, 5, rpe=8), hevy_set(100, 5, rpe=8)])],
+    )
+    seed_template(store, "T1", "chest", title="Bench")
+    seed_strength(store, "W1", day, summarize_exercises(workout))
+    seed_sync(store, d("2026-09-01"), d("2026-10-07"))
+    assert HistoryView(store).strength(day, day).days[day].rpe_avg == 8.0
 
 
 def test_assisted_template_counts_sets_but_no_volume_or_best():

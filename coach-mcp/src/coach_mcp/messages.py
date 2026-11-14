@@ -280,7 +280,7 @@ class WeeklyTexts:
     best: Mapping[str, str]  # metric of get_weekly_report new_bests -> {value} {previous} {exercise}
     flags: str  # {items}
     # flag of get_weekly_report flags -> {pct} {minutes} {bpm}; detraining / load_spike also take the placeholders of
-    # briefing.detraining_parts / load_spike_parts
+    # briefing.detraining_parts / load_spike_parts; load_monotony takes {monotony} {limit}
     flag: Mapping[str, str]
     no_data: str
     goals: str
@@ -348,6 +348,7 @@ WEEKLY_EN = WeeklyTexts(
         "strength_volume_up": "strength volume {pct} % above the 4-week average",
         "detraining": 'detraining toward "{goal}"{details}: {reasons}',
         "load_spike": "working sets {sets}, {ratio}\u00d7 the 4-week average of {baseline}",
+        "load_monotony": "load monotony {monotony} (above {limit}): the days are too alike in load",
     },
     no_data="No stored data for this week (the nightly history is off or still loading).",
     goals="Goals:",
@@ -433,6 +434,7 @@ WEEKLY_CS = WeeklyTexts(
         "strength_volume_up": "objem síly o {pct} % nad průměrem 4 týdnů",
         "detraining": "detrénink před cílem \u201e{goal}\u201c{details}: {reasons}",
         "load_spike": "pracovní série {sets}, {ratio}\u00d7 průměr 4 týdnů ({baseline})",
+        "load_monotony": "monotonie zátěže {monotony} (nad {limit}): dny jsou si zátěží příliš podobné",
     },
     no_data="Pro tento týden nejsou uložená data (noční historie je vypnutá nebo se ještě načítá).",
     goals="Cíle:",

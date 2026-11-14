@@ -107,13 +107,16 @@ class FakeHistory:
         """One workout on ``day`` with one exercise, as the view sums it (an assisted exercise: volume 0, no best)."""
         self.workout(day, (tid, sets, volume_kg, best_set, group, title))
 
-    def workout(self, day: date, *exercises: tuple[str, int, float, dict[str, Any] | None, str, str | None]) -> None:
-        """One workout; each exercise is ``(tid, sets, volume_kg, best, group, title)``."""
+    def workout(self, day: date, *exercises: tuple[Any, ...]) -> None:
+        """One workout; each exercise is ``(tid, sets, volume_kg, best, group, title)`` with an optional 7th element,
+        the RPE tuple ``(rpe_avg, rpe_max, rpe_sets)`` of ``DayStrength.add``."""
         total = self._strength.setdefault(day, DayStrength())
         total.workouts += 1
-        for tid, sets, volume_kg, best_set, group, title in exercises:
+        for tid, sets, volume_kg, best_set, group, title, *rest in exercises:
             self._groups[tid] = group
-            total.add(tid, group=group, title=title, sets=sets, volume_kg=volume_kg, best=best_set)
+            total.add(
+                tid, group=group, title=title, sets=sets, volume_kg=volume_kg, best=best_set, rpe=rest[0] if rest else None
+            )
 
     def strength(self, start: date | None, end: date) -> StrengthHistory:
         self.calls.append(("strength", start, end))

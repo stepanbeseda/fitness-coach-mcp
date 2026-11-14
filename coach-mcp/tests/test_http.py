@@ -289,6 +289,39 @@ async def test_shape_errors_are_tool_errors_not_writes(app, name, arguments):
         assert ctx["goals"] == [] and ctx["constraints"] == [] and ctx["notes"] == []
 
 
+async def _plan_one_session_today(client) -> int:
+    saved = await call_tool(
+        client,
+        "save_plan",
+        {"week": TODAY.isoformat(), "sessions": [{"date": TODAY.isoformat(), "type": "running", "description": "Easy"}]},
+    )
+    assert saved["isError"] is False
+    return payload(saved)["sessions"][0]["id"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("rpe", [1, 7, 10])  # both limits of the tool schema are accepted
+async def test_update_session_rpe_through_http(app, rpe):
+    async with running_client(app) as client:
+        sid = await _plan_one_session_today(client)
+        result = await call_tool(client, "update_session", {"session_id": sid, "status": "done", "rpe": rpe}, id_=3)
+        assert result["isError"] is False
+        assert payload(result)["session"]["rpe"] == rpe
+        listed = payload(await call_tool(client, "get_plan", {}, id_=4))
+        assert [s["rpe"] for s in listed["sessions"]] == [rpe]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("rpe", [True, 7.0, 0, 11, "7"])
+async def test_update_session_rpe_shape_errors_write_nothing(app, rpe):
+    async with running_client(app) as client:
+        sid = await _plan_one_session_today(client)
+        result = await call_tool(client, "update_session", {"session_id": sid, "status": "done", "rpe": rpe}, id_=3)
+        assert result["isError"] is True
+        listed = payload(await call_tool(client, "get_plan", {}, id_=4))
+        assert [(s["status"], "rpe" in s) for s in listed["sessions"]] == [("planned", False)]
+
+
 @pytest.mark.anyio
 async def test_write_and_read_round_trip_over_http(app):
     async with running_client(app) as client:

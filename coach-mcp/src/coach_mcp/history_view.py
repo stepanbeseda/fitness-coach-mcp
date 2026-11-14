@@ -167,6 +167,7 @@ def _history_day(row: Mapping[str, Any]) -> HistoryDay | None:
 # ------------------------------------------------------------------ Hevy strength
 
 UNKNOWN_GROUP = "unknown"
+RPE_RANGE = (1.0, 10.0)  # the valid range of a Hevy set RPE and of the stored summary values (one home)
 ASSISTED_TYPES = frozenset({"bodyweight_assisted_reps"})  # weight_kg is assistance: no volume, no e1RM
 
 
@@ -239,10 +240,26 @@ class DayStrength:
     volume_kg: float = 0.0
     muscle_sets: dict[str, int] = field(default_factory=dict)
     muscle_volume: dict[str, float] = field(default_factory=dict)
-    exercises: dict[str, dict[str, Any]] = field(default_factory=dict)  # tid -> {title, sets, volume_kg, best}
+    # tid -> {title, sets, volume_kg, best} and, only when Hevy had RPE, rpe_avg, rpe_max, rpe_sets
+    exercises: dict[str, dict[str, Any]] = field(default_factory=dict)
+    rpe_sets: int = 0  # working sets of the day that carried a valid RPE
+    rpe_sum: float = 0.0
+
+    @property
+    def rpe_avg(self) -> float | None:
+        """Mean RPE of the day's rated working sets (unrounded), None when none carried one."""
+        return self.rpe_sum / self.rpe_sets if self.rpe_sets else None
 
     def add(
-        self, tid: str, *, group: str, title: str | None, sets: int, volume_kg: float, best: dict[str, Any] | None
+        self,
+        tid: str,
+        *,
+        group: str,
+        title: str | None,
+        sets: int,
+        volume_kg: float,
+        best: dict[str, Any] | None,
+        rpe: tuple[float, float, int] | None = None,
     ) -> None:
         """Add one exercise entry of a workout (the workout itself is counted by the caller)."""
         self.sets += sets
@@ -254,6 +271,14 @@ class DayStrength:
         entry["volume_kg"] += volume_kg
         if best is not None and better(best, entry["best"]):
             entry["best"] = best
+        if rpe is not None:
+            avg, top, rated = rpe
+            self.rpe_sets += rated
+            self.rpe_sum += avg * rated
+            have = entry.get("rpe_sets", 0)
+            entry["rpe_avg"] = (entry.get("rpe_avg", 0.0) * have + avg * rated) / (have + rated)
+            entry["rpe_max"] = max(entry.get("rpe_max", top), top)
+            entry["rpe_sets"] = have + rated
 
 
 def _entries(text: Any) -> list[dict[str, Any]]:
@@ -272,6 +297,17 @@ def _valid_best(value: Any) -> dict[str, Any] | None:
     if weight is None or estimate is None or reps is None:
         return None
     return {"weight_kg": weight, "reps": reps, "e1rm_kg": estimate}
+
+
+def _valid_rpe(entry: Mapping[str, Any]) -> tuple[float, float, int] | None:
+    """(rpe_avg, rpe_max, rpe_sets) of a stored summary entry, or None when absent or not valid."""
+    avg, top, rated = finite_float(entry.get("rpe_avg")), finite_float(entry.get("rpe_max")), whole(entry.get("rpe_sets"))
+    low, high = RPE_RANGE
+    if avg is None or top is None or rated is None or rated < 1:
+        return None
+    if not (low <= avg <= high and low <= top <= high):
+        return None
+    return avg, top, rated
 
 
 def day_totals(rows: Sequence[Mapping[str, Any]], templates: Templates) -> dict[date, DayStrength]:
@@ -297,6 +333,7 @@ def day_totals(rows: Sequence[Mapping[str, Any]], templates: Templates) -> dict[
                 sets=sets,
                 volume_kg=(finite_float(entry.get("volume_kg")) or 0.0) if counts else 0.0,
                 best=_valid_best(entry.get("best")) if counts else None,
+                rpe=_valid_rpe(entry),
             )
     return out
 
