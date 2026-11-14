@@ -11,7 +11,7 @@ from history_helpers import exercise, seed_strength, seed_w45
 from view_values import LIVE_TODAY, W45_DAY, W45_END, W45_SETS, FakeHistory, best, seed_live_strength, sport
 
 from conftest import TODAY
-from coach_mcp import strength, trends
+from coach_mcp import plan, strength, trends
 from coach_mcp.trends import DAILY_METRICS, METRIC_NAMES, TOTAL_METRICS
 from coach_mcp.weekly import render_weekly
 
@@ -461,6 +461,20 @@ def test_garmin_strength_and_other_sports_are_kept_apart(store, history):
     assert out["total"]["count"] == 1  # strength is not endurance
 
 
+_NO_SESSIONS = {"load": 0, "minutes": 0.0, "avg_rpe": None, "rated": 0, "unrated": 0, "no_minutes": 0}
+# The section exists for every week, also one without sessions.
+EMPTY_SESSION_LOAD = {
+    "total": _NO_SESSIONS,
+    "strength": _NO_SESSIONS,
+    "endurance": _NO_SESSIONS,
+    "complete": False,
+    "sessions": [],
+    "baseline": {"total": None, "strength": None, "endurance": None, "weeks": 0},
+    "monotony": None,
+    "strain": None,
+}
+
+
 def test_weekly_report_marks_sections_without_data(store, history):
     assert report(store, history) == {
         "week": {"start": "2026-09-28", "end": "2026-10-04", "iso_week": "2026-W40", "partial": False},
@@ -471,6 +485,7 @@ def test_weekly_report_marks_sections_without_data(store, history):
         "hrv": {"available": False},
         "resting_hr": {"available": False},
         "adherence": {"available": False},
+        "session_load": EMPTY_SESSION_LOAD,
         "new_bests": [],
         "flags": [],
         "recommendations": [],
@@ -533,12 +548,27 @@ def test_weekly_report_partial_current_week_has_no_load_flags(store, history):
     assert running["week"]["partial"] is True
     assert running["endurance"]["total"]["training_load"]["change_pct"] == 100.0  # still reported ...
     assert running["flags"] == [] and running["new_bests"] == []  # ... but no flag and no record yet
+    assert running["session_load"]["monotony"] is None  # the section exists, a partial week has no monotony
     over = report(store, history, today=d("2026-10-12"), week="2026-10-08")
     assert over["week"]["partial"] is False
     assert flags_of(over) == ["endurance_load_up"]
     assert over["new_bests"] == [
         {"metric": "endurance_training_load", "value": 200.0, "previous_best": 100.0, "weeks_compared": 4}
     ]
+
+
+def test_weekly_report_partial_current_week_has_no_monotony(store, history):
+    for monday in (W37, W38, W39, W40):
+        seed_week(history, monday, run=(60, 10.0, 100))
+    seed_week(history, W41, run=(60, 10.0, 100))
+    for n in range(6):  # Mon-Sat, 300 each: monotony 2.45 once the week is over
+        seed_session(store, W41 + timedelta(days=n), "running", "done", duration_min=60, rpe=5)
+    running = report(store, history, today=d("2026-10-08"), week="2026-10-08")
+    assert running["week"]["partial"] is True
+    assert running["session_load"]["total"]["load"] == 1800 and running["session_load"]["monotony"] is None
+    assert "load_monotony" not in flags_of(running)
+    over = report(store, history, today=d("2026-10-12"), week="2026-10-08")
+    assert over["session_load"]["monotony"] == 2.45 and flags_of(over)[-1] == "load_monotony"
 
 
 def test_weekly_baseline_uses_available_weeks_and_counts_them(store, history):
@@ -1097,6 +1127,69 @@ W45_SPIKE_FLAG = {
     "baseline_weeks": 4,
     "ratio": 3.54,
 }
+
+
+def seed_session(store, day, type_, status, *, duration_min=None, rpe=None) -> int:
+    """A plan session as stored (raw SQL, so a past date is no obstacle)."""
+    with sqlite3.connect(store.path) as conn:
+        cur = conn.execute(
+            "INSERT INTO sessions (date, type, description, status, duration_min, rpe, created_at, updated_at) "
+            "VALUES (?, ?, 'x', ?, ?, ?, '2026-10-01T00:00:00+00:00', '2026-10-01T00:00:00+00:00')",
+            (day.isoformat(), type_, status, duration_min, rpe),
+        )
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+
+W45_MON = date(2026, 11, 2)
+
+
+def test_weekly_report_session_load_from_store_and_history(store, history):
+    for n in range(7):
+        history.activities(W45_MON + timedelta(days=n), {})
+    history.activities(W45_MON, {"strength": sport(1, 58.0)})
+    history.activities(W45_MON + timedelta(days=1), {"running": sport(1, 47.5, 8.0)})
+    history.workout(W45_MON, ("T1", 3, 300.0, None, "chest", "Bench", (8.0, 9.0, 3)))
+    seed_session(store, W45_MON, "strength", "done", duration_min=60)
+    run = seed_session(store, W45_MON + timedelta(days=1), "running", "planned", duration_min=45)
+    seed_session(store, W45_MON + timedelta(days=3), "strength", "done", duration_min=60)
+    seed_session(store, W45_MON + timedelta(days=4), "running", "skipped", duration_min=45)
+    seed_session(store, W45_MON + timedelta(days=5), "mobility", "planned", duration_min=20)
+    assert isinstance(plan.mark_session(store, W45_DAY, run, "done", rpe=6), plan.Marked)
+    out = report(store, history, today=W45_DAY, week="2026-11-02")
+    load = out["session_load"]
+    assert load["strength"] == {"load": 464, "minutes": 58.0, "avg_rpe": 8.0, "rated": 1, "unrated": 1, "no_minutes": 0}
+    assert load["endurance"] == {"load": 285, "minutes": 47.5, "avg_rpe": 6.0, "rated": 1, "unrated": 0, "no_minutes": 0}
+    assert load["total"] == {"load": 749, "minutes": 105.5, "avg_rpe": 7.1, "rated": 2, "unrated": 1, "no_minutes": 0}
+    assert load["complete"] is False and load["monotony"] is None and load["strain"] is None
+    assert [s["load"] for s in load["sessions"]] == [464, 285, None]
+    keys = list(out)
+    assert keys.index("session_load") == keys.index("adherence") + 1
+    assert load["total"]["rated"] + load["total"]["unrated"] == out["adherence"]["done"]
+
+
+def _six_days(store, *, minutes=60):
+    for n in range(6):
+        seed_session(store, W45_MON + timedelta(days=n), "running", "done", duration_min=minutes, rpe=5)
+
+
+def test_weekly_report_load_monotony_flag_is_last(store):
+    seed_w45(store)
+    _six_days(store)
+    out = w45_report(store)
+    names = [f["flag"] for f in out["flags"]]
+    assert "load_spike" in names
+    assert out["flags"][-1] == {"flag": "load_monotony", "monotony": 2.45, "limit": 2.0, "strain": 4409, "week": 1800}
+    assert out["session_load"]["monotony"] == 2.45
+
+
+def test_weekly_report_monotony_below_the_limit_has_no_flag(store):
+    seed_w45(store)
+    for n in (0, 2, 4):  # three runs of load 400
+        seed_session(store, W45_MON + timedelta(days=n), "running", "done", duration_min=80, rpe=5)
+    out = w45_report(store)
+    assert out["session_load"]["monotony"] == 0.87
+    assert "load_monotony" not in [f["flag"] for f in out["flags"]]
 
 
 def w45_report(store, today=W45_DAY):

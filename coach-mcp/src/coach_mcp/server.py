@@ -58,8 +58,11 @@ INSTRUCTIONS = (
     "dropped for 14 days) and a strength load spike (working sets of 7 days above 1.5x the usual). "
     "get_trends returns the stored daily Garmin history (collected nightly) aggregated by day, week or month: "
     "use it for anything older than 28 days. get_weekly_report compares one ISO week with the previous four: "
-    "use it for weekly reviews (it includes strength volume and sets per muscle group from Hevy) "
+    "use it for weekly reviews (it includes strength volume and sets per muscle group from Hevy, and session_load: "
+    "sRPE x minutes of the done plan sessions) "
     "and start from its recommendations (at most 3, the same as the Monday message). "
+    "When the athlete says how hard a done session was (RPE 1-10), propose update_session with rpe; do not chase "
+    "it. Logging RPE in Hevy is optional. "
     "get_strength_progress returns the estimated 1RM (Epley) per exercise over time from the stored Hevy history "
     "with a plateau flag: use it for strength progression; for the latest workout and exact sets call Hevy. "
     "A day whose best e1RM is more than 35 % above or 30 % below the median of the previous 3 sessions is "
@@ -391,7 +394,11 @@ def build_server(
         load spike (working sets above 1.5x the baseline). A suspect strength day (an e1RM far from the
         previous sessions) is no new best; it is listed in strength.to_check with a strength_record_suspect
         flag. recommendations lists at most 3 next steps from those flags (key, source flag, numbers; the same
-        as the Monday message), safety first. Sections without data are marked available: false. Reads the
+        as the Monday message), safety first. session_load sums sRPE x minutes (Foster) of the done plan sessions
+        for strength and endurance (RPE recorded with update_session, else for strength the mean RPE of that day's
+        Hevy working sets; minutes from Garmin, else planned), with the counts of rated and unrated sessions, a
+        four-week baseline and the week's monotony and strain (load_monotony flag above 2.0).
+        Sections without data are marked available: false. Reads the
         stored history only."""
         return trends.get_weekly_report(store, today(), week=week)
 

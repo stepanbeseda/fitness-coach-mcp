@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import load, recommendations, strength, tools
+from . import load, recommendations, session_load, strength, tools
 from .history import ENDURANCE_SPORTS, SPORTS
 from .history_view import HistoryDay, HistoryReader, HistoryView, history_range
 from .store import Store
@@ -296,6 +296,15 @@ def get_weekly_report(
     hrv = _hrv_section(this, baselines)
     resting = _daily_section(this, baselines, "resting_hr", "bpm")
     adherence = _adherence(store, today, monday, sunday, baseline_mondays)
+    hevy_days = view.strength(baseline_mondays[0], sunday).days  # the same range _strength reads (one more read, D10)
+    load_section = session_load.section(
+        store.sessions_between(baseline_mondays[0], sunday),
+        {day: entry.activities for day, entry in by_day.items()},
+        {day: avg for day, total in hevy_days.items() if (avg := total.rpe_avg) is not None},
+        monday,
+        baseline_mondays,
+        partial=partial,
+    )
     stats = {
         "load": _stat_for(this, complete_baselines, "endurance", "training_load"),
         "time": _stat_for(this, complete_baselines, "endurance", "duration_min"),
@@ -322,8 +331,12 @@ def get_weekly_report(
         "hrv": hrv,
         "resting_hr": resting,
         "adherence": adherence,
+        "session_load": load_section,
         "new_bests": _new_bests(view, this, monday, final) + strength_bests,
-        "flags": _flags(this, final, stats) + detraining_flags + strength_flags,
+        "flags": _flags(this, final, stats)
+        + detraining_flags
+        + strength_flags
+        + session_load.flags(load_section, final=final),
     }
     report["recommendations"] = recommendations.recommend(report)  # last key: rules over the finished report
     return report

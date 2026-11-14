@@ -22,11 +22,11 @@ stay as `superseded`.
 | `set_goal` | write | creates a goal, or (with `goal_id`) changes the given fields; closed with status `achieved` / `abandoned`; a measurable goal gets a `metric` and a `target_value` (see Goal progress) |
 | `set_constraint` | write | creates a constraint (`kind` + title + details), or changes the given fields; status `resolved` once it no longer applies |
 | `save_plan` | write | saves the plan for one ISO week: replaces planned sessions from today on (the old ones stay as `superseded`), keeps done, skipped, moved and past ones |
-| `update_session` | write | sets a session's status (`planned` / `done` / `skipped` / `moved`); `moved` with `new_date` creates a linked planned copy; `done` is refused for a session dated after today; optional note |
+| `update_session` | write | sets a session's status (`planned` / `done` / `skipped` / `moved`); `moved` with `new_date` creates a linked planned copy; `done` is refused for a session dated after today; optional note; optional `rpe` 1–10 with `done` (the session effort the athlete stated, counted in `session_load`) |
 | `add_note` | write | adds a dated note to the log, optionally linked to a session |
 | `get_daily_briefing` | read | today's morning briefing: green / yellow / red verdict, the numbers behind it, what is missing, today's plan and alerts; computed the same way as the morning push, from current data |
 | `get_trends` | read | stored daily Garmin history (HRV, sleep, resting HR, Body Battery, stress, readiness, load, VO2max, activities by sport) for any period by day, week or month: count, mean, minimum, maximum, change |
-| `get_weekly_report` | read | one ISO week against the average of the previous four: endurance by sport, sleep, HRV, resting HR, plan completion, strength volume and sets per muscle group from Hevy, new records (including estimated 1RM) and warnings; a suspect strength day is no record and is listed in `strength.to_check`; plus at most 3 recommendations (`recommendations`: key, source flag and numbers, the same as the Monday report); sections without data have `available: false` |
+| `get_weekly_report` | read | one ISO week against the average of the previous four: endurance by sport, sleep, HRV, resting HR, plan completion, strength volume and sets per muscle group from Hevy, new records (including estimated 1RM) and warnings; session load (`session_load`: sRPE × minutes of the done plan sessions for strength and endurance, rated and unrated counts, a four-week baseline, Foster monotony and strain; a `load_monotony` warning above 2.0); a suspect strength day is no record and is listed in `strength.to_check`; plus at most 3 recommendations (`recommendations`: key, source flag and numbers, the same as the Monday report); sections without data have `available: false` |
 | `get_strength_progress` | read | estimated 1RM (Epley) per exercise and workout from the stored Hevy history: best set of each training day, best, first and latest value and a plateau flag (`plateau_weeks`, default 4); a day far from its neighbours is `suspect` and listed in `to_check` |
 | `search_notes` | read | full-text search in the whole notes log (`get_coach_context` has only the latest 10): all words of the query, newest first, optionally a date range or a session, max. 50 results and a `more` flag |
 | `get_goal_progress` | read | progress of every active goal with a metric from the stored history: current value, values 4 and 12 weeks ago, trend per week, projection to the target date and `on_track` (see Goal progress) |
@@ -146,7 +146,7 @@ Exit code: 0 sent, 1 failed, 2 push not configured or wrong argument.
 
 On Mondays the scheduler sends a second message right after the briefing: last week's numbers (the same as
 `get_weekly_report` for the ISO week that ended yesterday: endurance, strength, sleep, HRV, resting HR, plan, new
-bests, watch-outs including detraining toward the endurance goal and a strength load spike) and the progress of the goals with a metric (see Goal progress), and last at most three
+bests, watch-outs including detraining toward the endurance goal, a strength load spike and a load monotony above 2.0) and the progress of the goals with a metric (see Goal progress), and last at most three
 recommendations ("Recommendations:", the `recommendations` of `get_weekly_report`, safety first; left out when
 nothing fires). The title is
 `📊 Weekly report 2026-W41 · 5 Oct–11 Oct`. It is an event about the reported week, de-duplicated by that week's
@@ -438,6 +438,22 @@ Run `scripts/backup.sh` before moving to an older version.
 and names the procedure below. Every version these procedures go back to is older than `scripts/deploy.sh`:
 check out that commit (`git checkout <commit>`) and start it the way it was started then,
 `docker compose up -d --build --no-deps coach-mcp`. Come back with `git checkout main` and `scripts/deploy.sh`.
+
+**Going back to a version without session RPE** (schema 11 → 10). An older image refuses a database with schema 11
+(`database schema version 11 is newer`). Before deploying the older version, drop the column `sessions.rpe`: the
+session efforts recorded with `update_session` are lost, every session, plan, note and history row stays (the RPE
+inside the stored Hevy summaries stays too; older versions ignore it). The service must be stopped; run the
+commands one at a time:
+
+```bash
+docker compose stop coach-mcp
+docker compose run --rm --no-deps -T --entrypoint python coach-mcp -c 'import sqlite3, sys; c = sqlite3.connect("file:/data/coach/coach.db?mode=rw", uri=True); v = c.execute("PRAGMA user_version").fetchone()[0]; v == 11 or sys.exit(f"schema version {v}, expected 11: nothing changed"); c.executescript("BEGIN IMMEDIATE; ALTER TABLE sessions DROP COLUMN rpe; PRAGMA user_version = 10; COMMIT;"); print("schema version", c.execute("PRAGMA user_version").fetchone()[0])'
+```
+
+The second command must print `schema version 10`. Then deploy the older version (the commit before PR 40; see
+"Deploying an older version" above). When it prints `… nothing changed`, the database does not have schema 11 and
+nothing changed. On an empty volume it ends with the error `unable to open database file` and creates nothing. To go
+back to an even older version, run this 11 → 10 procedure first and then the ones below.
 
 **Going back to a version without the load alerts** (schema 10 → 9). An older image refuses a database with
 schema 10 (`database schema version 10 is newer`). Before deploying the older version, delete the alert state of

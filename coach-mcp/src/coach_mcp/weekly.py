@@ -13,9 +13,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, TypeGuard
 
-from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _one_line, detraining_parts, fmt, load_spike_parts
+from .briefing import MAX_MESSAGE_BYTES, _guard_bytes, _one_line, detraining_parts, fmt, fmt_ratio, load_spike_parts
 from .messages import Texts, WeeklyTexts, texts, weekly_texts
 from .push import PushMessage
+from .values import finite
 
 
 def _duration(w: WeeklyTexts, minutes: float) -> str:
@@ -215,6 +216,12 @@ def render_weekly(report: dict[str, Any], progress: dict[str, Any], language: st
             if name == "detraining"
             else load_spike_parts(t, flag) if name == "load_spike" else {}
         )
+        if name == "load_monotony":
+            monotony, limit = flag.get("monotony"), flag.get("limit")
+            extra = {
+                "monotony": fmt_ratio(monotony, sep) if finite(monotony) is not None else "?",
+                "limit": fmt(limit, sep) if finite(limit) is not None else "?",
+            }
         flags.append(
             template.format(
                 pct=fmt(abs(pct), sep) if pct is not None else "?",

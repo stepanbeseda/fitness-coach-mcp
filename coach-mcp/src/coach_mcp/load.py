@@ -10,7 +10,8 @@ Two signals, both computed here and nowhere else, so the morning alert and the w
 
 An input that is not there (history off, too few stored ACWR values, days whose activities were never fetched,
 no Hevy coverage) leaves the condition unknown (None), never false. ``load_signals`` is the one function that
-computes the morning signals; PR 40 adds Foster monotony and strain to it.
+computes the morning signals. Foster monotony and strain are weekly only
+(``session_load``).
 """
 
 from __future__ import annotations
