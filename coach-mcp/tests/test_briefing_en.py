@@ -7,6 +7,7 @@ import pytest
 from briefing_helpers import GREEN_SESSION
 from coach_mcp.briefing import build_briefing
 from coach_mcp.messages import EN, LANGUAGES
+from coach_mcp.session_advice import REASONS
 from garmin_payloads import DAY, GREEN_SNAPSHOT, device_status, garmin_data, yellow_data
 
 GREEN_TITLE = "\U0001f7e2 GREEN · morning briefing 7 Oct"
@@ -21,7 +22,7 @@ Today's plan:
 
 YELLOW_TITLE = "\U0001f7e1 ⚠️ YELLOW · morning briefing 7 Oct"
 YELLOW_MESSAGE = """\
-Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7–8, cardio in zone 2.
+Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7, cardio in zone 2.
 Readiness: 61 (yellow)
 HRV: missing
 Sleep: 6 h 15 min, score 70 (yellow)
@@ -70,8 +71,20 @@ def test_every_catalogue_names_every_key(texts):
         (texts.status_suffix, EN.status_suffix),
         (texts.advice, EN.advice),
         (texts.acwr, EN.acwr),
+        (texts.session_advice, EN.session_advice),
+        (texts.advice_reason, EN.advice_reason),
     ]:
         assert set(mapping) == set(keys)
+    assert set(EN.session_advice) == {
+        "ok",
+        "swap",
+        "reduce_easy_endurance",
+        "reduce_hard_endurance",
+        "reduce_strength",
+        "reduce_rpe",
+        "reduce_mobility_other",
+    }
+    assert set(EN.advice_reason) == set(REASONS)
 
 
 def _missing(local: str, utc: str) -> str:

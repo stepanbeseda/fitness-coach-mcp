@@ -406,7 +406,7 @@ Dnes v plánu:
 - běh: 10 km lehce, zóna 2 (60 min, 10 km)"""
 
 YELLOW_MESSAGE = """\
-Verdikt: žlutá – sniž objem o 20–30 %, intenzitu nejvýš RPE 7–8, kardio v zóně 2.
+Verdikt: žlutá – sniž objem o 20–30 %, intenzitu nejvýš RPE 7, kardio v zóně 2.
 Readiness: 61 (žlutá)
 HRV: chybí
 Spánek: 6 h 15 min, skóre 70 (žlutá)
