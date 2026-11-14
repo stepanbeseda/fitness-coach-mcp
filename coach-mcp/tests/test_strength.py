@@ -22,10 +22,12 @@ from coach_mcp.strength import (
     e1rm,
     exercises_json,
     get_strength_progress,
+    is_working_set,
     listing_due,
     listing_since,
     page_step,
     parse_events,
+    set_rpe,
     since_text,
     summarize_exercises,
     updated_key,
@@ -74,6 +76,61 @@ def test_summary_excludes_warmups_and_counts_other_set_types():
     assert entry["volume_kg"] == 100 * 5 + 80 * 8 + 100 * 3 + 100 * 5  # the warm-up (400 kg) is not in it
     (other,) = summarize_exercises(one(hevy_set(100, 5, "something-new")))
     assert other["sets"] == 1  # an unknown type is a working set
+
+
+def test_summary_rpe_of_working_sets():
+    sets = [
+        hevy_set(40, 10, "warmup", rpe=10),
+        hevy_set(100, 5, "normal", rpe=8),
+        hevy_set(80, 8, "dropset", rpe=8.5),
+        hevy_set(100, 3, "failure", rpe=9),
+    ]
+    (entry,) = summarize_exercises(one(*sets))
+    assert entry["sets"] == 3
+    assert entry["rpe_avg"] == 8.5 and entry["rpe_max"] == 9.0 and entry["rpe_sets"] == 3
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1, 1.0),
+        (10, 10.0),
+        (8.5, 8.5),
+        (0, None),
+        (0.5, None),
+        (10.5, None),
+        (True, None),
+        ("8", None),
+        (float("nan"), None),
+        (float("inf"), None),
+        (None, None),
+    ],
+)
+def test_set_rpe_validity(value, expected):
+    assert set_rpe({"rpe": value}) == expected
+    assert set_rpe({}) is None
+
+
+def test_summary_ignores_an_invalid_rpe_set():
+    (entry,) = summarize_exercises(one(hevy_set(100, 5, rpe=11), hevy_set(100, 5, rpe=7)))
+    assert entry["sets"] == 2 and entry["rpe_sets"] == 1 and entry["rpe_avg"] == 7.0
+
+
+def test_summary_without_rpe_keeps_its_keys():
+    plain = one(hevy_set(100, 5), hevy_set(80, 8))
+    explicit_none = one({"type": "normal", "weight_kg": 100, "reps": 5, "rpe": None})
+    for entries in (summarize_exercises(plain), summarize_exercises(explicit_none)):
+        assert [set(e) for e in entries] == [{"template_id", "title", "sets", "volume_kg", "best"}]
+        assert "rpe" not in exercises_json(entries)
+
+
+def test_bodyweight_set_rpe_counts():
+    (entry,) = summarize_exercises(one({"type": "normal", "reps": 12, "rpe": 7}))
+    assert entry["volume_kg"] == 0.0 and entry["rpe_sets"] == 1 and entry["rpe_max"] == 7.0
+    assert is_working_set({"type": "warmup"}) is False
+    assert is_working_set({"type": "dropset"}) is True
+    assert is_working_set({}) is True
+    assert is_working_set("x") is False
 
 
 def test_summary_volume_needs_weight_and_reps():

@@ -1,8 +1,9 @@
 """Strength history from Hevy: pure rules for summarising workouts, reading workout events and evaluating
 event pages (used by the history job), and the weekly sums and ``get_strength_progress`` over the strength days
-of the history view (``history_view``, which sums the stored summaries); no clock, no network; raw sets are
-never stored. A day whose best e1RM jumps far from its neighbours is marked suspect (a likely entry error) and
-counts neither for a best nor for the progress summary.
+of the history view (``history_view``, which sums the stored summaries); no clock, no network; raw sets are never stored, only
+per-exercise summaries (with the average and maximum RPE of the working sets when Hevy has it). A day whose best
+e1RM jumps far from its neighbours is marked suspect (a likely entry error) and counts neither for a best nor for the
+progress summary.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from .clock import local_at, local_day
-from .history_view import OVERLAP, Coverage, DayStrength, HistoryReader, HistoryView, better, history_range, sync_dates
+from .history_view import OVERLAP, RPE_RANGE, Coverage, DayStrength, HistoryReader, HistoryView, better, history_range, sync_dates
 from .store import Store
 from .values import finite_float, valid_id, whole
 
@@ -28,6 +29,7 @@ SUSPECT_UP_PCT = 35.0  # a day this far above the median of its neighbours is su
 SUSPECT_DOWN_PCT = 30.0
 SUSPECT_WINDOW = 3  # sessions in the reference median
 SUSPECT_MIN_FOLLOWING = 2  # the first session is judged only against this many later ones
+RPE_MIN, RPE_MAX = RPE_RANGE  # a Hevy set RPE outside this range is ignored
 
 # ------------------------------------------------------------ write side: summaries
 
@@ -39,6 +41,17 @@ def e1rm(weight_kg: float, reps: int) -> float | None:
     return weight_kg if reps == 1 else weight_kg * (1 + reps / 30)
 
 
+def is_working_set(raw: object) -> bool:
+    """A Hevy set that counts: a dict whose type is not warmup (dropset, failure, missing or unknown type count)."""
+    return isinstance(raw, dict) and raw.get("type") != "warmup"
+
+
+def set_rpe(raw: Mapping[str, Any]) -> float | None:
+    """The RPE of one set as a float when it is a finite number (not a bool) in 1..10; None otherwise."""
+    value = finite_float(raw.get("rpe"))
+    return value if value is not None and RPE_MIN <= value <= RPE_MAX else None
+
+
 class _Acc:
     """Running totals of one template inside one workout."""
 
@@ -47,9 +60,18 @@ class _Acc:
         self.volume = 0.0
         self.title: str | None = None
         self.best: tuple[float, float, int] | None = None  # (e1rm, weight, reps)
+        self.rpe_sum = 0.0
+        self.rpe_sets = 0
+        self.rpe_max: float | None = None
+
 
     def add_set(self, raw: Mapping[str, Any]) -> None:
         self.sets += 1
+        rpe = set_rpe(raw)  # independent of weight and reps: a bodyweight set with an RPE counts
+        if rpe is not None:
+            self.rpe_sum += rpe
+            self.rpe_sets += 1
+            self.rpe_max = rpe if self.rpe_max is None else max(self.rpe_max, rpe)
         weight, reps = finite_float(raw.get("weight_kg")), whole(raw.get("reps"))
         if weight is not None and weight > 0 and reps is not None and reps >= 1:
             self.volume += weight * reps
@@ -66,7 +88,8 @@ def summarize_exercises(workout: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     Warm-up sets are skipped; every other set (also dropset, failure, missing or unknown type) is a working
     set. Volume is the sum of weight x reps over working sets that have both; the best set has the highest
-    Epley e1RM. An exercise with only warm-ups, or without a valid template id, is dropped.
+    Epley e1RM. An exercise with only warm-ups, or without a valid template id, is dropped. When a working set
+    carries a valid RPE (1-10) the entry also has ``rpe_avg`` (1 decimal), ``rpe_max`` and ``rpe_sets``.
     """
     exercises = workout.get("exercises")
     if not isinstance(exercises, list):
@@ -81,7 +104,7 @@ def summarize_exercises(workout: Mapping[str, Any]) -> list[dict[str, Any]]:
             acc.title = title.strip()[:MAX_TITLE]
         sets = exercise.get("sets")
         for raw in sets if isinstance(sets, list) else []:
-            if isinstance(raw, dict) and raw.get("type") != "warmup":
+            if is_working_set(raw):
                 acc.add_set(raw)
     out: list[dict[str, Any]] = []
     for template_id, acc in accs.items():
@@ -91,15 +114,18 @@ def summarize_exercises(workout: Mapping[str, Any]) -> list[dict[str, Any]]:
         if acc.best is not None:
             estimate, weight, reps = acc.best
             best = {"weight_kg": round(weight, 2), "reps": reps, "e1rm_kg": round(estimate, 1)}
-        out.append(
-            {
-                "template_id": template_id,
-                "title": acc.title,
-                "sets": acc.sets,
-                "volume_kg": round(acc.volume, 1),
-                "best": best,
-            }
-        )
+        entry: dict[str, Any] = {
+            "template_id": template_id,
+            "title": acc.title,
+            "sets": acc.sets,
+            "volume_kg": round(acc.volume, 1),
+            "best": best,
+        }
+        if acc.rpe_sets > 0:
+            entry["rpe_avg"] = round(acc.rpe_sum / acc.rpe_sets, 1)
+            entry["rpe_max"] = acc.rpe_max
+            entry["rpe_sets"] = acc.rpe_sets
+        out.append(entry)
     return out
 
 
