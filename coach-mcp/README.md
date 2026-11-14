@@ -94,8 +94,9 @@ in `get_daily_briefing` as `session_advice` (one entry per planned session: `ses
 `swap`, `class`, `reason`, `change`); `planned` stays the rows of `get_plan`. The class comes from the session type
 and keywords in its intensity and description (`session_advice.py`): easy endurance (zone 1–2, easy, lehce), hard
 endurance (intervals, tempo, zone 3–5, strides, race, or text the rules cannot read), strength and mobility / other.
-Yellow keeps easy endurance, turns hard endurance into easy zone 2 and takes one set off every sets×reps scheme with
-at least 2 sets (3×8 → 2×8) at most at RPE 7; red cuts easy endurance to 40 min in zone 1–2 and swaps hard endurance
+Yellow keeps easy endurance, turns hard endurance into easy zone 2 and takes one set off the sets×reps schemes with
+at least 2 sets (3×8 → 2×8; at most four distinct ones are named, a text without a readable scheme says "1 set fewer
+per exercise", a lone 1×5 gets only the RPE cap) at most at RPE 7; red cuts easy endurance to 40 min in zone 1–2 and swaps hard endurance
 and strength for recovery. A green day, done, skipped and moved sessions and Garmin-only workouts get no advice.
 Example (Czech): `- síla: bench 3×8 @ 75 kg (RPE 8) → zmírni: 2×8 místo 3×8, nejvýš RPE 7`.
 

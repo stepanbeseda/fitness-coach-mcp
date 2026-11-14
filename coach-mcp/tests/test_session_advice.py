@@ -159,6 +159,22 @@ EDGE_ROWS = [
     # Known limit (conservative side): spaces around the dash make "Z2 - 5" a zone range 2-5, so it reads as hard.
     ("running", None, "Běh Z2 - 5 km", "hard_endurance"),
     ("running", "Z2", "Běh 3×2 km", "easy_endurance"),  # a km scheme is not a zone
+    ("running", "Z2", "Intervaly 4 km", "hard_endurance"),  # hard stem "interval" beats zone 2
+    ("running", "Z2", "Tempo 4 km", "hard_endurance"),  # hard stem "tempo" beats zone 2
+    ("running", "Z2", "Závod 5 km", "hard_endurance"),  # hard stem "závod" beats zone 2
+    ("running", "Z2", "Race 5 km", "hard_endurance"),  # hard stem "race" beats zone 2
+    ("running", "Z2", "Fartlek 5 km", "hard_endurance"),  # hard stem "fartlek" beats zone 2
+    ("running", "Z2", "Threshold 3×1 km", "hard_endurance"),  # hard stem "threshold" beats zone 2
+    ("running", "Z2", "Práh 4 km", "hard_endurance"),  # hard stem "práh" beats zone 2
+    ("running", "Z2", "Prahový běh 4 km", "hard_endurance"),  # hard stem "prahov" beats zone 2
+    ("running", "Z2", "Sprint 6×100 m", "hard_endurance"),  # hard stem "sprint" beats zone 2
+    ("running", "Z2", "Kopce 5×1 min", "hard_endurance"),  # hard stem "kopc" beats zone 2
+    ("running", "Z2", "Hill repeats", "hard_endurance"),  # hard stem "hill" beats zone 2
+    ("running", None, "Lehký běh 6 km", "easy_endurance"),  # easy stem "lehk" without a zone
+    ("running", None, "Regenerace", "easy_endurance"),  # easy stem "regener" without a zone
+    ("running", None, "Volně 5 km", "easy_endurance"),  # easy stem "volně" without a zone
+    ("running", None, "Pohodově 5 km", "easy_endurance"),  # easy stem "pohodov" without a zone
+    ("running", None, "Z4 3 km, Z1 vyklus", "hard_endurance"),  # a zone above 2 anywhere, not only the last
 ]
 
 
@@ -191,6 +207,13 @@ SCHEME_ROWS = [
     ("Celé tělo", [], True),
     ("12,5x3", [], True),
     ("3×8-10 bench", _pairs(("3×8–10", "2×8–10")), False),  # the hyphen becomes an en dash
+    ("bench 3 × 8 – 10 @ 60", _pairs(("3×8–10", "2×8–10")), False),  # whitespace inside the range goes
+    ("3×2 km", [], True),  # a km unit is not reps
+    ("výpady 3×2 h", [], True),  # nor an h unit
+    # The unit guard holds for a rep range too: the range is not cut back to its first number.
+    ("4×8–10 min výpady", [], True),
+    ("3×30–45 s plank", [], True),
+    ("4 × 8 – 10 min", [], True),
     (
         "5×5, 5×5, 5×5, 4×6, 3×8, 3×10",
         _pairs(("5×5", "4×5"), ("4×6", "3×6"), ("3×8", "2×8"), ("3×10", "2×10")),
@@ -236,6 +259,9 @@ def test_floors_replace_the_action_when_at_least_as_strong():
     advice = session_advice("yellow", STRENGTH_DW, floors={"strength": ("reduce", "floor")})
     assert (advice.action, advice.reason) == ("reduce", "floor")
     assert advice.change == CHANGES[("yellow", "strength")]
+    # A reduce floor applies on green too: a missing cell counts as "ok", the floor is stronger.
+    advice = session_advice("green", STRENGTH_DW, floors={"strength": ("reduce", "floor")})
+    assert (advice.action, advice.reason, advice.change) == ("reduce", "floor", CHANGES[("yellow", "strength")])
     # A weaker floor is ignored.
     advice = session_advice("red", STRENGTH_DW, floors={"strength": ("reduce", "floor")})
     assert (advice.action, advice.reason) == ("swap", "verdict")
@@ -259,3 +285,12 @@ def test_advice_payload_shape():
         "reason": "verdict",
         "change": {"rpe_max": 7, "sets": [{"from": "3×8", "to": "2×8"}], "minus_one_set": False},
     }
+
+
+def test_payload_does_not_share_change_lists_with_the_advice():
+    advice = session_advice("yellow", STRENGTH_DW)
+    payload = advice.payload()
+    payload["change"]["sets"].append({"from": "x", "to": "y"})
+    payload["change"]["rpe_max"] = 1
+    assert advice.change["sets"] == [{"from": "3×8", "to": "2×8"}]
+    assert advice.change["rpe_max"] == 7

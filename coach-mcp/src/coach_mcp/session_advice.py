@@ -46,9 +46,10 @@ _HARD = re.compile(
 _EASY = re.compile(r"\b(?:lehk|lehce|easy|regener|recovery|volně|pohodov)", re.IGNORECASE)
 # "Z2", "Z1–Z2", "zóna 2", "zóně 1–2", "zone 3-4": every zone number named.
 _ZONE = re.compile(r"(?:\bz|\bzón\w*\s*|\bzone\s*)([1-5])(?:\s*[–-]\s*z?([1-5]))?(?!\d)", re.IGNORECASE)
-# "3×8", "3x10", "4 × 8–10"; not "6× 20 s", "6×800 m", "4x4 min" (a duration or distance, not reps).
+# "3×8", "3x10", "4 × 8–10"; not "6× 20 s", "6×800 m", "4x4 min", "4×8–10 min" (a duration or distance, not reps).
+# The rep range is possessive, so the unit guard cannot be dodged by backtracking out of "8–10".
 _SCHEME = re.compile(
-    r"(?<![\d.,])(\d{1,2})\s*[×xX]\s*(\d{1,3}(?:\s*[–-]\s*\d{1,3})?)(?!\d)(?!\s*(?:s|sec|sek|min|m|km|h)\b)"
+    r"(?<![\d.,])(\d{1,2})\s*[×xX]\s*(\d{1,3}(?:\s*[–-]\s*\d{1,3})?+)(?!\d)(?!\s*(?:s|sec|sek|min|m|km|h)\b)"
 )
 _WS = re.compile(r"\s+")
 
@@ -67,7 +68,7 @@ class Advice:
             "action": self.action,
             "class": self.cls,
             "reason": self.reason,
-            "change": dict(self.change),
+            "change": {k: list(v) if isinstance(v, list) else v for k, v in self.change.items()},
         }
 
 
