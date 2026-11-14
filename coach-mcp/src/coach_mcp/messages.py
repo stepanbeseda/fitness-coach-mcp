@@ -79,6 +79,11 @@ class Texts:
     today_nothing: str
     alerts: str
     title: str  # {circle} {warning} {level} {day}
+    # Per-session advice on a yellow / red day (session_advice.py), appended to the plan line of a planned session.
+    session_advice: Mapping[str, str]  # ok / swap / reduce_<class>; reduce_strength {sets} {rpe}; reduce_rpe {rpe}
+    scheme_change: str  # {new} {old}
+    fewer_sets: str
+    advice_reason: Mapping[str, str]  # session_advice.REASONS; "" = nothing appended
 
 
 def _nights_en(n: int) -> str:
@@ -110,7 +115,7 @@ EN = Texts(
     status_suffix={"done": " – done", "skipped": " – skipped", "moved": " – moved"},
     advice={
         "green": "full plan, you can add progression.",
-        "yellow": "cut volume by 20–30 %, intensity at most RPE 7–8, cardio in zone 2.",
+        "yellow": "cut volume by 20–30 %, intensity at most RPE 7, cardio in zone 2.",
         "red": "recovery only: easy zone 1–2 cardio for 20–40 min, mobility, or a rest day.",
     },
     acwr={"LOW": "low", "HIGH": "high", "VERY_HIGH": "very high"},
@@ -170,6 +175,18 @@ EN = Texts(
     today_nothing="Today's plan: nothing.",
     alerts="Alerts:",
     title="{circle}{warning} {level} · morning briefing {day}",
+    session_advice={
+        "ok": " → OK",
+        "swap": " → swap for recovery: a walk, mobility or rest",
+        "reduce_easy_endurance": " → reduce: at most {minutes} min in zone 1–2",
+        "reduce_hard_endurance": " → reduce: easy in zone 2 only, no intervals or strides",
+        "reduce_strength": " → reduce: {sets}, at most RPE {rpe}",
+        "reduce_rpe": " → reduce: at most RPE {rpe}",
+        "reduce_mobility_other": " → reduce: keep it easy",
+    },
+    scheme_change="{new} instead of {old}",
+    fewer_sets="1 set fewer per exercise",
+    advice_reason={"verdict": ""},
 )
 
 CS = Texts(
@@ -187,7 +204,7 @@ CS = Texts(
     status_suffix={"done": " – splněno", "skipped": " – přeskočeno", "moved": " – přesunuto"},
     advice={
         "green": "plný plán, můžeš přidat progresi.",
-        "yellow": "sniž objem o 20–30 %, intenzitu nejvýš RPE 7–8, kardio v zóně 2.",
+        "yellow": "sniž objem o 20–30 %, intenzitu nejvýš RPE 7, kardio v zóně 2.",
         "red": "jen regenerace: lehké kardio v zóně 1–2 na 20–40 min, mobilita, nebo volno.",
     },
     acwr={"LOW": "nízký", "HIGH": "vysoký", "VERY_HIGH": "velmi vysoký"},
@@ -247,6 +264,18 @@ CS = Texts(
     today_nothing="Dnes v plánu: nic.",
     alerts="Upozornění:",
     title="{circle}{warning} {level} · ranní briefing {day}",
+    session_advice={
+        "ok": " → OK",
+        "swap": " → vyměň za regeneraci: procházka, mobilita nebo volno",
+        "reduce_easy_endurance": " → zmírni: nejvýš {minutes} min v zóně 1–2",
+        "reduce_hard_endurance": " → zmírni: jen lehce v zóně 2, bez intervalů a rovinek",
+        "reduce_strength": " → zmírni: {sets}, nejvýš RPE {rpe}",
+        "reduce_rpe": " → zmírni: nejvýš RPE {rpe}",
+        "reduce_mobility_other": " → zmírni: jen lehce",
+    },
+    scheme_change="{new} místo {old}",
+    fewer_sets="o 1 sérii méně u každého cviku",
+    advice_reason={"verdict": ""},
 )
 
 LANGUAGES: Mapping[str, Texts] = {"en": EN, "cs": CS}

@@ -473,6 +473,7 @@ async def test_daily_briefing_over_http(settings, store):
         ("load_spike", None, False),  # no Hevy coverage: unknown
     ]
     assert briefing["garmin_today"] == ["Lehký běh 40 min"]
+    assert briefing["session_advice"] == []  # always present; no session today
     assert list(briefing["push"]) == ["text"]
     assert briefing["push"]["text"].split("\n")[0] == "\U0001f7e1 \u26a0\ufe0f YELLOW · morning briefing 7 Oct"  # English by default
     assert garmin.days == [TODAY]

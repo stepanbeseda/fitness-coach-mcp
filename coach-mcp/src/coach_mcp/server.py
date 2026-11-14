@@ -54,6 +54,9 @@ INSTRUCTIONS = (
     "get_daily_briefing returns the morning verdict (green / yellow / red) with its numbers, missing data, "
     "today's planned sessions and alerts, computed the same way as the morning push from the current Garmin "
     "data; still read fresh Garmin data before planning. "
+    "On yellow and red its session_advice marks each of today's planned sessions ok, reduce or swap with the "
+    "change, read from the session type, intensity and description (write zones as Z2, name intervals, tempo or "
+    "strides, write strength as sets×reps like 3×8). "
     "Its alerts include detraining (an endurance goal while ACWR or running volume "
     "dropped for 14 days) and a strength load spike (working sets of 7 days above 1.5x the usual). "
     "get_trends returns the stored daily Garmin history (collected nightly) aggregated by day, week or month: "
@@ -347,7 +350,8 @@ def build_server(
         """Today's morning briefing, computed the same way as the push notification from the current Garmin
         data: a green / yellow / red verdict from deterministic rules (readiness, last night's HRV vs.
         baseline, sleep, Body Battery at wake), the numbers behind it, what is missing, today's planned
-        sessions and the alerts (HRV below baseline 3+ nights, resting HR 5+ bpm above its 7-day average,
+        sessions, on yellow and red the advice per planned session (session_advice: ok / reduce / swap with the
+        change) and the alerts (HRV below baseline 3+ nights, resting HR 5+ bpm above its 7-day average,
         load ratio outside Garmin's optimal range, yesterday's scheduled workout not completed,
         yesterday's planned session without a recorded activity, detraining toward an endurance goal (ACWR
         below 0.8 or running below half of the usual for 14 days), a strength load spike (working sets of 7

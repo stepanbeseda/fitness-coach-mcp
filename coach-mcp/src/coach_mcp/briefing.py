@@ -20,6 +20,7 @@ from .load import ACWR_LOW, WINDOW_DAYS
 from .messages import DEFAULT_LANGUAGE, Texts, texts
 from .push import PushMessage
 from .reconcile import MATCHED_TYPES
+from .session_advice import NO_FLOORS, Action, Advice, Reason, SessionClass, session_advice
 from .values import finite
 
 if TYPE_CHECKING:
@@ -421,6 +422,30 @@ def _session_line(t: Texts, session: Mapping[str, Any]) -> str:
     return f"- {kind}: {_one_line(session.get('description', ''), 120)}{details}{status}"
 
 
+def _advice_text(t: Texts, advice: Advice | None) -> str:
+    """The suffix of a planned session's line on a yellow / red day (``session_advice``); empty without advice.
+
+    Not part of ``_session_line``: the ``/plan`` reply (inbound.py) reuses that line and has no verdict."""
+    if advice is None:
+        return ""
+    change = advice.change
+    if advice.action != "reduce":
+        text = t.session_advice[advice.action]
+    elif advice.cls == "strength":
+        if change["sets"]:
+            sets = ", ".join(t.scheme_change.format(new=p["to"], old=p["from"]) for p in change["sets"])
+            text = t.session_advice["reduce_strength"].format(sets=sets, rpe=change["rpe_max"])
+        elif change["minus_one_set"]:
+            text = t.session_advice["reduce_strength"].format(sets=t.fewer_sets, rpe=change["rpe_max"])
+        else:
+            text = t.session_advice["reduce_rpe"].format(rpe=change["rpe_max"])
+    elif advice.cls == "easy_endurance":
+        text = t.session_advice["reduce_easy_endurance"].format(minutes=change["max_minutes"])
+    else:
+        text = t.session_advice[f"reduce_{advice.cls}"]
+    return text + t.advice_reason[advice.reason]
+
+
 def _alert_text(
     t: Texts,
     key: str,
@@ -547,6 +572,7 @@ def render(
     missed_stale: bool = False,
     language: str = DEFAULT_LANGUAGE,
     load: LoadSignals | None = None,
+    advice: Sequence[Advice | None] = (),
 ) -> PushMessage:
     t = texts(language)
     sep = t.decimal_separator
@@ -598,7 +624,8 @@ def render(
 
     if planned:
         lines.append(t.today_plan)
-        lines.extend(_session_line(t, s) for s in planned)
+        per_session = list(advice) or [None] * len(planned)
+        lines.extend(_session_line(t, s) + _advice_text(t, a) for s, a in zip(planned, per_session, strict=True))
     elif garmin_today:
         lines.append(t.today_garmin.format(names=", ".join(garmin_today)))
     else:
@@ -652,6 +679,8 @@ def build_briefing(
     checked_at: Mapping[int, str] | None = None,
     language: str = DEFAULT_LANGUAGE,
     load: LoadSignals | None = None,
+    *,
+    advice_floors: Mapping[SessionClass, tuple[Action, Reason]] = NO_FLOORS,
 ) -> Briefing:
     t = texts(language)
     nights = nights_below_baseline(data.hrv_trend, day)
@@ -664,6 +693,7 @@ def build_briefing(
     new_alerts = [key for key in ALERT_KEYS if new[key]]
     garmin_today = _garmin_today(t, data.scheduled, day)
     planned = list(sessions)
+    advice = [session_advice(verdict, s, floors=advice_floors) for s in planned]
     stale = missed_check_predates_sync(yesterday_sessions, checked_at or {}, data.last_sync)
 
     payload_criteria: dict[str, Any] = {}
@@ -686,6 +716,7 @@ def build_briefing(
         missed_stale=stale,
         language=language,
         load=load,
+        advice=advice,
     )
     payload = {
         "date": day.isoformat(),
@@ -693,6 +724,7 @@ def build_briefing(
         "criteria": payload_criteria,
         "missing": missing,
         "planned": planned,
+        "session_advice": [a.payload() for a in advice if a is not None],
         "garmin_today": garmin_today,
         "alerts": [{"key": key, "holds": conditions[key], "new": new[key]} for key in ALERT_KEYS],
         "garmin": {

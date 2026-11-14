@@ -4,6 +4,7 @@ The English catalogue has its own rendering tests in ``test_briefing_en.py``."""
 
 from __future__ import annotations
 
+import itertools
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import Any
@@ -55,6 +56,10 @@ def snapshot(**sections: Any) -> dict[str, Any]:
     """The green snapshot with some sections replaced (a ``None`` removes the section)."""
     out = {**GREEN_SNAPSHOT, **sections}
     return {k: v for k, v in out.items() if v is not None}
+
+
+YELLOW_DAY = garmin_data(snapshot=snapshot(readiness={"score": 60}))
+RED_DAY = garmin_data(snapshot=snapshot(readiness={"score": 30}))
 
 
 # ------------------------------------------------------------------ levels
@@ -406,7 +411,7 @@ Dnes v plánu:
 - běh: 10 km lehce, zóna 2 (60 min, 10 km)"""
 
 YELLOW_MESSAGE = """\
-Verdikt: žlutá – sniž objem o 20–30 %, intenzitu nejvýš RPE 7–8, kardio v zóně 2.
+Verdikt: žlutá – sniž objem o 20–30 %, intenzitu nejvýš RPE 7, kardio v zóně 2.
 Readiness: 61 (žlutá)
 HRV: chybí
 Spánek: 6 h 15 min, skóre 70 (žlutá)
@@ -483,6 +488,7 @@ def test_render_yellow_with_missing_and_alerts_exact():
         },
         "missing": ["hrv", "body_battery"],
         "planned": [],
+        "session_advice": [],
         "garmin_today": ["Lehký běh 40 min"],
         "alerts": [
             {"key": "hrv_below_baseline", "holds": None, "new": False},
@@ -771,6 +777,7 @@ def test_build_briefing_payload_shape():
         "criteria",
         "missing",
         "planned",
+        "session_advice",
         "garmin_today",
         "alerts",
         "garmin",
@@ -1092,3 +1099,158 @@ def test_load_alerts_unknown_without_signals():
     empty = build_briefing(DAY, garmin_data(), [], {}, load=load_signals(FakeHistory(), [], DAY))
     assert empty.alert_updates["detraining"] == (False, False)  # no goal: known false
     assert "load_spike" not in empty.alert_updates  # no Hevy coverage: unknown
+
+
+# ------------------------------------------------------------------ per-session advice (PR 41)
+
+STRENGTH_DW = {
+    "id": 2,
+    "date": "2026-10-07",
+    "weekday": "Wed",
+    "type": "strength",
+    "description": "bench 3×8 @ 75 kg",
+    "intensity": "RPE 8",
+    "status": "planned",
+}
+STRENGTH_GENERIC = {k: v for k, v in {**STRENGTH_DW, "id": 3, "description": "Celé tělo"}.items() if k != "intensity"}
+STRENGTH_SINGLE = {k: v for k, v in {**STRENGTH_DW, "id": 4, "description": "deadlift 1×5"}.items() if k != "intensity"}
+EASY = GREEN_SESSION
+HARD = {**GREEN_SESSION, "id": 5, "description": "Intervaly 6×800 m", "intensity": "Z4", "duration_min": None, "distance_km": None}
+MOBILITY = {**GREEN_SESSION, "id": 6, "type": "mobility", "description": "Mobilita 15 min", "duration_min": None, "distance_km": None}
+SILA_A = {
+    "id": 10,
+    "date": "2026-10-07",
+    "weekday": "Wed",
+    "type": "strength",
+    "intensity": "RPE 8",
+    "duration_min": 60,
+    "status": "planned",
+    "description": "Síla A – horní tělo + trup (bench 3×8 @ 75 kg, lat pulldown 3×8 @ 70 kg, row 3×12 @ 40 kg, "
+    "shoulder press 3×10 @ 40 kg, boky, ruce, face pull, trup)",
+}
+RECOVERY = "vyměň za regeneraci: procházka, mobilita nebo volno"
+YELLOW_STRENGTH_LINE = "- síla: bench 3×8 @ 75 kg (RPE 8) → zmírni: 2×8 místo 3×8, nejvýš RPE 7"
+
+
+def session_lines(sessions, data):
+    """The '- ' lines under 'Dnes v plánu:' (alerts and other sections excluded)."""
+    body = build_briefing(DAY, data, sessions, {}).message.body
+    after = body.split("Dnes v plánu:\n", 1)[1].splitlines()
+    return list(itertools.takewhile(lambda line: line.startswith("- "), after))
+
+
+def test_yellow_strength_line_exact():
+    assert session_lines([STRENGTH_DW], YELLOW_DAY) == [YELLOW_STRENGTH_LINE]
+    assert build_briefing(DAY, YELLOW_DAY, [STRENGTH_DW], {}).verdict == "yellow"
+
+
+@pytest.mark.parametrize(
+    ("data", "session", "expected"),
+    [
+        (YELLOW_DAY, STRENGTH_GENERIC, "- síla: Celé tělo → zmírni: o 1 sérii méně u každého cviku, nejvýš RPE 7"),
+        (YELLOW_DAY, STRENGTH_SINGLE, "- síla: deadlift 1×5 → zmírni: nejvýš RPE 7"),
+        (YELLOW_DAY, EASY, "- běh: 10 km lehce, zóna 2 (60 min, 10 km) → OK"),
+        (
+            YELLOW_DAY,
+            HARD,
+            "- běh: Intervaly 6×800 m (Z4) → zmírni: jen lehce v zóně 2, bez intervalů a rovinek",
+        ),
+        (YELLOW_DAY, MOBILITY, "- mobilita: Mobilita 15 min → OK"),
+        (RED_DAY, STRENGTH_DW, f"- síla: bench 3×8 @ 75 kg (RPE 8) → {RECOVERY}"),
+        (RED_DAY, EASY, "- běh: 10 km lehce, zóna 2 (60 min, 10 km) → zmírni: nejvýš 40 min v zóně 1–2"),
+        (RED_DAY, HARD, f"- běh: Intervaly 6×800 m (Z4) → {RECOVERY}"),
+        (RED_DAY, MOBILITY, "- mobilita: Mobilita 15 min → OK"),
+        (
+            YELLOW_DAY,
+            SILA_A,
+            "- síla: Síla A – horní tělo + trup (bench 3×8 @ 75 kg, lat pulldown 3×8 @ 70 kg, row 3×12 @ 40 kg, "
+            "shoulder press 3×10 @ 40 kg, … (60 min, RPE 8) → zmírni: 2×8 místo 3×8, 2×12 místo 3×12, "
+            "2×10 místo 3×10, nejvýš RPE 7",
+        ),
+    ],
+    ids=[
+        "yellow-generic",
+        "yellow-single",
+        "yellow-easy",
+        "yellow-hard",
+        "yellow-mobility",
+        "red-strength",
+        "red-easy",
+        "red-hard",
+        "red-mobility",
+        "yellow-sila-a",
+    ],
+)
+def test_advice_lines_exact(data, session, expected):
+    assert session_lines([session], data) == [expected]
+
+
+def test_green_day_has_no_advice():
+    green = garmin_data()
+    all6 = [STRENGTH_DW, STRENGTH_GENERIC, STRENGTH_SINGLE, EASY, HARD, MOBILITY]
+    b = build_briefing(DAY, green, all6, {})
+    assert b.verdict == "green"
+    assert session_lines(all6, green) == [briefing._session_line(CS, s) for s in all6]
+    assert "→" not in b.message.body
+    assert b.payload["session_advice"] == []
+
+
+def test_missing_only_yellow_reduces():
+    data = garmin_data(snapshot=snapshot(sleep=None))
+    b = build_briefing(DAY, data, [STRENGTH_DW], {})
+    assert b.verdict == "yellow"
+    assert b.payload["missing"] == ["sleep"]
+    assert session_lines([STRENGTH_DW], data) == [YELLOW_STRENGTH_LINE]
+
+
+def test_no_advice_for_done_skipped_moved_or_garmin_only():
+    for status, suffix in [("done", " – splněno"), ("skipped", " – přeskočeno"), ("moved", " – přesunuto")]:
+        done = {**STRENGTH_DW, "status": status}
+        assert session_lines([done], RED_DAY) == [briefing._session_line(CS, done)]
+        assert session_lines([done], RED_DAY)[0].endswith(suffix)
+        b = build_briefing(DAY, RED_DAY, [done], {})
+        assert "→" not in b.message.body and b.payload["session_advice"] == []
+    garmin_only = build_briefing(DAY, yellow_data(), [], {})
+    assert "Dnes v Garminu: Lehký běh 40 min" in garmin_only.message.body
+    assert garmin_only.payload["session_advice"] == []
+
+
+def test_session_advice_payload_and_push_agree():
+    sessions = [STRENGTH_DW, STRENGTH_GENERIC, {**EASY, "status": "done"}, EASY]
+    b = build_briefing(DAY, YELLOW_DAY, sessions, {})
+    assert b.payload["session_advice"] == [
+        {
+            "session_id": 2,
+            "action": "reduce",
+            "class": "strength",
+            "reason": "verdict",
+            "change": {"rpe_max": 7, "sets": [{"from": "3×8", "to": "2×8"}], "minus_one_set": False},
+        },
+        {
+            "session_id": 3,
+            "action": "reduce",
+            "class": "strength",
+            "reason": "verdict",
+            "change": {"rpe_max": 7, "sets": [], "minus_one_set": True},
+        },
+        {"session_id": 1, "action": "ok", "class": "easy_endurance", "reason": "verdict", "change": {}},
+    ]
+    assert b.payload["planned"] == sessions
+    assert b.payload["push"]["text"] == b.message.text
+    for line in (
+        YELLOW_STRENGTH_LINE,
+        "- síla: Celé tělo → zmírni: o 1 sérii méně u každého cviku, nejvýš RPE 7",
+        "- běh: 10 km lehce, zóna 2 (60 min, 10 km) → OK",
+    ):
+        assert line in b.message.text
+    assert "- běh: 10 km lehce, zóna 2 (60 min, 10 km) – splněno" in b.message.text.splitlines()
+
+
+def test_advice_floors_reach_the_message():
+    b = build_briefing(DAY, garmin_data(), [STRENGTH_DW], {}, advice_floors={"strength": ("swap", "verdict")})
+    assert b.verdict == "green"
+    assert b.message.title == GREEN_TITLE
+    assert session_lines([STRENGTH_DW], garmin_data()) == [briefing._session_line(CS, STRENGTH_DW)]
+    assert b.message.body.count("→") == 1
+    assert f"- síla: bench 3×8 @ 75 kg (RPE 8) → {RECOVERY}" in b.message.body
+    assert [a["action"] for a in b.payload["session_advice"]] == ["swap"]

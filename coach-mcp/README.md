@@ -24,7 +24,7 @@ stay as `superseded`.
 | `save_plan` | write | saves the plan for one ISO week: replaces planned sessions from today on (the old ones stay as `superseded`), keeps done, skipped, moved and past ones |
 | `update_session` | write | sets a session's status (`planned` / `done` / `skipped` / `moved`); `moved` with `new_date` creates a linked planned copy; `done` is refused for a session dated after today; optional note; optional `rpe` 1–10 with `done` (the session effort the athlete stated, counted in `session_load`) |
 | `add_note` | write | adds a dated note to the log, optionally linked to a session |
-| `get_daily_briefing` | read | today's morning briefing: green / yellow / red verdict, the numbers behind it, what is missing, today's plan and alerts; computed the same way as the morning push, from current data |
+| `get_daily_briefing` | read | today's morning briefing: green / yellow / red verdict, the numbers behind it, what is missing, today's plan with ok / reduce / swap advice per planned session on yellow and red, and alerts; computed the same way as the morning push, from current data |
 | `get_trends` | read | stored daily Garmin history (HRV, sleep, resting HR, Body Battery, stress, readiness, load, VO2max, activities by sport) for any period by day, week or month: count, mean, minimum, maximum, change |
 | `get_weekly_report` | read | one ISO week against the average of the previous four: endurance by sport, sleep, HRV, resting HR, plan completion, strength volume and sets per muscle group from Hevy, new records (including estimated 1RM) and warnings; session load (`session_load`: sRPE × minutes of the done plan sessions for strength and endurance, rated and unrated counts, a four-week baseline, Foster monotony and strain; a `load_monotony` warning above 2.0); a suspect strength day is no record and is listed in `strength.to_check`; plus at most 3 recommendations (`recommendations`: key, source flag and numbers, the same as the Monday report); sections without data have `available: false` |
 | `get_strength_progress` | read | estimated 1RM (Epley) per exercise and workout from the stored Hevy history: best set of each training day, best, first and latest value and a plateau flag (`plateau_weeks`, default 4); a day far from its neighbours is `suspect` and listed in `to_check` |
@@ -89,6 +89,17 @@ condition (missing data) does not change the state.
 Both load alerts read the stored history (Garmin and Hevy), not the morning Garmin read; with the history off, too few
 stored values or no Hevy coverage they are unknown. They never change the verdict.
 
+On a yellow or red day each of today's planned sessions gets advice at the end of its line, and the same advice is
+in `get_daily_briefing` as `session_advice` (one entry per planned session: `session_id`, `action` `ok` / `reduce` /
+`swap`, `class`, `reason`, `change`); `planned` stays the rows of `get_plan`. The class comes from the session type
+and keywords in its intensity and description (`session_advice.py`): easy endurance (zone 1–2, easy, lehce), hard
+endurance (intervals, tempo, zone 3–5, strides, race, or text the rules cannot read), strength and mobility / other.
+Yellow keeps easy endurance, turns hard endurance into easy zone 2 and takes one set off the sets×reps schemes with
+at least 2 sets (3×8 → 2×8; at most four distinct ones are named, a text without a readable scheme says "1 set fewer
+per exercise", a lone 1×5 gets only the RPE cap) at most at RPE 7; red cuts easy endurance to 40 min in zone 1–2 and swaps hard endurance
+and strength for recovery. A green day, done, skipped and moved sessions and Garmin-only workouts get no advice.
+Example (Czech): `- síla: bench 3×8 @ 75 kg (RPE 8) → zmírni: 2×8 místo 3×8, nejvýš RPE 7`.
+
 Both missed-session alerts are held back (unknown) while the watch has not synced since yesterday ended, because
 yesterday's activity may not have reached Garmin yet; a held-back alert is not repeated the next day. When the
 coach's nightly check ran before the watch's last sync, the missed-session line says so. With the sync time
@@ -121,7 +132,7 @@ from the plan and Garmin workout names are shown as stored. Example (English):
 ```text
 🟡 ⚠️ YELLOW · morning briefing 7 Oct
 
-Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7–8, cardio in zone 2.
+Verdict: yellow – cut volume by 20–30 %, intensity at most RPE 7, cardio in zone 2.
 Readiness: 61 (yellow)
 HRV: missing
 Sleep: 6 h 15 min, score 70 (yellow)

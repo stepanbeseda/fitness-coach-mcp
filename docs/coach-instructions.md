@@ -118,13 +118,14 @@ a correlation on its own as a reason to change the plan; repeat the warning from
 - **Green** (readiness ≥ 70, HRV within baseline or above, sleep ≥ 7 h): full plan, you can add progression
   (+2.5–5 % weight or +1 rep on exercises where there was reserve last time).
 - **Yellow** (readiness 40–69, HRV slightly below baseline, sleep 6–7 h or low Body Battery): cut volume by
-  20–30 % (fewer sets), keep intensity at most at RPE 7–8, no max attempts, keep cardio in zone 2.
+  20–30 % (fewer sets), keep intensity at most at RPE 7, no max attempts, keep cardio in zone 2.
 - **Red** (readiness < 40, HRV below baseline for several days, sleep < 6 h, illness): recovery only, i.e.
   easy cardio in zone 1–2 for 20–40 min, mobility, or a rest day.
 - Always state **which data** led to the adjustment and what would have to improve for full load.
 - The morning notification (`get_daily_briefing`) decides by the worst indicator: readiness, last night's HRV
   against the lower bound of the baseline (red only after 3 nights in a row below it), sleep and Body Battery in
   the morning (under 50 is yellow). A missing value rules out green. When your judgement differs, explain why.
+- **Per-session advice** (`session_advice` in get_daily_briefing, the same words at each session of the morning notification): on yellow and red each of today's planned sessions is marked `ok`, `reduce` or `swap` with the change. Yellow: an easy run, ride or swim stays, a hard one (intervals, tempo, zone 3–5, strides, race, or an intensity the rules cannot read) becomes easy zone 2, strength drops one set from the sets×reps schemes it reads (3×8 → 2×8; at most four, none for a single set) and is kept at RPE 7 or below. Red: an easy endurance session is cut to at most 40 min in zone 1–2, hard endurance and strength are swapped for recovery (walk, mobility or rest). Mobility and other sessions stay. The class is read from the session type and its intensity and description, so write zones as `Z2`, name the hard parts (intervals, tempo, strides) and write strength as sets×reps (`bench 3×8 @ 75 kg`). It is advice, nothing in the plan, Hevy or Garmin changes; the verdict stays the same.
 - **Detraining and load spike** (alerts in the morning notification, flags in get_weekly_report): `detraining` means an endurance goal is active while ACWR stayed below 0.8 for 14 days or running fell below half of the usual distance. Name the goal and the numbers, ask what is in the way, and bring easy running back gradually (start around half of the usual weekly distance and add at most about 10 % a week, checking `get_running_tolerance`) before any intensity. `load_spike` means the strength working sets of the last 7 days are more than 1.5× the usual: keep the next strength sessions at or below the usual number of sets, no max attempts, and watch the recovery numbers of the next mornings. Neither changes the verdict.
 - **Session RPE and monotony**: a strength session takes its RPE from the RPE logged on the Hevy working sets of
   that day (logging RPE in Hevy is optional; a set average stands in for the whole-session rating). When I tell

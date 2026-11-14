@@ -39,6 +39,7 @@ from garmin_payloads import (
     garmin_data,
     scheduled,
     trend,
+    yellow_data,
 )
 
 BOT_TOKEN = "123456789:SECRETtokenSECRETtokenSECRETtoken12"  # 35 characters after the colon
@@ -1224,6 +1225,25 @@ async def test_briefing_keyboard_has_yesterdays_planned_sessions(db_path):
     assert plain.message.keyboard == ()
     assert with_buttons.message.text == plain.message.text
     assert with_buttons.payload == plain.payload
+
+
+@pytest.mark.anyio
+async def test_keyboard_changes_neither_alerts_nor_payload(db_path):
+    store = Store(db_path)
+    seed_yesterday(store, [("running", "planned")])
+    store.replace_planned(
+        D, D, D, [{"date": D, "type": "strength", "description": "bench 3×8 @ 75 kg", "intensity": "RPE 8"}]
+    )
+    garmin = FakeGarmin(yellow_data())
+    with_buttons = await compose_briefing(store, garmin, D, "cs", keyboard=True)
+    plain = await compose_briefing(store, garmin, D, "cs", keyboard=False)
+    assert with_buttons.message.keyboard != () and plain.message.keyboard == ()
+    assert with_buttons.alert_updates == plain.alert_updates
+    assert with_buttons.alert_updates  # resting HR, ACWR and the missed workout hold on the yellow data
+    assert with_buttons.verdict == plain.verdict == "yellow"
+    assert with_buttons.payload == plain.payload
+    assert [a["action"] for a in plain.payload["session_advice"]] == ["reduce"]
+    assert "→ zmírni: 2×8 místo 3×8, nejvýš RPE 7" in plain.message.text
 
 
 async def scheduled_message(db_path: Path, **settings: Any) -> PushMessage:
