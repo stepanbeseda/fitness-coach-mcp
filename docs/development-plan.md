@@ -65,6 +65,7 @@ chapter and a table row; existing chapters are never rewritten, only the
   Project, an injected instruction could send data out. A confirm-token round
   trip is not used, because the model holds the token and it adds no human
   step.
+  *Amended on 2026-11-14 (PR 42):* `coach-mcp` may call three read tools on Hevy (`get-workout-events`, `get-exercise-template`, `get-routine`); `suggest_progression` reads a routine and the recent workouts live and stores nothing. Hevy's write tools stay outside the allowlist.
 - **Privacy of logs.** Logs and the audit trail contain tool name, outcome and
   duration only — never arguments, results, tokens or health values.
 - **Supply chain.** Python dependencies are pinned in `pyproject.toml` and
@@ -162,6 +163,11 @@ chapter and a table row; existing chapters are never rewritten, only the
 | 37 | Hevy record quality check | 09, 24 | done |
 | 38 | Detraining and load-spike alerts | 04, 05, 09, 14 | done |
 | 39 | Monday report recommendations | 05, 09, 14, 36, 37, 38 | done |
+| 40 | Session RPE and load | 03, 05, 09, 14, 23, 24, 38 | **in progress** (branch `mao/pr40-session-rpe-load`) |
+| 41 | Verdict per today's session | 04, 22, 36 | **in progress** (branch `mao/pr41-verdict-per-session`) |
+| 42 | Next-load suggestions | 09, 24, 37, 40 | **in progress** (branch `mao/pr42-next-load-suggestions`) |
+| 43 | Muscle balance and deload rule | 05, 09, 14, 24, 37, 38, 39, 40 | **in progress** (branch `mao/pr43-muscle-balance-deload`) |
+| 44 | Morning wellness check | 36, 40, 41 | **in progress** (branch `mao/pr44-morning-wellness-check`) |
 
 Chapters 10–22 come from the project review of 2026-10-09. Suggested order:
 10, 11, 12, 13, 14, 09, 07, 15, 16, 17, 18, then 19, 20, 21 and last 22 (the
@@ -3492,6 +3498,364 @@ the `Doporučení:` block, verified in the audit log; then `send-weekly-report` 
 the live checkout (it sends the last complete week). Deploy: with the wave; no
 migration.
 
+### PR 40 — Session RPE and load
+
+The coach review of 2026-11-12 (item A2) found that the system does not know how hard a session was: the RPE a
+set can carry in Hevy is dropped, and there is no common load currency for strength and endurance. Hevy is the only
+place the athlete rates effort; nothing new is asked of the athlete in Telegram. `summarize_exercises`
+(`coach-mcp/src/coach_mcp/strength.py`) keeps, per exercise of a stored Hevy workout, the average and maximum RPE
+of the working sets and how many working sets carried one (`rpe_avg`, `rpe_max`, `rpe_sets`; omitted when no set
+has an RPE, so every workout stored today keeps its stored summary byte for byte and no Hevy re-read is needed).
+The per-day strength view (`history_view.py`, `DayStrength`) combines them per exercise, weighted by `rpe_sets`.
+Logging RPE in Hevy stays optional; today the athlete logs none, so the new numbers stay empty until they do.
+
+A done plan session gets a session RPE (Foster sRPE) from one rule: an RPE the coach recorded with
+`update_session` wins (new optional `rpe`, integer 1–10, only with status `done`, after the athlete stated it in a
+conversation and confirmed, like every write); otherwise a `strength` session takes the mean RPE of all Hevy working
+sets of that day; otherwise it is unrated. Endurance sessions have no RPE source other than the coach. The minutes
+are the Garmin minutes of that day and sport when the day has exactly one done plan session of that type, else the
+planned `duration_min`; a rated session with neither is reported but not counted. Session load = sRPE × minutes.
+Only plan sessions count: an unplanned workout or run has no session RPE and does not enter the load. The coach's
+RPE needs a column: migration 11 adds `sessions.rpe` (NULL or 1–10). It is not a plan field: `save_plan` and
+`PlannedSession` keep refusing it, and a moved or superseded copy never carries it.
+
+`get_weekly_report` (`trends.py`) gains a section `session_load`: the week's total and the groups `strength`
+(type `strength`) and `endurance` (`running`, `cycling`, `swimming`), each with load, minutes, average RPE and the
+counts of rated and unrated done plan sessions (`mobility` and `other` count only in the total); a baseline over the
+previous four weeks; and Foster monotony (mean / SD of the 7 daily loads, rest days 0) and strain (weekly load ×
+monotony), computed only when every done plan session of the week is rated. Monotony above 2.0 adds a weekly flag
+`load_monotony` and one "Watch:" line in the Monday report in every catalogue of `messages.py`. This fulfils the
+monotony and strain left over by PR 38 (`load.py` docstring).
+
+Out of scope: any Telegram RPE input (no `/done <id> <rpe>`, no buttons, no hint line; Telegram commands and replies
+stay as they are), RPE for unplanned trainings, Hevy workout durations, a session-load line in the Monday message,
+a morning alert or a recommendation sentence for monotony, `get_trends` and correlations (open item E3), Garmin's
+own perceived-effort field, and the use of RPE in weight suggestions (PR 42) and the deload rule (PR 43).
+
+**Done when:**
+1. A Hevy workout whose working sets carry RPE stores `rpe_avg`, `rpe_max` and `rpe_sets` per exercise (warm-ups
+   and values outside 1–10 ignored), and the per-day strength view combines them weighted by `rpe_sets`; a workout
+   without RPE stores exactly the same summary JSON as before (tests).
+2. Migration 11 adds `sessions.rpe` with all existing rows kept (test with `MIGRATIONS[:N]`); the 11 → 10
+   downgrade recipe in `coach-mcp/README.md` is run on scratch data.
+3. `update_session` takes an optional `rpe` 1–10 only with status `done` (refused otherwise, tests); `save_plan`
+   and `PlannedSession` still refuse `rpe`, moved and superseded copies start without it, and the Telegram
+   commands, replies and tap flow are unchanged (existing tests stay green).
+4. The session RPE and minutes rules above are a pure function with tests for: coach RPE beats Hevy, a strength
+   day with Hevy RPE, a strength day without it (unrated), an endurance session rated only by the coach, Garmin
+   minutes with exactly one done session of the type, planned minutes otherwise, and a rated session without
+   minutes (reported, not counted).
+5. `get_weekly_report` returns `session_load` with total, `strength` and `endurance` (load, minutes, avg RPE,
+   rated, unrated), the four-week baseline and monotony and strain (absent or null when a done plan session is
+   unrated) for seeded weeks; the `weekly_*` cases of `history_golden.json` are regenerated and key-diffed.
+6. Monotony above 2.0 gives the weekly flag `load_monotony` and one "Watch:" line in `en` and `cs` (exact-text
+   tests); 2.0 or below, or monotony unknown, gives neither.
+7. `coach-mcp/README.md` (tools, weekly report keys, downgrade), `INSTRUCTIONS` and `docs/coach-instructions.md`
+   (how `session_load` reads, logging RPE in Hevy is optional, the coach may record an RPE the athlete states)
+   are updated, and the four-command check is green (`scripts/check.sh --tag pr40`).
+8. On the test host: after the deploy, `get_weekly_report` for the current week returns `session_load` (unrated
+   counts are expected while Hevy holds no RPE), and `sessions` has the `rpe` column at schema 11.
+
+**Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item A2, batch wave 2);
+questions and answers round 1 (plan sessions only; Garmin minutes, else planned; no Telegram RPE input, RPE from
+Hevy; Hevy RPE stored, logging optional; monotony and strain weekly with a "Watch:" line; no load line in the
+Monday message).
+
+### PR 41 — Verdict per today's session
+
+The morning verdict (PR 04) is one level for the whole day: yellow means the same for an easy run and for heavy
+strength. The coach review of 2026-11-12 (item B1) asks the briefing to say, at each of today's sessions, whether
+it stays as planned, is reduced or is swapped, and what exactly changes. A new pure module in `coach-mcp`
+(proposed `coach-mcp/src/coach_mcp/session_advice.py`) classifies each of today's `planned` sessions and maps
+verdict × class onto an action from the closed, ordered set `ok < reduce < swap`. The classification reads what is
+stored today: the session `type` and keywords in the free-text `intensity` and `description`, in both languages,
+from a fixed table. Examples: "Z2", "lehce", "easy" are easy; "intervaly", "tempo", "Z4", "rovinky", "strides" are
+hard; "3×8" is a sets×reps scheme, but "6× 20 s" is not. Endurance text the table cannot read counts as hard.
+There is no schema change and `save_plan` is unchanged. The sets cannot come from the Hevy routine either, because
+coach-mcp may call only its two Hevy history tools (plan §1).
+
+The matrix (owner answers round 1, Q2):
+
+| session class | green | yellow | red |
+|---|---|---|---|
+| easy endurance (run, bike, swim in zone 1–2) | as today | ok | reduce: at most 40 min in zone 1–2 |
+| hard endurance (intervals, tempo, zone 3–5, strides, race, or unreadable) | as today | reduce: easy zone 2, no intervals or strides | swap: recovery (walk, mobility or rest) |
+| strength | as today | reduce: −1 set per scheme with at least 2 sets (3×8 → 2×8), RPE at most 7 | swap: recovery (mobility, walk or rest) |
+| mobility / other | as today | ok | ok |
+
+On a green day the message is byte-for-byte what it is today. On a yellow or red day, every `planned` session of
+today gets the word "ok", "reduce" or "swap" (in the catalogue language) and the concrete change on its plan line.
+This includes a yellow that comes only from missing data (Q4). A strength session without a readable scheme gets
+the generic "−1 set per exercise". Done, skipped and moved sessions keep only their status suffix. Sessions that
+are only in the Garmin calendar get no advice. The same advice goes into the `get_daily_briefing` payload as a new
+top-level key, `session_advice`; the `planned` list stays identical to `get_plan` rows. The push, `send-briefing`,
+`/dnes` and the tool therefore agree. The yellow advice line in both catalogues and `docs/coach-instructions.md` §2
+change from "RPE 7–8" to "at most RPE 7" (Q3). The verdict, the title, the alerts and `alert_updates` do not change.
+Nothing is written to Hevy, Garmin or the coach plan.
+
+The function takes a keyword-only `floors` input: a per-session-class minimum action with a reason. PR 44 (B4,
+back pain ≥ 2 turns strength into "swap") plugs in there without changing the matrix. In this PR the input is empty
+and the only reason is `verdict`.
+
+Out of scope: a structured intensity field or a migration, reading Hevy routines, personal baselines (PR 45),
+the wellness check and back pain (PR 44), changing the verdict rules, and any automatic change to the plan or to
+workouts on the watch.
+
+**Done when:**
+1. A pure classifier and matrix decide one action (`ok` / `reduce` / `swap`) and the change for every
+   (verdict, class) cell of the table above. A parametrised test covers each cell. A classifier test covers the
+   live plan's text shapes: "RPE 7–8", "Z2", "Z2, rovinky svižně", "lehce", the "Síla A" description with several
+   `N×M` schemes, "6× 20 s rovinky", and an unreadable intensity.
+2. On a yellow morning, the plan line of a strength session with intensity "RPE 8" and description "bench 3×8 @ 75 kg"
+   ends with the reduce text naming "2×8" instead of "3×8" and "RPE 7". The literal text is pinned in both
+   catalogues. Red and the other classes have one literal test each, in both catalogues.
+3. On a green morning the message body is identical to today's (regression test on the existing fixtures).
+   Done, skipped and moved sessions and Garmin-only items get no advice, and a yellow caused only by missing data
+   reduces like any other yellow (tests).
+4. `get_daily_briefing` returns `session_advice` (one entry per today's `planned` session on yellow and red:
+   `session_id`, `action`, `class`, `reason`, `change`). `planned` is unchanged, and the push text and the payload
+   come from the same call (tests).
+5. A test pins that `compose_briefing(..., keyboard=True)` and `keyboard=False` give the same `alert_updates`,
+   verdict and payload (PR 36 review-2 open item, plan §5; the item is removed from §5).
+6. The yellow advice line in both catalogues and `docs/coach-instructions.md` §2 say "at most RPE 7". No text outside
+   `docs/development-plan.md` still gives "RPE 7–8" as the yellow cap (grep; today the example messages in
+   `README.md` and `coach-mcp/README.md`, `messages.py`, two test bodies and the coach instructions do). `INSTRUCTIONS` and the `get_daily_briefing` docstring in
+   `coach-mcp/src/coach_mcp/server.py` and `coach-mcp/README.md` describe the per-session advice. Every new
+   athlete-facing string is in both catalogues.
+7. The four-command check is green.
+8. On the test host, after the wave is deployed, a yellow or red morning push and `get_daily_briefing` show the
+   advice at today's planned sessions.
+
+**Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item B1, batch wave 2);
+questions and answers round 1.
+
+### PR 42 — Next-load suggestions
+
+The coach review of 2026-11-12 (item C2) found that the coach's progression rule ("+2.5–5 % weight or +1 rep on
+exercises where there was reserve last time", `docs/coach-instructions.md` §2) has no data behind it. The model
+works out the reserve and the next weight in its head. Add a read-only tool `suggest_progression` to `coach-mcp`.
+It applies double progression to one Hevy routine in code (new module `coach-mcp/src/coach_mcp/progression.py`,
+pure rules, constants, no settings) and returns a table. The coach shows the table to the athlete. After the
+athlete confirms, the coach writes the routine with Hevy's own `update-routine`, as today. `coach-mcp` never
+writes Hevy.
+
+The tool takes exactly one of `routine_id` (Hevy) or `session_id` (a plan session with `hevy_routine_id`). It reads
+Hevy live when it is called, so a workout finished an hour ago counts. Nothing new is stored and there is no
+migration. The routine (exercises, set types, weights, reps, `rep_range`) comes from `get-routine`, which is new in
+the allowlist of `coach-mcp/src/coach_mcp/hevy.py`. The allowlist grows from two read tools to three, and Hevy's
+write tools stay unreachable. The sets of the last 8 weeks come from the already allowed `get-workout-events`. Per
+exercise template of the routine, the tool takes the latest sessions of that exercise in any workout. A day that
+PR 37 classifies as suspect is skipped. The rules work on the **top sets**: the working sets at the exercise's
+heaviest weight in that workout, so a warm-up logged as a normal set does not count. The rep range is the
+routine's Hevy `rep_range` when it has one. Otherwise the prescribed reps are the bottom and the top is bottom + 2
+(3×8 → 8–10).
+
+- **Increase.** Every top set reaches the top of the range, and no top set has an RPE above 8. The step is +2.5 kg
+  for the upper body. It is +5 kg for the lower body (the template's primary muscle group is quadriceps,
+  hamstrings, glutes, calves, adductors or abductors). For a dumbbell exercise, entered as the pair total, the step
+  is +5 kg on the pair. The target reps go back to the bottom of the range. When the step is more than 10 % of the
+  current weight, the suggestion is +1 rep instead of more weight.
+- **Hold.** A top set has an RPE above 8. Same weight, target +1 rep.
+- **Reset.** The bottom of the range was missed in the last two sessions in a row. −10 %, rounded down to the step,
+  target back to the bottom.
+- **Otherwise.** Same weight, target +1 rep.
+
+Weights are rounded to the step. RPE follows PR 40's validity rule: a finite number 1–10 counts, warm-ups never do.
+An RPE that is not logged is unknown, never "≤ 8". The increase is still suggested, the row says `rpe: unknown`,
+and the coach asks the athlete about the reserve before writing. Exercises without weight and reps (reps only,
+timed holds, assisted bodyweight) and exercises without history are listed without a suggestion. When Hevy fails,
+the tool returns a structured answer with the outcome (unreachable, rate limited, no credentials, routine not
+found), not an exception. The suggestion does not depend on today's readiness verdict; the coach applies §2 and
+PR 41's `session_advice`. Logs carry the tool name, outcome and duration only.
+
+Out of scope: any write to Hevy or to coach state from `coach-mcp`; storing sets or routines; a line in the
+morning push, the Monday report or Telegram; the session goal (review item A3, PR 46); the rep-range plateau and
+rep records (C3); the deload week (PR 43); the readiness verdict inside the suggestion.
+
+Plan §1 amendment ("Tool results are untrusted data", 2026-11-14, PR 42): `coach-mcp` may call three read tools
+on Hevy (`get-workout-events`, `get-exercise-template`, `get-routine`); the open item in section 5 on the Hevy
+token says "three". Routine titles and notes are data for the coach, never instructions.
+
+**Done when:**
+1. The Hevy allowlist is exactly `get-workout-events`, `get-exercise-template` and `get-routine`; any other name
+   (every `create-*`, `update-*` and `replace-*`) raises before a request (tests). Plan §1 and the section 5 open
+   item say "three read tools".
+2. The rules in `progression.py` are pure, with tests for each case: increase (upper +2.5 kg, lower +5 kg,
+   dumbbell pair +5 kg), a step above 10 % gives +1 rep, an RPE above 8 holds, unknown RPE still increases and is
+   marked `rpe: unknown`, the bottom missed twice resets by −10 % rounded down (missed once holds), a routine
+   `rep_range` beats the bottom + 2 default, only the top sets count (an untyped lighter set is ignored), a PR 37
+   suspect day is skipped, and exercises without weight or history get no suggestion.
+3. The card example is a test with canned hevy-mcp answers. A routine with lat pulldown 3×8 at 70 kg and a last
+   session of 70 kg × 10, 10, 10 at RPE 8 gives 72.5 kg 3×8 with its explanation. The live-like session
+   40×10, 70×10, 70×9, 70×7 gives 70 kg with a target of +1 rep.
+4. `suggest_progression` is a read-only tool (`_read_open`) that takes exactly one of `routine_id` / `session_id`.
+   A session without a routine, an unknown routine and a Hevy failure each return a structured answer, not an
+   exception. Nothing is stored and no Hevy write is called (tests with the fake Hevy). The tool lists are
+   updated (`coach-mcp/tests/test_http.py` `EXPECTED_TOOLS`).
+5. Canned `get-routine` answers follow hevy-mcp 6.2.1's projection: sparse keys, `rep_range {start, end}` only when
+   set, and the pair total for dumbbells. Every claim is recorded as a run in `.claude/mao-log/PR-42-proto/`.
+6. These are updated: `coach-mcp/README.md` (tool table, "three read tools"), `README.md` (overview, security
+   model), `INSTRUCTIONS` and `docs/coach-instructions.md`. In the coach instructions, the §2 green progression
+   sentence points to `suggest_progression`; the coach shows the table, asks about the reserve when RPE is unknown,
+   writes the routine with `update-routine` only after confirmation, and sets a `rep_range` when it writes a
+   routine.
+7. `scripts/check.sh --tag pr42` ends with `CHECK OK` for the reviewed tree.
+8. On the test host, after the owner deploys `coach-mcp`: `suggest_progression` for the plan's "Síla A" session
+   returns one row per weighted exercise with the last top sets, the rule and the next weight and reps. The
+   `coach-mcp` log shows only the tool name, outcome and duration.
+
+**Requested:** 2026-11-14, via `/mao` from a user request (coach review of 2026-11-12, item C2; batch
+2026-11-13, wave 2); questions and answers round 1 (owner: every default — live read with `get-routine` added to
+the Hevy allowlist, routine `rep_range` else prescribed reps + 2, unknown RPE still increases, steps 2.5 / 5 / 5 on
+the dumbbell pair with +1 rep above 10 %, −10 % after two misses, tool only).
+
+### PR 43 — Muscle balance and deload rule
+
+The coach review of 2026-11-12 (items C4 and C6, one PR by owner decision) found that the weekly report counts a
+set only for the exercise's primary muscle group, has no target band and no ratios, and leaves the deload decision
+to the LLM's judgement. In W45 hamstrings and lower back had no direct set, and nothing said so. Hevy's exercise
+template, read through the already allowlisted `get-exercise-template`, also lists the secondary muscle groups
+(live: Hip Thrust → hamstrings, quadriceps, adductors). The nightly history run stores them in a new column,
+`hevy_templates.secondary_muscle_groups` (migration 12; PR 40 takes 11), and fetches every resolved template that
+lacks them once more. A failed call never demotes a resolved template (`coach-mcp/src/coach_mcp/history.py`,
+`store.py`). The strength section of `get_weekly_report` (`trends.py`) keeps every existing key with its meaning
+(`sets` = primary sets, and `load_spike` reads the same totals). Per group it adds the secondary sets and the
+effective sets (primary + 0.5 × secondary, only for templates with known secondaries). Twelve checked groups
+(chest, shoulders, triceps, biceps, lats, upper_back, lower_back, abdominals, quadriceps, hamstrings, glutes,
+calves) get the target band of 10–20 effective sets and a status `below | in | above`. The section also returns
+the ratios push:pull (chest + shoulders + triceps : lats + upper_back + biceps) and quad:hamstring on effective
+sets, with one decimal, and `null` when the denominator is 0. The band, the status and the ratios are data for the
+coach, not flags. A new weekly flag `muscle_gap` lists the checked groups with 0 primary working sets in the
+reported week and in the week before, both complete covered weeks. It is judged on direct sets, so half-counted
+secondaries do not hide a gap.
+
+A second weekly flag `deload_suggested` is a pure rule over the final week. It holds when at least two of four
+conditions hold, and it lists those that held with their numbers in `reasons`:
+- `weeks_since_light`: 4 or more complete covered strength weeks since the last light week. A light week has
+  working sets at most 60 % of its own 4-week baseline, or no workout. Without a light week in the covered history,
+  4 covered weeks are enough.
+- `plateaus`: at least 2 exercises plateau over the 90 days ending Sunday, by the `get_strength_progress` rule.
+  The rule moves into one shared helper in `strength.py`, and the tool's output does not change.
+- `hrv_below_baseline`: the week's mean last-night HRV is at least 5 % below the baseline, with the thresholds of
+  `hrv_down`.
+- `rpe_rising`: at least 2 exercises whose last two sessions at the same top weight show `rpe_avg` (PR 40) up by
+  1.0 or more.
+
+An unknown condition never holds. With no RPE logged in Hevy (today), the rule is 2 of the remaining 3. The Monday
+report adds one "Watch:" line per flag in every catalogue of `messages.py`, with the group names translated. PR 39's
+recommendation table (`recommendations.py`) gets two rows: "Deload recommended: about 40 % fewer sets, same
+weights" at priority 15, hiding `strength_volume_up`, and a muscle-gap sentence at priority 95 (add at least 3
+direct sets per missing group, choosing back-friendly work under an active back constraint). Thresholds and the
+band are constants in code, with no new configuration, no new tool, no write to athlete state and no new Hevy tool.
+
+Out of scope: a flag, a Monday line or a recommendation for the band or the ratios, a target range for the
+ratios, per-group or configurable bands, a list of main lifts, exercise contraindications and substitutes (C5,
+PR 50), reclassifying Face Pull, which Hevy files under shoulders and which therefore counts as push (a known
+limit, documented), secondary groups in `get_strength_progress`, a deload morning alert, and any change to the
+verdict, the plan or `load_spike`.
+
+**Done when:**
+1. Migration 12 adds `hevy_templates.secondary_muscle_groups` with all existing rows kept (test with
+   `MIGRATIONS[:N]`). The history run stores the validated secondaries (deduplicated, primary dropped) and
+   backfills every resolved template without them. A failed backfill call leaves the row resolved (tests). The
+   12 → 11 downgrade recipe in `coach-mcp/README.md` is run on scratch data.
+2. `get_weekly_report.strength` returns per group the secondary and effective sets, the band and status for the 12
+   checked groups only, and both ratios (`null` on a zero denominator), for seeded weeks with and without known
+   secondaries. Existing keys and `get_strength_progress` output stay unchanged (existing tests stay green).
+3. `muscle_gap` has tests for firing on 0 primary sets in two consecutive complete weeks (also when the group has
+   only secondary sets), not firing with one direct set in either week, never firing for an unchecked group, and
+   unknown when either week is incomplete. A seeded W44 + W45 from the live counts returns
+   `muscle_gap: hamstrings, lower_back` and push:pull 1.5 (primary-only templates).
+4. The deload rule is a pure function with tests for each condition holding and not holding, for 2 conditions
+   firing with `reasons` and their numbers, for 1 not firing, and for unknown inputs never holding (no RPE keys,
+   too few HRV days or baseline weeks, too few covered weeks). The plateau helper gives the same results as
+   `get_strength_progress` (test).
+5. The Monday report shows the "Watch:" lines of `muscle_gap` and `deload_suggested` in `en` and `cs`, and the two
+   recommendation sentences at priorities 15 and 95, with deload hiding `strength_volume_up` (exact-text tests). A
+   test pins the order of the weekly flag list and of the rule table.
+6. The `weekly_*` cases of `tests/history_golden.json` are regenerated and key-diffed. `coach-mcp/README.md`
+   (weekly keys, store table, downgrade), `INSTRUCTIONS`, the `get_weekly_report` docstring and
+   `docs/coach-instructions.md` are updated. The coach-instructions cover reading the band and ratios, the Face
+   Pull limit, a gap under an active constraint, and how to prescribe a deload.
+7. The four-command check is green (`scripts/check.sh --tag pr43`).
+8. On the test host: after the deploy and one nightly run, the schema is 12 and the stored templates carry
+   secondaries. `get_weekly_report(week="2026-11-02")` returns `muscle_gap` with hamstrings and lower_back and the
+   push:pull ratio. `deload_suggested` is absent there, as expected (W41–W43 read as light weeks and no exercise
+   plateaus), or present with its reasons.
+
+**Requested:** 2026-11-14, via `/mao` from a user request (coach review of 2026-11-12, items C4 and C6, batch wave
+2); questions and answers round 1 (all defaults: gap on direct sets; 12 checked groups; one band of 10–20 as a
+constant; ratios as data only; deload when 2 of 4 conditions hold, RPE unknown never holds; Monday lines for both
+flags, gap recommendation at low priority).
+
+### PR 44 — Morning wellness check
+
+The watch does not know fatigue, muscle soreness or back pain, yet the back is an active constraint ("Záda: šetrný
+silový trénink"). The coach review of 2026-11-12 (item B4) asks for a short morning check in Telegram. Every
+morning, right after the briefing (and after the Monday report on Mondays), the scheduled delivery sends a separate
+short message with inline buttons, one row per question. Fatigue is 1 (fresh) to 5 (exhausted). Soreness is 1
+(none) to 5 (severe). Back pain is 0 (none), 1 (mild, does not limit training), 2 (limits training) or 3 (strong or
+sharp). The back row appears only while an active constraint is about the back. That is decided by a fixed rule: the
+constraint's title contains a word of a closed keyword table in both languages, such as "záda", "zad", "páteř",
+"back", "spine" or "lumbar" (whole words, so "zadní" does not match). No change is made to `athlete_constraints` or
+`set_constraint`. Structured tags are PR 50, which may replace the rule. Answering is optional: an unanswered day has
+no value, never zero, and there is no reminder. The prompt goes out only while the inbound part is on
+(`inbound_enabled`) and the new switch `COACH_WELLNESS_CHECK` is `true` (the default). `send-briefing` does not send
+it.
+
+A tap from the owner's private chat goes through the same guard as PR 36's buttons
+(`coach-mcp/src/coach_mcp/inbound.py`). It counts as the athlete's confirmation (plan §1, PR 36 amendment). The tap
+stores the value for the prompt's day in a new table of schema migration 12; PR 40 takes 11. A new tap on the same
+day overwrites the value. A tap on an older day's message changes nothing and says so. The tapped message is
+redrawn and shows the chosen values. The callback grammar and the rules live in a new pure module (proposed
+`coach-mcp/src/coach_mcp/wellness.py`), so PR 36's confirmation keyboard and its redraw stay unchanged. When today's
+back pain is 2 or more, every strength session planned for today becomes "swap" (recovery: mobility, walk or rest)
+on any verdict, green included. This goes through PR 41's `floors={"strength": ("swap", "back_pain")}` with the new
+reason `back_pain`. The reply to the tap names the swapped sessions. From then until the end of the day, `/dnes` and
+`get_daily_briefing` show the swap. The briefing already sent is not edited. Fatigue and soreness change no advice.
+The three values become metrics of `get_trends`, and through the shared catalogue of `get_correlations`.
+`get_daily_briefing` also returns today's values. `docs/coach-instructions.md` gets the rule for closing the back
+constraint. Over the last 4 weeks, if back pain was answered on at least 14 days and was never above 1, the coach
+proposes resolving it, the athlete confirms, and the coach calls `set_constraint`. Nothing resolves automatically.
+
+Out of scope: a write tool or a Telegram command for wellness (buttons only), backfilling a missed day, reminders,
+fatigue or soreness rules, a Monday-report line or recommendation, a structured constraint ↔ body-part link, and
+any change to the plan, Hevy or the watch.
+
+**Done when:**
+1. With the inbound part on and `COACH_WELLNESS_CHECK` true, the scheduled delivery sends the prompt once a day,
+   after the briefing (after the Monday report on Mondays). It has rows for fatigue 1–5 and soreness 1–5, plus back
+   0–3 only while an active constraint matches the back rule. There is no prompt with the switch off, with the
+   inbound part off, or from `send-briefing`. The rule is tested on the live title "Záda: šetrný silový trénink"
+   (match), "Koleno: zadní stehna" (no match), an English title and a resolved constraint.
+2. Migration 12 adds the table with all existing rows kept (test with `MIGRATIONS[:N]`). The 12 → 11 way back is in
+   `coach-mcp/README.md`.
+3. A tap from the owner's private chat stores the value for the prompt's day. It answers the callback and redraws
+   the message with the chosen values. A re-tap the same day overwrites. A tap on an older day's message, a tap from
+   another chat or sender, or malformed data changes nothing. Log lines never carry the values (tests with the fake
+   Telegram transport).
+4. With today's back pain ≥ 2, every strength session planned for today gets `swap` with reason `back_pain` on green,
+   yellow and red. The tap reply names it, and `/dnes` and `get_daily_briefing` (`session_advice`, plus today's
+   wellness values) show it. With back pain ≤ 1 or no answer, the green message body is byte-for-byte unchanged
+   (tests, both catalogues).
+5. `get_trends` (day, week, month) and `get_correlations` accept the three new metrics, and unanswered days are
+   skipped, never zero (tests). The spec names the `tests/history_golden.json` cases that change, or says that none
+   do.
+6. Every new athlete-facing string (prompt, row names, tap answers, the older-day refusal, the `back_pain` reason)
+   is in both catalogues and pinned by literal text. These are updated in the same PR: `docs/coach-instructions.md`
+   (reading the wellness trend, the 4-week / 14-answer / ≤ 1 rule for proposing to resolve the back constraint,
+   titling a back constraint), `INSTRUCTIONS` and the `get_trends` and `get_daily_briefing` docstrings in
+   `coach-mcp/src/coach_mcp/server.py`, `coach-mcp/README.md` (env table, two-way Telegram, metric catalogue),
+   `README.md` (privacy note: wellness taps pass through Telegram), `.env.example` and `docker-compose.yml`.
+7. The four-command check is green.
+8. On the test host, after the wave is deployed: the prompt arrives after the morning push, with the back row while
+   the back constraint is active. A tap is stored, and `get_trends(period="day")` for that fixed date returns the
+   value. This also confirms the Bot API behaviour of a second inline-keyboard message, which cannot be run
+   offline.
+
+**Requested:** 2026-11-13, via `/mao` from a user request (coach review of 2026-11-12, item B4, batch wave 2);
+questions and answers round 1 (all defaults except Q6: the back row only while a back constraint is active).
+
 ## 5. Open items
 
 - **PR 04 push channel.** Decided 2026-10-06 (PR 04): ntfy on the public
@@ -3525,7 +3889,7 @@ migration.
   read-only for it. Hevy part open: PR 09 mounts `hevy_backend_token` into
   `coach-mcp`, and `hevy-mcp` is an upstream image with one bearer token, so a
   read-only Hevy role would need a filtering proxy; until then only the code
-  allowlist of two read tools in `hevy.py` protects Hevy writes.
+  allowlist of three read tools in `hevy.py` protects Hevy writes.
 - **Cycling power target.** `garmin-mcp/README.md` notes that a custom power
   range is sent as `power.zone` with two target values and still needs a
   visual check in Garmin Connect.
